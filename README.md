@@ -5,12 +5,16 @@
 
 **Local-first document database. Zero cloud. Zero GC. Zero compromise.**
 
+[![Status: Active Development](https://img.shields.io/badge/Status-Active%20Development-yellow)](https://github.com/thinkgrid-labs/zerodb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/thinkgrid-labs/zerodb)
 
 </div>
+
+> [!WARNING]
+> **ZeroDB is under active development.** APIs may change between releases. It is not yet recommended for production use. Follow the [roadmap](#roadmap) to track progress toward a stable release.
 
 ---
 
