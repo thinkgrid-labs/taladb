@@ -1,0 +1,18 @@
+{
+  "name": "zerodb-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "pnpm run -r build",
+    "build:wasm": "pnpm --filter zerodb-wasm build",
+    "build:node": "pnpm --filter zerodb-node build",
+    "test": "cargo test --workspace && pnpm run -r test",
+    "test:rust": "cargo test --workspace",
+    "test:wasm": "wasm-pack test packages/zerodb-wasm --headless --chrome",
+    "clean": "rimraf packages/*/pkg packages/*/dist packages/zerodb-node/*.node target"
+  },
+  "devDependencies": {
+    "rimraf": "^5.0.0",
+    "typescript": "^5.9.3"
+  }
+}

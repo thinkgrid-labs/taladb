@@ -1,0 +1,13 @@
+{
+  "name": "zerodb-wasm",
+  "version": "0.1.0",
+  "description": "ZeroDB WASM bindings for browser (wasm-bindgen)",
+  "main": "pkg/zerodb_wasm.js",
+  "types": "pkg/zerodb_wasm.d.ts",
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir pkg --release",
+    "build:dev": "wasm-pack build --target web --out-dir pkg --dev",
+    "test": "wasm-pack test --headless --chrome"
+  },
+  "license": "MIT"
+}

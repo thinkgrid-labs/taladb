@@ -1,0 +1,7 @@
+target/
+node_modules/
+packages/*/pkg/
+packages/*/dist/
+packages/zerodb-node/*.node
+*.node
+.DS_Store

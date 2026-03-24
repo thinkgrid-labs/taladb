@@ -1,0 +1,5 @@
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"
+
+[alias]
+wasm = "build --target wasm32-unknown-unknown --profile release-wasm"

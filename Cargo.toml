@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "packages/zerodb-core",
+    "packages/zerodb-wasm",
+    "packages/zerodb-node",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["thinkgrid-labs"]
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[profile.release-wasm]
+inherits = "release"
+opt-level = "z"
