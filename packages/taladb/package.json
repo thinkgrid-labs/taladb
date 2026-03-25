@@ -25,7 +25,7 @@
     "vitest": "^3.2.0"
   },
   "optionalDependencies": {
-    "taladb-wasm": "^0.1.0",
-    "taladb-node": "^0.1.0"
+    "taladb-wasm": "workspace:*",
+    "taladb-node": "workspace:*"
   }
 }

@@ -26,6 +26,13 @@ importers:
       vitest:
         specifier: ^3.2.0
         version: 3.2.4(@types/node@25.5.0)(terser@5.46.1)(yaml@2.8.3)
+    optionalDependencies:
+      taladb-node:
+        specifier: workspace:*
+        version: link:../taladb-node
+      taladb-wasm:
+        specifier: workspace:*
+        version: link:../taladb-wasm
 
   packages/taladb-node:
     devDependencies:
