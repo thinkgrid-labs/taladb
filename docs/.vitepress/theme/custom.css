@@ -1,0 +1,27 @@
+/* Hero logo banner — replaces the name/text title block */
+.hero-logo-banner {
+  display: block;
+  width: 100%;
+  max-width: 460px;
+  height: auto;
+  margin-bottom: 1.25rem;
+}
+
+/* Hide the now-empty name and text containers */
+.VPHero .name,
+.VPHero .text {
+  display: none;
+}
+
+/* Remove the right-side hero image slot (banner is already on the left) */
+.VPHero .image {
+  display: none;
+}
+
+/* On mobile, centre the banner */
+@media (max-width: 768px) {
+  .hero-logo-banner {
+    max-width: 300px;
+    margin: 0 auto 1.25rem;
+  }
+}
