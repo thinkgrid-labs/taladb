@@ -4,12 +4,7 @@ title: TalaDB — Local-First Document Database
 description: Open-source document database built in Rust. MongoDB-like API for browser (WASM + OPFS), Node.js, and React Native. Zero cloud, zero GC, fully offline.
 
 hero:
-  name: TalaDB
-  text: Local-first document database.
   tagline: Zero cloud. Zero GC. Zero compromise. One API across browser, React Native, and Node.js.
-  image:
-    src: /taladb-banner.svg
-    alt: TalaDB
   actions:
     - theme: brand
       text: Get Started
