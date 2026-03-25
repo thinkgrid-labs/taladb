@@ -367,6 +367,14 @@ Please open an issue first for large features or architectural changes.
 
 ---
 
+## Contributors
+
+| Name | Contact |
+|------|---------|
+| Dennis P | [dennis@thinkgrid.dev](mailto:dennis@thinkgrid.dev) |
+
+---
+
 ## License
 
 MIT © [thinkgrid-labs](https://github.com/thinkgrid-labs)
