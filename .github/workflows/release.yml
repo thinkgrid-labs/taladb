@@ -1,0 +1,364 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"           # v0.1.0, v1.2.3-beta.1, etc.
+    branches:
+      - main            # allowed to push tags from main only (enforced below)
+
+# Only run when a version tag is pushed.
+# The `if:` on the build jobs ensures nothing runs on plain `main` pushes.
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Guard — only proceed when triggered by a v* tag on main
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: Preflight — validate tag & branch
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag points to a commit on main
+        run: |
+          TAG_SHA=$(git rev-list -n1 "${{ github.ref_name }}")
+          MAIN_SHA=$(git rev-parse origin/main)
+          MERGED=$(git merge-base --is-ancestor "$TAG_SHA" "$MAIN_SHA" && echo yes || echo no)
+          if [ "$MERGED" != "yes" ]; then
+            echo "Tag ${{ github.ref_name }} does not point to a commit on main. Aborting."
+            exit 1
+          fi
+          echo "Tag is on main — proceeding."
+
+      - name: Parse version from tag
+        id: parse
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION"
+
+  # ---------------------------------------------------------------------------
+  # Full CI gate — re-run all checks at the exact tagged commit
+  # ---------------------------------------------------------------------------
+  rust-check:
+    name: Rust — check / clippy / test
+    runs-on: ubuntu-latest
+    needs: preflight
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      - run: cargo check --workspace
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo test --workspace
+
+  ts-check:
+    name: TypeScript — type check
+    runs-on: ubuntu-latest
+    needs: preflight
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install
+      - run: node_modules/.bin/tsc -p packages/taladb/tsconfig.json --noEmit
+
+  # ---------------------------------------------------------------------------
+  # Build WASM
+  # ---------------------------------------------------------------------------
+  build-wasm:
+    name: Build — WASM
+    runs-on: ubuntu-latest
+    needs: [rust-check, ts-check]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-rel-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-wasm-rel-
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: wasm-pack build packages/taladb-wasm --target web --out-dir pkg --release
+
+      - name: Archive WASM pkg
+        run: tar -czf taladb-wasm-${{ needs.preflight.outputs.version }}.tar.gz -C packages/taladb-wasm/pkg .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-wasm
+          path: taladb-wasm-${{ needs.preflight.outputs.version }}.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Build Node.js native module (linux / macos / windows)
+  # ---------------------------------------------------------------------------
+  build-node:
+    name: Build — Node.js (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [rust-check, ts-check]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: taladb-node-linux-x64
+          - os: macos-latest
+            artifact: taladb-node-macos-aarch64
+          - os: windows-latest
+            artifact: taladb-node-windows-x64
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-node-rel-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-node-rel-
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install
+
+      - name: Build native module
+        working-directory: packages/taladb-node
+        run: pnpm build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.artifact }}
+          path: packages/taladb-node/*.node
+
+  # ---------------------------------------------------------------------------
+  # Build CLI binary (linux / macos / windows)
+  # ---------------------------------------------------------------------------
+  build-cli:
+    name: Build — CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [rust-check, ts-check]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: taladb-linux-x86_64
+            bin: taladb
+          - os: macos-latest
+            artifact: taladb-macos-aarch64
+            bin: taladb
+          - os: windows-latest
+            artifact: taladb-windows-x86_64
+            bin: taladb.exe
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cli-rel-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cli-rel-
+
+      - name: Build CLI
+        run: cargo build -p taladb-cli --release
+
+      - name: Compress binary (unix)
+        if: runner.os != 'Windows'
+        run: |
+          tar -czf ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.tar.gz \
+            -C target/release ${{ matrix.bin }}
+
+      - name: Compress binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/release/${{ matrix.bin }} `
+            -DestinationPath ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.tar.gz
+            ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.zip
+
+  # ---------------------------------------------------------------------------
+  # Publish npm packages (taladb + taladb-wasm)
+  # ---------------------------------------------------------------------------
+  publish-npm:
+    name: Publish — npm
+    runs-on: ubuntu-latest
+    needs: [build-wasm, build-node, build-cli]
+    environment: npm-publish       # optional: add a GitHub environment for approval
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install
+
+      - name: Download WASM pkg
+        uses: actions/download-artifact@v4
+        with:
+          name: release-wasm
+          path: /tmp/wasm-artifact
+
+      - name: Extract WASM pkg into package
+        run: |
+          mkdir -p packages/taladb-wasm/pkg
+          tar -xzf /tmp/wasm-artifact/*.tar.gz -C packages/taladb-wasm/pkg
+
+      - name: Build taladb TS package
+        run: pnpm --filter taladb build
+
+      - name: Publish taladb-wasm
+        working-directory: packages/taladb-wasm/pkg
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish taladb
+        working-directory: packages/taladb
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Publish crates.io (taladb-core + taladb-cli)
+  # ---------------------------------------------------------------------------
+  publish-crates:
+    name: Publish — crates.io
+    runs-on: ubuntu-latest
+    needs: [build-wasm, build-node, build-cli]
+    environment: crates-publish    # optional: add a GitHub environment for approval
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-publish-
+
+      # Publish dependency-first: core before cli
+      - name: Publish taladb-core
+        run: cargo publish -p taladb-core --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io to index taladb-core
+        run: sleep 30
+
+      - name: Publish taladb-cli
+        run: cargo publish -p taladb-cli --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # GitHub Release — create release and attach all binaries
+  # ---------------------------------------------------------------------------
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [publish-npm, publish-crates]
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: /tmp/release-assets
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lh /tmp/release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TalaDB ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}   # v1.0.0-beta.1 → pre-release
+          generate_release_notes: true
+          files: /tmp/release-assets/**

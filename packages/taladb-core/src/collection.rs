@@ -11,7 +11,7 @@ use crate::index::{
 };
 use crate::query::executor::execute;
 use crate::query::filter::Filter;
-use crate::query::planner::{plan, plan_with_fts};
+use crate::query::planner::plan_with_fts;
 
 const META_FTS_TABLE: &str = "meta::fts_indexes";
 
@@ -278,8 +278,7 @@ impl Collection {
     }
 
     pub fn find_one(&self, filter: Filter) -> Result<Option<Document>, ZeroDbError> {
-        let mut results = self.find(filter)?;
-        Ok(results.drain(..).next())
+        Ok(self.find(filter)?.into_iter().next())
     }
 
     pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, ZeroDbError> {
@@ -292,7 +291,7 @@ impl Collection {
 
         if let Some(old_doc) = candidates.drain(..).next() {
             let mut new_doc = old_doc.clone();
-            apply_update(&mut new_doc, update)?;
+            apply_update(&mut new_doc, &update)?;
             let mut wtxn = self.backend.begin_write()?;
             self.write_doc_and_indexes(&new_doc, Some(&old_doc), &indexes, &fts, wtxn.as_mut())?;
             wtxn.commit()?;
@@ -313,7 +312,7 @@ impl Collection {
         let mut wtxn = self.backend.begin_write()?;
         for old_doc in &candidates {
             let mut new_doc = old_doc.clone();
-            apply_update(&mut new_doc, update.clone())?;
+            apply_update(&mut new_doc, &update)?;
             self.write_doc_and_indexes(&new_doc, Some(old_doc), &indexes, &fts, wtxn.as_mut())?;
             count += 1;
         }
@@ -392,21 +391,21 @@ impl Collection {
     }
 }
 
-fn apply_update(doc: &mut Document, update: Update) -> Result<(), ZeroDbError> {
+fn apply_update(doc: &mut Document, update: &Update) -> Result<(), ZeroDbError> {
     match update {
         Update::Set(pairs) => {
             for (k, v) in pairs {
-                doc.set(k, v);
+                doc.set(k.clone(), v.clone());
             }
         }
         Update::Unset(keys) => {
             for k in keys {
-                doc.remove(&k);
+                doc.remove(k);
             }
         }
         Update::Inc(pairs) => {
             for (k, delta) in pairs {
-                let new_val = match (doc.get(&k), &delta) {
+                let new_val = match (doc.get(k), delta) {
                     (Some(Value::Int(n)), Value::Int(d)) => Value::Int(n + d),
                     (Some(Value::Float(n)), Value::Float(d)) => Value::Float(n + d),
                     (Some(Value::Int(n)), Value::Float(d)) => Value::Float(*n as f64 + d),
@@ -416,17 +415,17 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), ZeroDbError> {
                         got: existing.type_name().into(),
                     }),
                 };
-                doc.set(k, new_val);
+                doc.set(k.clone(), new_val);
             }
         }
         Update::Push(key, val) => {
-            match doc.get(&key).cloned() {
+            match doc.get(key).cloned() {
                 Some(Value::Array(mut arr)) => {
-                    arr.push(val);
-                    doc.set(key, Value::Array(arr));
+                    arr.push(val.clone());
+                    doc.set(key.clone(), Value::Array(arr));
                 }
                 None => {
-                    doc.set(key, Value::Array(vec![val]));
+                    doc.set(key.clone(), Value::Array(vec![val.clone()]));
                 }
                 Some(existing) => return Err(ZeroDbError::TypeError {
                     expected: "array".into(),
@@ -435,9 +434,9 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), ZeroDbError> {
             }
         }
         Update::Pull(key, val) => {
-            if let Some(Value::Array(arr)) = doc.get(&key).cloned() {
-                let filtered: Vec<Value> = arr.into_iter().filter(|v| v != &val).collect();
-                doc.set(key, Value::Array(filtered));
+            if let Some(Value::Array(arr)) = doc.get(key).cloned() {
+                let filtered: Vec<Value> = arr.into_iter().filter(|v| v != val).collect();
+                doc.set(key.clone(), Value::Array(filtered));
             }
         }
     }

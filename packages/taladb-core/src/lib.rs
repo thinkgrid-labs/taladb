@@ -32,6 +32,11 @@ impl Database {
         Ok(Database { backend: Arc::new(backend) })
     }
 
+    /// Open a database with a custom storage backend (e.g. OPFS in WASM).
+    pub fn open_with_backend(backend: Box<dyn StorageBackend>) -> Result<Self, ZeroDbError> {
+        Ok(Database { backend: Arc::from(backend) })
+    }
+
     /// Open an in-memory database (useful for tests).
     pub fn open_in_memory() -> Result<Self, ZeroDbError> {
         let backend = RedbBackend::open_in_memory()?;

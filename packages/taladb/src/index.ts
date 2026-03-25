@@ -10,56 +10,77 @@ type Platform = 'browser' | 'react-native' | 'node';
 
 function detectPlatform(): Platform {
   // React Native exposes nativeCallSyncHook on the global object
-  if (typeof (globalThis as any).nativeCallSyncHook !== 'undefined') {
+  if ((globalThis as any).nativeCallSyncHook !== undefined) {
     return 'react-native';
   }
   // Browser: window + navigator exist
-  if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
+  if (globalThis.window !== undefined && typeof navigator !== 'undefined') {
     return 'browser';
   }
   return 'node';
 }
 
 // ============================================================
-// Browser adapter (wraps taladb-wasm)
+// Browser adapter — SharedWorker + OPFS via FileSystemSyncAccessHandle
 // ============================================================
 
-async function createBrowserDB(dbName: string): Promise<ZeroDB> {
-  const {
-    TalaDBWasm,
-    is_opfs_available,
-    opfs_load_snapshot,
-  } = await import('taladb-wasm');
+/**
+ * Thin proxy that forwards every DB operation to the SharedWorker
+ * via a typed message protocol and awaits the response.
+ *
+ * The SharedWorker (taladb.worker.js) owns the OPFS file handle and the
+ * WASM + redb instance. Multiple tabs share the same worker instance so
+ * there is always exactly one writer.
+ */
+class WorkerProxy {
+  private readonly port: MessagePort;
+  private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private nextId = 1;
 
-  // Prefer OPFS persistence; fall back to pure in-memory
-  const opfsAvailable = await is_opfs_available();
-  let snapshot: Uint8Array | undefined;
-  if (opfsAvailable) {
-    snapshot = (await opfs_load_snapshot(dbName)) ?? undefined;
+  constructor(port: MessagePort) {
+    this.port = port;
+    this.port.onmessage = (e) => {
+      const { id, result, error } = e.data;
+      const p = this.pending.get(id);
+      if (p) {
+        this.pending.delete(id);
+        if (error === undefined) p.resolve(result);
+        else p.reject(new Error(error));
+      }
+    };
+    this.port.start();
   }
 
-  const db = opfsAvailable
-    ? TalaDBWasm.openWithSnapshot(snapshot ?? null)
-    : TalaDBWasm.openInMemory();
-
-  // After every mutating operation we flush a snapshot to OPFS
-  async function flush() {
-    if (!opfsAvailable) return;
-    // Snapshot export is a future enhancement — placeholder for now
-    // await opfs_flush_snapshot(dbName, db.snapshot());
+  send<T = unknown>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const id = this.nextId++;
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.port.postMessage({ id, op, ...args });
+    });
   }
+}
+
+/**
+ * In-memory fallback for browsers that don't support SharedWorker (e.g. Safari iOS).
+ * Data is not persisted across page reloads; all writes live in WASM memory only.
+ */
+async function createInMemoryBrowserDB(_dbName: string): Promise<ZeroDB> {
+  const wasmUrl = new URL('taladb-wasm/pkg/taladb_wasm.js', import.meta.url);
+  const wasm = await import(/* @vite-ignore */ wasmUrl.href);
+  await wasm.default();
+  const db = wasm.TalaDBWasm.openInMemory();
 
   function wrapCollection<T extends Document>(name: string): Collection<T> {
     const col = db.collection(name);
     return {
-      insert: async (doc) => { const id = col.insert(doc as any); await flush(); return id; },
-      insertMany: async (docs) => { const ids = col.insertMany(docs as any); await flush(); return ids; },
-      find: async (filter?) => col.find(filter ?? null) as T[],
-      findOne: async (filter) => col.findOne(filter) as T | null,
-      updateOne: async (filter, update) => { const r = col.updateOne(filter, update); await flush(); return r; },
-      updateMany: async (filter, update) => { const r = col.updateMany(filter, update); await flush(); return r; },
-      deleteOne: async (filter) => { const r = col.deleteOne(filter); await flush(); return r; },
-      deleteMany: async (filter) => { const r = col.deleteMany(filter); await flush(); return r; },
+      insert: async (doc) => col.insert(doc),
+      insertMany: async (docs) => col.insertMany(docs),
+      find: async (filter?) => col.find(filter ?? null),
+      findOne: async (filter) => col.findOne(filter) ?? null,
+      updateOne: async (filter, update) => col.updateOne(filter, update),
+      updateMany: async (filter, update) => col.updateMany(filter, update),
+      deleteOne: async (filter) => col.deleteOne(filter),
+      deleteMany: async (filter) => col.deleteMany(filter),
       count: async (filter?) => col.count(filter ?? null),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
@@ -68,7 +89,84 @@ async function createBrowserDB(dbName: string): Promise<ZeroDB> {
 
   return {
     collection: <T extends Document>(name: string) => wrapCollection<T>(name),
-    close: async () => { await flush(); },
+    close: async () => {},
+  };
+}
+
+async function createBrowserDB(dbName: string): Promise<ZeroDB> {
+  // SharedWorker is not available in Safari on iOS or in some older browsers.
+  // Fall back to an in-memory WASM instance in those environments.
+  if (typeof SharedWorker === 'undefined') {
+    return createInMemoryBrowserDB(dbName);
+  }
+
+  // Resolve the worker URL — bundlers (Vite, Webpack) handle new URL() correctly
+  const workerUrl = new URL('taladb-wasm/worker/taladb.worker.js', import.meta.url);
+  const worker = new SharedWorker(workerUrl, { type: 'module', name: 'taladb' });
+  const proxy = new WorkerProxy(worker.port);
+
+  // Initialize the worker (opens OPFS file or falls back to in-memory)
+  await proxy.send('init', { dbName });
+
+  function wrapCollection<T extends Document>(name: string): Collection<T> {
+    const s = JSON.stringify;
+    return {
+      insert: (doc) =>
+        proxy.send<string>('insert', { collection: name, docJson: s(doc) }),
+
+      insertMany: async (docs) => {
+        const json = await proxy.send<string>('insertMany', {
+          collection: name, docsJson: s(docs),
+        });
+        return JSON.parse(json) as string[];
+      },
+
+      find: async (filter?) => {
+        const json = await proxy.send<string>('find', {
+          collection: name, filterJson: filter ? s(filter) : 'null',
+        });
+        return JSON.parse(json) as T[];
+      },
+
+      findOne: async (filter) => {
+        const json = await proxy.send<string>('findOne', {
+          collection: name, filterJson: filter ? s(filter) : 'null',
+        });
+        return JSON.parse(json) as T | null;
+      },
+
+      updateOne: (filter, update) =>
+        proxy.send<boolean>('updateOne', {
+          collection: name, filterJson: s(filter), updateJson: s(update),
+        }),
+
+      updateMany: (filter, update) =>
+        proxy.send<number>('updateMany', {
+          collection: name, filterJson: s(filter), updateJson: s(update),
+        }),
+
+      deleteOne: (filter) =>
+        proxy.send<boolean>('deleteOne', { collection: name, filterJson: s(filter) }),
+
+      deleteMany: (filter) =>
+        proxy.send<number>('deleteMany', { collection: name, filterJson: s(filter) }),
+
+      count: (filter?) =>
+        proxy.send<number>('count', {
+          collection: name, filterJson: filter ? s(filter) : 'null',
+        }),
+
+      createIndex: (field) =>
+        proxy.send<void>('createIndex', { collection: name, field }),
+
+      dropIndex: (field) =>
+        proxy.send<void>('dropIndex', { collection: name, field }),
+    };
+  }
+
+  return {
+    collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    close: () => proxy.send<void>('close'),
   };
 }
 
@@ -78,16 +176,18 @@ async function createBrowserDB(dbName: string): Promise<ZeroDB> {
 
 async function createNodeDB(dbName: string): Promise<ZeroDB> {
   // taladb-node ships platform-specific .node binaries
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore — types generated by `napi build`; not available until package is built
   const { TalaDBNode } = await import('taladb-node');
-  const db = TalaDBNode.openInMemory(); // or TalaDBNode.open(dbName) for file-backed
+  const db = TalaDBNode.open(dbName);
 
   function wrapCollection<T extends Document>(name: string): Collection<T> {
     const col = db.collection(name);
     return {
       insert: async (doc) => col.insert(doc as any),
       insertMany: async (docs) => col.insertMany(docs as any),
-      find: async (filter?) => col.find(filter ?? null) as T[],
-      findOne: async (filter) => (col.findOne(filter) ?? null) as T | null,
+      find: async (filter?) => col.find(filter ?? null),
+      findOne: async (filter) => col.findOne(filter) ?? null,
       updateOne: async (filter, update) => col.updateOne(filter, update),
       updateMany: async (filter, update) => col.updateMany(filter, update),
       deleteOne: async (filter) => col.deleteOne(filter),
@@ -108,7 +208,7 @@ async function createNodeDB(dbName: string): Promise<ZeroDB> {
 // React Native adapter (wraps JSI HostObject installed by taladb-react-native)
 // ============================================================
 
-async function createNativeDB(dbName: string): Promise<ZeroDB> {
+async function createNativeDB(_dbName: string): Promise<ZeroDB> {
   // The JSI HostObject is installed by taladb-react-native's TurboModule
   // at app startup via ZeroDBModule.initialize(dbName).
   // After that, it is available at globalThis.__TalaDB__.

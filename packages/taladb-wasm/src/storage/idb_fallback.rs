@@ -1,12 +1,12 @@
-/// IndexedDB fallback storage for browsers without OPFS (Firefox).
-///
-/// Strategy: serialize the entire redb in-memory database to a single
-/// Uint8Array, store it in IndexedDB under a fixed key, and reload it
-/// on next open. Since redb's InMemoryBackend keeps data in RAM, we
-/// flush to IDB at transaction commit boundaries.
-///
-/// This module exposes JS-callable async helpers for the flush/load cycle.
-/// The wasm-bindgen surface in lib.rs orchestrates when to call them.
+//! IndexedDB fallback storage for browsers without OPFS (Firefox).
+//!
+//! Strategy: serialize the entire redb in-memory database to a single
+//! Uint8Array, store it in IndexedDB under a fixed key, and reload it
+//! on next open. Since redb's InMemoryBackend keeps data in RAM, we
+//! flush to IDB at transaction commit boundaries.
+//!
+//! This module exposes JS-callable async helpers for the flush/load cycle.
+//! The wasm-bindgen surface in lib.rs orchestrates when to call them.
 
 use wasm_bindgen::prelude::*;
 use js_sys::{ArrayBuffer, Uint8Array};

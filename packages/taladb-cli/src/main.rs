@@ -1,12 +1,12 @@
-/// TalaDB CLI — dev tools for TalaDB databases.
-///
-/// Commands:
-///   taladb inspect <file>                       — print DB stats
-///   taladb export  <file> <collection> [--fmt]  — export to JSON / NDJSON / CSV
-///   taladb import  <file> <collection> <data>   — import from JSON / NDJSON
-///   taladb collections <file>                   — list all collections
-///   taladb count   <file> <collection>          — count documents
-///   taladb drop    <file> <collection>          — drop an entire collection
+//! TalaDB CLI — dev tools for TalaDB databases.
+//!
+//! Commands:
+//!   taladb inspect <file>                       — print DB stats
+//!   taladb export  <file> <collection> [--fmt]  — export to JSON / NDJSON / CSV
+//!   taladb import  <file> <collection> <data>   — import from JSON / NDJSON
+//!   taladb collections <file>                   — list all collections
+//!   taladb count   <file> <collection>          — count documents
+//!   taladb drop    <file> <collection>          — drop an entire collection
 
 use std::path::PathBuf;
 
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_inspect(file: &PathBuf) -> Result<()> {
-    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let _db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
 
     println!("TalaDB Inspector");
     println!("────────────────");
@@ -204,7 +204,7 @@ fn cmd_export(
                             .iter()
                             .map(|h| {
                                 m.get(h)
-                                    .map(|v| csv_escape(v))
+                                    .map(csv_escape)
                                     .unwrap_or_default()
                             })
                             .collect();

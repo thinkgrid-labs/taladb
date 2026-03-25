@@ -13,5 +13,8 @@ serde      = { version = "1.0", features = ["derive"] }
 ulid       = { version = "1.1", features = ["serde"] }
 thiserror  = "1.0"
 
+[features]
+encryption = []
+
 [dev-dependencies]
 tempfile = "3.10"

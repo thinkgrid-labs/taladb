@@ -73,25 +73,25 @@ export interface DB {
  * `TalaDBModule.initialize(dbName)` **must** have been awaited before calling
  * this function.
  */
-export function openDB(dbName: string): DB {
-  function collection<T extends Document>(colName: string): Collection<T> {
-    return {
-      insert: (doc) => NativeTalaDB.insert(colName, doc as Object),
-      insertMany: (docs) => NativeTalaDB.insertMany(colName, docs as Object[]),
-      find: (filter?) => NativeTalaDB.find(colName, filter ?? null) as T[],
-      findOne: (filter) => NativeTalaDB.findOne(colName, filter) as T | null,
-      updateOne: (filter, update) => NativeTalaDB.updateOne(colName, filter, update),
-      updateMany: (filter, update) => NativeTalaDB.updateMany(colName, filter, update),
-      deleteOne: (filter) => NativeTalaDB.deleteOne(colName, filter),
-      deleteMany: (filter) => NativeTalaDB.deleteMany(colName, filter),
-      count: (filter?) => NativeTalaDB.count(colName, filter ?? null),
-      createIndex: (field) => NativeTalaDB.createIndex(colName, field),
-      dropIndex: (field) => NativeTalaDB.dropIndex(colName, field),
-      createFtsIndex: (field) => NativeTalaDB.createFtsIndex(colName, field),
-      dropFtsIndex: (field) => NativeTalaDB.dropFtsIndex(colName, field),
-    };
-  }
+function collection<T extends Document>(colName: string): Collection<T> {
+  return {
+    insert: (doc) => NativeTalaDB.insert(colName, doc as Object),
+    insertMany: (docs) => NativeTalaDB.insertMany(colName, docs as Object[]),
+    find: (filter?) => NativeTalaDB.find(colName, filter ?? null) as T[],
+    findOne: (filter) => NativeTalaDB.findOne(colName, filter) as T | null,
+    updateOne: (filter, update) => NativeTalaDB.updateOne(colName, filter, update),
+    updateMany: (filter, update) => NativeTalaDB.updateMany(colName, filter, update),
+    deleteOne: (filter) => NativeTalaDB.deleteOne(colName, filter),
+    deleteMany: (filter) => NativeTalaDB.deleteMany(colName, filter),
+    count: (filter?) => NativeTalaDB.count(colName, filter ?? null),
+    createIndex: (field) => NativeTalaDB.createIndex(colName, field),
+    dropIndex: (field) => NativeTalaDB.dropIndex(colName, field),
+    createFtsIndex: (field) => NativeTalaDB.createFtsIndex(colName, field),
+    dropFtsIndex: (field) => NativeTalaDB.dropFtsIndex(colName, field),
+  };
+}
 
+export function openDB(_dbName: string): DB {
   return {
     collection,
     close: () => NativeTalaDB.close(),

@@ -42,37 +42,37 @@ impl Filter {
         match self {
             Filter::All => true,
 
-            Filter::Eq(field, val) => doc.get(field).map_or(false, |v| v == val),
+            Filter::Eq(field, val) => doc.get(field).is_some_and(|v| v == val),
 
-            Filter::Ne(field, val) => doc.get(field).map_or(true, |v| v != val),
+            Filter::Ne(field, val) => doc.get(field).is_none_or(|v| v != val),
 
             Filter::Gt(field, val) => doc
                 .get(field)
                 .and_then(|v| v.partial_cmp_numeric(val))
-                .map_or(false, |ord| ord == std::cmp::Ordering::Greater),
+                .is_some_and(|ord| ord == std::cmp::Ordering::Greater),
 
             Filter::Gte(field, val) => doc
                 .get(field)
                 .and_then(|v| v.partial_cmp_numeric(val))
-                .map_or(false, |ord| ord != std::cmp::Ordering::Less),
+                .is_some_and(|ord| ord != std::cmp::Ordering::Less),
 
             Filter::Lt(field, val) => doc
                 .get(field)
                 .and_then(|v| v.partial_cmp_numeric(val))
-                .map_or(false, |ord| ord == std::cmp::Ordering::Less),
+                .is_some_and(|ord| ord == std::cmp::Ordering::Less),
 
             Filter::Lte(field, val) => doc
                 .get(field)
                 .and_then(|v| v.partial_cmp_numeric(val))
-                .map_or(false, |ord| ord != std::cmp::Ordering::Greater),
+                .is_some_and(|ord| ord != std::cmp::Ordering::Greater),
 
             Filter::In(field, vals) => doc
                 .get(field)
-                .map_or(false, |v| vals.contains(v)),
+                .is_some_and(|v| vals.contains(v)),
 
             Filter::Nin(field, vals) => doc
                 .get(field)
-                .map_or(true, |v| !vals.contains(v)),
+                .is_none_or(|v| !vals.contains(v)),
 
             Filter::Exists(field, should_exist) => {
                 doc.contains_key(field) == *should_exist
@@ -93,7 +93,7 @@ impl Filter {
                 }
                 if let Some(Value::Str(text)) = doc.get(field) {
                     let doc_tokens = tokenize(text);
-                    query_tokens.iter().all(|qt| doc_tokens.iter().any(|dt| dt.contains(qt.as_str())))
+                    query_tokens.iter().all(|qt| doc_tokens.iter().any(|dt| dt == qt))
                 } else {
                     false
                 }

@@ -1,22 +1,22 @@
-/// Live queries / reactive subscriptions for TalaDB.
-///
-/// `Collection::watch(filter)` returns a `WatchHandle` that yields a fresh
-/// snapshot of matching documents whenever any write to that collection occurs.
-///
-/// Architecture
-/// ------------
-/// Each `Collection` shares a `WatchRegistry` held behind an `Arc<Mutex>`.
-/// On every successful write, the collection calls `WatchRegistry::notify`.
-/// Each active `WatchHandle` receives the write event through a `std::sync`
-/// MPSC channel, re-runs the query, and delivers the new snapshot to the caller.
-///
-/// Non-blocking by default: if the caller does not consume events fast enough
-/// the channel queue grows up to `CHANNEL_CAPACITY` and then the oldest event
-/// is dropped (lossy). The handle is always re-queried at receive time so no
-/// documents are ever silently skipped — the worst that happens is that two
-/// rapid writes coalesce into one snapshot.
+//! Live queries / reactive subscriptions for TalaDB.
+//!
+//! `Collection::watch(filter)` returns a `WatchHandle` that yields a fresh
+//! snapshot of matching documents whenever any write to that collection occurs.
+//!
+//! Architecture
+//! ------------
+//! Each `Collection` shares a `WatchRegistry` held behind an `Arc<Mutex>`.
+//! On every successful write, the collection calls `WatchRegistry::notify`.
+//! Each active `WatchHandle` receives the write event through a `std::sync`
+//! MPSC channel, re-runs the query, and delivers the new snapshot to the caller.
+//!
+//! Non-blocking by default: if the caller does not consume events fast enough
+//! the channel queue grows up to `CHANNEL_CAPACITY` and then the oldest event
+//! is dropped (lossy). The handle is always re-queried at receive time so no
+//! documents are ever silently skipped — the worst that happens is that two
+//! rapid writes coalesce into one snapshot.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use crate::document::Document;
 use crate::error::ZeroDbError;
@@ -63,6 +63,8 @@ impl WatchRegistry {
 // WatchHandle — returned to the caller
 // ---------------------------------------------------------------------------
 
+type QueryFn = Box<dyn Fn(&Filter) -> Result<Vec<Document>, ZeroDbError> + Send>;
+
 /// A live query handle.
 ///
 /// Call `next()` (blocking) or `try_next()` (non-blocking) to receive
@@ -71,7 +73,7 @@ pub struct WatchHandle {
     rx: std::sync::mpsc::Receiver<WriteEvent>,
     filter: Filter,
     /// Callback to re-execute the query against the current DB state.
-    query_fn: Box<dyn Fn(&Filter) -> Result<Vec<Document>, ZeroDbError> + Send>,
+    query_fn: QueryFn,
 }
 
 impl WatchHandle {
@@ -157,7 +159,6 @@ pub fn notify(registry: &SharedRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::Value;
     use crate::Database;
 
     #[test]
@@ -166,7 +167,6 @@ mod tests {
         let registry = new_registry();
 
         let db_clone = Arc::clone(&db);
-        let reg_clone = Arc::clone(&registry);
         let handle = create_watch(
             &registry,
             Filter::All,

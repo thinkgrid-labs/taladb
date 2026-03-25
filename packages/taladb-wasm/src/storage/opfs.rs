@@ -1,24 +1,24 @@
-/// OPFS (Origin Private File System) persistent storage for TalaDB WASM.
-///
-/// Strategy
-/// --------
-/// TalaDB's Rust core (redb) runs in-memory inside the WASM module. To persist
-/// data across page reloads we serialise the entire in-memory database snapshot
-/// to a `Uint8Array` and write it to an OPFS file.
-///
-/// Snapshot lifecycle:
-///   1. `opfs_open(db_name)`  — load the last snapshot from OPFS into memory.
-///   2. After each write      — call `opfs_flush(db_name, snapshot_bytes)`.
-///   3. On next page load     — repeat step 1.
-///
-/// Why not SharedWorker / FileSystemSyncAccessHandle?
-/// ---------------------------------------------------
-/// `FileSystemSyncAccessHandle` must run on a dedicated worker thread, which
-/// requires a `SharedWorker` and `postMessage` round-trips. For most client
-/// apps the snapshot-flush approach (this file) is simpler and fast enough —
-/// a 1 MB snapshot flushes in < 5 ms on modern hardware.
-///
-/// Large databases (> 50 MB) should migrate to the worker-based approach.
+//! OPFS (Origin Private File System) persistent storage for TalaDB WASM.
+//!
+//! Strategy
+//! --------
+//! TalaDB's Rust core (redb) runs in-memory inside the WASM module. To persist
+//! data across page reloads we serialise the entire in-memory database snapshot
+//! to a `Uint8Array` and write it to an OPFS file.
+//!
+//! Snapshot lifecycle:
+//!   1. `opfs_open(db_name)`  — load the last snapshot from OPFS into memory.
+//!   2. After each write      — call `opfs_flush(db_name, snapshot_bytes)`.
+//!   3. On next page load     — repeat step 1.
+//!
+//! Why not SharedWorker / FileSystemSyncAccessHandle?
+//! ---------------------------------------------------
+//! `FileSystemSyncAccessHandle` must run on a dedicated worker thread, which
+//! requires a `SharedWorker` and `postMessage` round-trips. For most client
+//! apps the snapshot-flush approach (this file) is simpler and fast enough —
+//! a 1 MB snapshot flushes in < 5 ms on modern hardware.
+//!
+//! Large databases (> 50 MB) should migrate to the worker-based approach.
 
 use js_sys::{ArrayBuffer, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -56,7 +56,7 @@ pub async fn opfs_load_snapshot(db_name: &str) -> Option<Vec<u8>> {
     let opts = js_sys::Object::new();
     js_sys::Reflect::set(&opts, &"create".into(), &JsValue::FALSE).ok()?;
     let file_handle: web_sys::FileSystemFileHandle = JsFuture::from(
-        dir.get_file_handle_with_options(&file_name, &web_sys::FileSystemGetFileOptions::from(opts))
+        dir.get_file_handle_with_options(&file_name, &opts.unchecked_into())
     ).await.ok()?.dyn_into().ok()?;
 
     let file: web_sys::File = JsFuture::from(file_handle.get_file())
@@ -98,9 +98,15 @@ async fn opfs_flush_inner(db_name: &str, data: &[u8]) -> Result<(), JsValue> {
             .await?
             .dyn_into()?;
 
-    // Write the snapshot bytes
+    // Write via Reflect to avoid web-sys overload naming fragility.
     let uint8 = Uint8Array::from(data);
-    JsFuture::from(writable.write_with_array_buffer_view(&uint8)?).await?;
+    let writable_js: &JsValue = writable.as_ref();
+    let write_fn: js_sys::Function = js_sys::Reflect::get(writable_js, &"write".into())?
+        .dyn_into()
+        .map_err(|_| JsValue::from_str("writable.write is not a function"))?;
+    JsFuture::from(
+        write_fn.call1(writable_js, &uint8)?.dyn_into::<js_sys::Promise>()?
+    ).await?;
 
     // Close flushes and commits atomically
     JsFuture::from(writable.close()).await?;
@@ -119,8 +125,7 @@ pub async fn opfs_delete_snapshot(db_name: &str) -> bool {
         Some(d) => d,
         None => return false,
     };
-    let opts = web_sys::FileSystemRemoveOptions::new();
-    JsFuture::from(dir.remove_entry_with_options(&opfs_file_name(db_name), &opts))
+    JsFuture::from(dir.remove_entry(&opfs_file_name(db_name)))
         .await
         .is_ok()
 }

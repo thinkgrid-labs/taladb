@@ -10,6 +10,9 @@ use crate::error::ZeroDbError;
 // Storage abstraction — lets WASM swap in an OPFS backend
 // ---------------------------------------------------------------------------
 
+/// Key-value pairs returned from range/scan operations.
+pub type KvPairs = Vec<(Vec<u8>, Vec<u8>)>;
+
 pub trait StorageBackend: Send + Sync {
     fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, ZeroDbError>;
     fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, ZeroDbError>;
@@ -24,7 +27,7 @@ pub trait WriteTxn {
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError>;
+    ) -> Result<KvPairs, ZeroDbError>;
     fn commit(self: Box<Self>) -> Result<(), ZeroDbError>;
 }
 
@@ -35,8 +38,8 @@ pub trait ReadTxn {
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError>;
-    fn scan_all(&self, table: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError>;
+    ) -> Result<KvPairs, ZeroDbError>;
+    fn scan_all(&self, table: &str) -> Result<KvPairs, ZeroDbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +59,14 @@ impl RedbBackend {
     pub fn open_in_memory() -> Result<Self, ZeroDbError> {
         let db = Database::builder()
             .create_with_backend(redb::backends::InMemoryBackend::new())?;
+        Ok(RedbBackend { db: Arc::new(db) })
+    }
+
+    /// Open a database using any `redb::StorageBackend` (e.g. OPFS in WASM).
+    pub fn open_with_redb_backend<B: redb::StorageBackend + 'static>(
+        backend: B,
+    ) -> Result<Self, ZeroDbError> {
+        let db = Database::builder().create_with_backend(backend)?;
         Ok(RedbBackend { db: Arc::new(db) })
     }
 }
@@ -78,12 +89,29 @@ struct RedbWriteTxn {
     txn: redb::WriteTransaction,
 }
 
-fn table_def(name: &str) -> TableDefinition<'_, &'static [u8], &'static [u8]> {
-    // SAFETY: We extend the lifetime. The name string outlives this call only
-    // because redb TableDefinition is used immediately within the txn scope.
-    // This is a known pattern for dynamic table names in redb.
-    let name: &'static str = unsafe { std::mem::transmute(name) };
-    TableDefinition::new(name)
+/// Intern a table name string so we can hand a `&'static str` to redb's
+/// `TableDefinition::new`, which requires `'static`.
+///
+/// Each unique name is leaked exactly once; subsequent calls return the same
+/// pointer. Memory is bounded by the number of distinct collection/index names
+/// (typically < 100 per database), making the leak acceptable.
+fn intern_name(name: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let set = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = set.lock().unwrap();
+    if let Some(&existing) = guard.get(name) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    guard.insert(leaked);
+    leaked
+}
+
+fn table_def(name: &str) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
+    TableDefinition::new(intern_name(name))
 }
 
 impl WriteTxn for RedbWriteTxn {
@@ -112,7 +140,7 @@ impl WriteTxn for RedbWriteTxn {
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError> {
+    ) -> Result<KvPairs, ZeroDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => {
                 let iter = tbl.range::<&[u8]>((start, end))?;
@@ -154,7 +182,7 @@ impl ReadTxn for RedbReadTxn {
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError> {
+    ) -> Result<KvPairs, ZeroDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => {
                 let iter = tbl.range::<&[u8]>((start, end))?;
@@ -170,7 +198,7 @@ impl ReadTxn for RedbReadTxn {
         }
     }
 
-    fn scan_all(&self, table: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError> {
+    fn scan_all(&self, table: &str) -> Result<KvPairs, ZeroDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => {
                 let iter = tbl.iter()?;

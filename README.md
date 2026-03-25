@@ -346,7 +346,7 @@ pnpm build
 - [x] React Native JSI HostObject (iOS `.mm` + Android Kotlin JNI scaffold)
 - [x] Sync adapter interface (`SyncAdapter` trait + `LastWriteWins` implementation)
 - [x] CLI dev tools (`taladb inspect`, `export`, `import`, `count`, `drop`)
-- [ ] Full OPFS persistence via SharedWorker + `FileSystemSyncAccessHandle`
+- [x] Full OPFS persistence via SharedWorker + `FileSystemSyncAccessHandle`
 - [ ] React Native JSI — full C FFI via cbindgen / uniffi
 - [ ] Encryption with real AES-GCM (`aes-gcm` + `pbkdf2` crates under `encryption` feature)
 - [ ] `$or` index union across different fields (multi-field merge)

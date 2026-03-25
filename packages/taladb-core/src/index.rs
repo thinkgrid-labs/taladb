@@ -1,20 +1,20 @@
-/// Secondary index key encoding.
-///
-/// Index keys are structured as:
-///   [type_prefix: 1 byte] [encoded_value: N bytes] [ulid: 16 bytes]
-///
-/// The fixed-width 16-byte ULID suffix means there is no ambiguity in key
-/// boundaries even for variable-length types like strings.
-///
-/// Type prefixes ensure cross-type sort order:
-///   0x00 = Null
-///   0x10 = Bool(false)
-///   0x11 = Bool(true)
-///   0x20 = Int  (i64 big-endian, XOR 0x8000_0000_0000_0000 for correct signed sort)
-///   0x30 = Float (IEEE 754 bits, sign-magnitude encoded for sort correctness)
-///   0x40 = Str  (raw UTF-8 bytes; ULID suffix provides unambiguous boundary)
-///   0x50 = Bytes
-///   0x60 = Array / Object (not indexable — skipped silently)
+//! Secondary index key encoding.
+//!
+//! Index keys are structured as:
+//!   [type_prefix: 1 byte] [encoded_value: N bytes] [ulid: 16 bytes]
+//!
+//! The fixed-width 16-byte ULID suffix means there is no ambiguity in key
+//! boundaries even for variable-length types like strings.
+//!
+//! Type prefixes ensure cross-type sort order:
+//!   0x00 = Null
+//!   0x10 = Bool(false)
+//!   0x11 = Bool(true)
+//!   0x20 = Int  (i64 big-endian, XOR 0x8000_0000_0000_0000 for correct signed sort)
+//!   0x30 = Float (IEEE 754 bits, sign-magnitude encoded for sort correctness)
+//!   0x40 = Str  (raw UTF-8 bytes; ULID suffix provides unambiguous boundary)
+//!   0x50 = Bytes
+//!   0x60 = Array / Object (not indexable — skipped silently)
 
 use std::ops::Bound;
 
@@ -22,6 +22,9 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::document::Value;
+
+/// Inclusive/exclusive byte-range bounds for an index scan.
+pub type IndexBounds = Option<(Bound<Vec<u8>>, Bound<Vec<u8>>)>;
 
 // ---------------------------------------------------------------------------
 // Index key encoding
@@ -87,7 +90,7 @@ pub fn index_range_eq(value: &Value) -> Option<(Vec<u8>, Vec<u8>)> {
 pub fn index_range_cmp(
     lower: Option<(&Value, bool)>, // (value, inclusive)
     upper: Option<(&Value, bool)>,
-) -> Option<(Bound<Vec<u8>>, Bound<Vec<u8>>)> {
+) -> IndexBounds {
     let start = match lower {
         None => Bound::Unbounded,
         Some((v, inclusive)) => {

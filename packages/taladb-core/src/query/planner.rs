@@ -106,7 +106,7 @@ fn plan_inner(filter: &Filter, indexed_fields: &[&str], fts_fields: &[&str]) -> 
         Filter::In(field, values) if indexed_fields.contains(&field.as_str()) => {
             let ranges: Vec<(Vec<u8>, Vec<u8>)> = values
                 .iter()
-                .filter_map(|v| index_range_eq(v))
+                .filter_map(index_range_eq)
                 .collect();
             if !ranges.is_empty() {
                 return QueryPlan::IndexIn { field: field.clone(), ranges };

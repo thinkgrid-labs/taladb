@@ -1,31 +1,31 @@
-/// Sync adapter interface for TalaDB.
-///
-/// Defines the `SyncAdapter` trait and a built-in `LastWriteWins` (LWW)
-/// implementation. A sync adapter is responsible for:
-///
-/// 1. **Exporting** a changeset — the set of document mutations since a given
-///    logical clock / version vector.
-/// 2. **Importing** a remote changeset — merging foreign mutations into the
-///    local database according to a conflict resolution policy.
-///
-/// The adapter sits *above* the storage engine and works through the public
-/// `Collection` API, so it is storage-agnostic.
-///
-/// Changeset format
-/// ----------------
-/// A `Changeset` is a `Vec<Change>` where each `Change` records:
-/// - The collection name
-/// - The document ULID (ID)
-/// - The operation (Upsert / Delete)
-/// - A `u64` wall-clock timestamp (milliseconds since Unix epoch)
-/// - The full document body (for Upserts)
-///
-/// Last-Write-Wins conflict resolution
-/// ------------------------------------
-/// `LastWriteWins` merges by comparing `changed_at` timestamps. The change
-/// with the higher timestamp wins. Ties are broken by ULID lexicographic
-/// order (the higher ULID wins), ensuring a deterministic total order across
-/// any number of replicas without coordination.
+//! Sync adapter interface for TalaDB.
+//!
+//! Defines the `SyncAdapter` trait and a built-in `LastWriteWins` (LWW)
+//! implementation. A sync adapter is responsible for:
+//!
+//! 1. **Exporting** a changeset — the set of document mutations since a given
+//!    logical clock / version vector.
+//! 2. **Importing** a remote changeset — merging foreign mutations into the
+//!    local database according to a conflict resolution policy.
+//!
+//! The adapter sits *above* the storage engine and works through the public
+//! `Collection` API, so it is storage-agnostic.
+//!
+//! Changeset format
+//! ----------------
+//! A `Changeset` is a `Vec<Change>` where each `Change` records:
+//! - The collection name
+//! - The document ULID (ID)
+//! - The operation (Upsert / Delete)
+//! - A `u64` wall-clock timestamp (milliseconds since Unix epoch)
+//! - The full document body (for Upserts)
+//!
+//! Last-Write-Wins conflict resolution
+//! ------------------------------------
+//! `LastWriteWins` merges by comparing `changed_at` timestamps. The change
+//! with the higher timestamp wins. Ties are broken by ULID lexicographic
+//! order (the higher ULID wins), ensuring a deterministic total order across
+//! any number of replicas without coordination.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
