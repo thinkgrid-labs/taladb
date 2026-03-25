@@ -1,3 +1,8 @@
+---
+title: Features
+description: ULID document IDs, MongoDB-like queries, secondary B-tree indexes, ACID transactions, full-text search, live queries, AES-GCM-256 encryption, OPFS persistence, and more.
+---
+
 # Features
 
 ## Document model with ULID IDs

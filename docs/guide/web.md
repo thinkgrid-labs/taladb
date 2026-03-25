@@ -1,3 +1,8 @@
+---
+title: Web Guide — Browser / WASM
+description: Use TalaDB in the browser with WebAssembly and OPFS persistent storage via a SharedWorker. Works with Vite, Next.js, and any modern bundler.
+---
+
 # Web (Browser / WASM)
 
 TalaDB runs in the browser as a WebAssembly module compiled from the same Rust core used on every other platform. Persistent storage is provided by the [Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) (OPFS) via a SharedWorker.

@@ -1,3 +1,8 @@
+---
+title: Node.js Guide
+description: Use TalaDB in Node.js via a prebuilt napi-rs native module. Fast synchronous Rust engine with no subprocess — works in Express, Fastify, and CLI tools.
+---
+
 # Node.js
 
 TalaDB's Node.js integration uses a prebuilt native `.node` module produced by [napi-rs](https://napi.rs). The Rust engine runs natively — no WASM, no subprocess — so performance is identical to embedding the Rust library directly.

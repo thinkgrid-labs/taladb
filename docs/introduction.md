@@ -1,3 +1,8 @@
+---
+title: Introduction
+description: Learn what TalaDB is, how it works, and why it was built — a local-first document database powered by a Rust core that runs in the browser, Node.js, and React Native.
+---
+
 # Introduction
 
 ## What is TalaDB?

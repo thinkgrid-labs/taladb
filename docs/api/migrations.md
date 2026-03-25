@@ -1,3 +1,8 @@
+---
+title: Migrations
+description: Version-based schema migrations for TalaDB. Define an ordered array of up functions — TalaDB runs pending migrations atomically at database open time.
+---
+
 # Migrations
 
 Migrations let you evolve your database schema as your application changes. TalaDB applies pending migrations at open time, in version order, inside a single atomic transaction.
