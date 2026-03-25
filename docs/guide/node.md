@@ -13,7 +13,7 @@ TalaDB's Node.js integration uses a prebuilt native `.node` module produced by [
 Your Node.js process
         │  N-API (native ABI)
         ▼
-taladb-node (.node native module)
+@taladb/node (.node native module)
         │
         ▼
 taladb-core (Rust) + redb (file on disk)
@@ -33,13 +33,34 @@ Because the native module links directly into the Node.js process, reads and wri
 
 ## Installation
 
+### Option A — Unified API (recommended)
+
 ```bash
-npm install taladb taladb-node
-# or
-pnpm add taladb taladb-node
+pnpm add taladb @taladb/node
 ```
 
-The `taladb-node` package ships platform-specific prebuilt binaries. When you install the package, `@napi-rs/cli` selects the correct `.node` file for your platform.
+Use `openDB` from `taladb`. The API is async and identical to the browser version — code can be shared between Node.js and browser projects:
+
+```ts
+import { openDB } from 'taladb'
+const db = await openDB('./myapp.db')
+```
+
+### Option B — Standalone (Node.js only)
+
+```bash
+pnpm add @taladb/node
+```
+
+Import `TalaDBNode` directly for a synchronous API with one fewer dependency:
+
+```ts
+import { TalaDBNode } from '@taladb/node'
+const db = TalaDBNode.open('./myapp.db')
+const id = db.collection('users').insert({ name: 'Alice' })  // no await
+```
+
+The `@taladb/node` package ships platform-specific prebuilt binaries. `@napi-rs/cli` selects the correct `.node` file for your platform automatically.
 
 ## Opening a database
 
@@ -57,7 +78,7 @@ The database file is created if it does not exist. Parent directories must exist
 For testing or ephemeral use:
 
 ```ts
-import { TalaDBNode } from 'taladb-node'
+import { TalaDBNode } from '@taladb/node'
 
 const db = TalaDBNode.openInMemory()
 ```
@@ -123,10 +144,10 @@ const removed = await tasks.deleteMany({ done: true })
 
 ## Using the low-level native API directly
 
-If you need synchronous access or want to avoid the `taladb` wrapper, import `taladb-node` directly:
+If you need synchronous access or want to avoid the `taladb` wrapper, import `@taladb/node` directly:
 
 ```ts
-import { TalaDBNode } from 'taladb-node'
+import { TalaDBNode } from '@taladb/node'
 
 const db = TalaDBNode.open('./myapp.db')
 const col = db.collection('users')
@@ -226,7 +247,7 @@ Always close the database before the process exits to flush any pending writes a
 
 ```ts
 // vitest / jest
-import { TalaDBNode } from 'taladb-node'
+import { TalaDBNode } from '@taladb/node'
 
 beforeEach(() => {
   db = TalaDBNode.openInMemory()
@@ -241,7 +262,7 @@ Using an in-memory database in tests means no file system cleanup and no interfe
 
 ## CLI
 
-The `taladb-cli` binary is built alongside `taladb-node` and can inspect any redb database file produced by TalaDB:
+The `taladb-cli` binary is built alongside `@taladb/node` and can inspect any redb database file produced by TalaDB:
 
 ```bash
 cargo install --path packages/taladb-cli

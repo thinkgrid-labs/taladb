@@ -25,9 +25,9 @@ The same Rust core powers all three runtimes:
 
 | Runtime | Package | Mechanism |
 |---|---|---|
-| Browser | `taladb-wasm` | `wasm-bindgen` + OPFS via SharedWorker |
-| Node.js | `taladb-node` | `napi-rs` native module |
-| React Native | `taladb-react-native` | JSI HostObject (C FFI via `cbindgen`) |
+| Browser | `@taladb/web` | `wasm-bindgen` + OPFS via SharedWorker |
+| Node.js | `@taladb/node` | `napi-rs` native module |
+| React Native | `@taladb/react-native` | JSI HostObject (C FFI via `cbindgen`) |
 
 Application code uses the unified `taladb` package with a single TypeScript API on every platform.
 
@@ -81,17 +81,17 @@ cargo test --workspace
 pnpm --filter taladb test
 
 # Browser WASM tests (requires Chrome)
-wasm-pack test packages/taladb-wasm --headless --chrome
+wasm-pack test packages/@taladb/web --headless --chrome
 ```
 
 ### Building
 
 ```bash
 # Browser WASM
-pnpm --filter taladb-wasm build
+pnpm --filter @taladb/web build
 
 # Node.js native module
-pnpm --filter taladb-node build
+pnpm --filter @taladb/node build
 
 # TypeScript package
 pnpm --filter taladb build

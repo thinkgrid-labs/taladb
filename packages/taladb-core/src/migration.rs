@@ -43,7 +43,7 @@ pub fn run_migrations(
     }
 
     let rtxn = backend.begin_read()?;
-    let current_version = read_version(rtxn.as_ref())?;
+    let mut current_version = read_version(rtxn.as_ref())?;
     drop(rtxn);
 
     for migration in migrations {
@@ -61,6 +61,7 @@ pub fn run_migrations(
         (migration.up)(wtxn.as_mut())?;
         write_version(wtxn.as_mut(), migration.to_version)?;
         wtxn.commit()?;
+        current_version = migration.to_version;
     }
 
     Ok(())

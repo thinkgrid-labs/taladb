@@ -45,11 +45,46 @@ rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-and
 
 ## Installation
 
+There are two ways to install TalaDB in a React Native project depending on whether you share code with other platforms.
+
+### Option A — Shared codebase (RN + Web or RN + Node.js)
+
 ```bash
-npm install taladb taladb-react-native
-# or
-pnpm add taladb taladb-react-native
+pnpm add taladb @taladb/react-native
 ```
+
+Use `openDB` from `taladb`. The unified package detects React Native automatically and delegates to `@taladb/react-native` under the hood. All calls use a consistent async API — the same code compiles for browser and Node.js too:
+
+```ts
+import { openDB } from 'taladb'
+
+const db = await openDB('myapp.db')
+const users = db.collection('users')
+await users.insert({ name: 'Alice' })
+```
+
+### Option B — Standalone (React Native only) {#standalone-installation}
+
+```bash
+pnpm add @taladb/react-native
+```
+
+Import directly from `@taladb/react-native`. Because calls go through JSI, they are **synchronous** — no `await` required after `initialize`:
+
+```ts
+import { TalaDBModule, openDB } from '@taladb/react-native'
+
+// Call once at app startup
+await TalaDBModule.initialize('myapp.db')
+
+// After that — fully synchronous
+const db = openDB('myapp.db')
+const users = db.collection('users')
+const id    = users.insert({ name: 'Alice' })   // no await
+const found = users.find({ name: 'Alice' })     // no await
+```
+
+Use this option when you have no shared code requirements and want the simplest possible setup with one fewer dependency.
 
 ### iOS
 
@@ -57,7 +92,7 @@ pnpm add taladb taladb-react-native
 cd ios && pod install
 ```
 
-The pod install step picks up `taladb-react-native.podspec`, which includes the pre-compiled `libzerodb.a` universal static library and the C++ HostObject sources.
+The pod install step picks up `@taladb/react-native.podspec`, which includes the pre-compiled `libzerodb.a` universal static library and the C++ HostObject sources.
 
 ### Android
 
@@ -83,7 +118,7 @@ Call `TalaDBModule.initialize` as early as possible in your app's entry point �
 
 ```ts
 // App.tsx  (or index.js)
-import { TalaDBModule } from 'taladb-react-native'
+import { TalaDBModule } from '@taladb/react-native'
 
 await TalaDBModule.initialize('myapp.db')
 ```
@@ -113,7 +148,7 @@ The `taladb` package detects React Native by the presence of `globalThis.nativeC
 // App.tsx
 import React, { useEffect, useState } from 'react'
 import { View, Text, Button, FlatList } from 'react-native'
-import { TalaDBModule } from 'taladb-react-native'
+import { TalaDBModule } from '@taladb/react-native'
 import { openDB, type Collection } from 'taladb'
 
 interface Note {
@@ -208,7 +243,7 @@ streamUpdates()
 ### iOS
 
 ```bash
-cd packages/taladb-react-native/rust
+cd packages/@taladb/react-native/rust
 
 # Build for device and simulator
 cargo build --release --target aarch64-apple-ios
@@ -224,7 +259,7 @@ lipo -create \
 ### Android
 
 ```bash
-cd packages/taladb-react-native/rust
+cd packages/@taladb/react-native/rust
 
 cargo build --release --target aarch64-linux-android
 cargo build --release --target armv7-linux-androideabi

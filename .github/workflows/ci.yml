@@ -107,7 +107,7 @@ jobs:
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: taladb-wasm-pkg
+          name: taladb-web-pkg
           path: packages/taladb-wasm/pkg/
           retention-days: 7
 
@@ -129,6 +129,7 @@ jobs:
             artifact: taladb-node-macos
           - os: windows-latest
             artifact: taladb-node-windows
+
 
     steps:
       - uses: actions/checkout@v4

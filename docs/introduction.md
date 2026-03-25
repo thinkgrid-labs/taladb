@@ -15,9 +15,9 @@ The same Rust core powers every runtime:
 
 | Runtime | Package | Mechanism |
 |---|---|---|
-| Browser | `taladb-wasm` | `wasm-bindgen` + OPFS |
-| Node.js | `taladb-node` | `napi-rs` native module |
-| React Native | `taladb-react-native` | JSI HostObject (C FFI) |
+| Browser | `@taladb/web` | `wasm-bindgen` + OPFS |
+| Node.js | `@taladb/node` | `napi-rs` native module |
+| React Native | `@taladb/react-native` | JSI HostObject (C FFI) |
 
 All three surfaces expose a single unified TypeScript API from the `taladb` package, so application code never needs to branch on platform.
 
@@ -70,9 +70,9 @@ taladb/
 │   │           ├── planner.rs      # Index selection
 │   │           └── executor.rs     # Scan + post-filter
 │   │
-│   ├── taladb-wasm/                # Browser (wasm-bindgen + OPFS)
-│   ├── taladb-node/                # Node.js (napi-rs native module)
-│   ├── taladb-react-native/        # React Native (JSI HostObject + C FFI)
+│   ├── @taladb/web/                # Browser (wasm-bindgen + OPFS)
+│   ├── @taladb/node/                # Node.js (napi-rs native module)
+│   ├── @taladb/react-native/        # React Native (JSI HostObject + C FFI)
 │   └── taladb/                     # Unified TypeScript package
 │
 └── examples/
@@ -80,6 +80,43 @@ taladb/
     ├── expo-app/                   # Expo React Native demo
     └── node-script/                # Node.js script demo
 ```
+
+## Packages
+
+TalaDB is published as four focused npm packages:
+
+| Package | Purpose |
+|---------|---------|
+| `taladb` | Unified TypeScript API — auto-detects the platform and delegates to the right backend |
+| `@taladb/web` | Browser WASM + OPFS backend |
+| `@taladb/node` | Node.js napi-rs native module |
+| `@taladb/react-native` | React Native JSI TurboModule |
+
+### Which packages do I install?
+
+**Browser (Vite, Next.js, etc.)**
+```bash
+pnpm add taladb @taladb/web
+```
+
+**Node.js**
+```bash
+pnpm add taladb @taladb/node
+```
+
+**React Native — shared codebase with web or Node.js**
+```bash
+pnpm add taladb @taladb/react-native
+```
+Use `openDB` from `taladb` everywhere. It detects React Native automatically.
+
+**React Native — standalone app (RN only, no shared code)**
+```bash
+pnpm add @taladb/react-native
+```
+Import directly from `@taladb/react-native`. Calls are synchronous via JSI — no `await` needed. See the [React Native guide](/guide/react-native#standalone-installation) for details.
+
+The `taladb` package lists the platform packages as `optionalDependencies`, which means npm/pnpm won't fail the install if one isn't present — but it won't install them automatically either. You must add whichever platform package you need alongside `taladb`.
 
 ## Status
 

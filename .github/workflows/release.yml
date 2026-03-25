@@ -123,15 +123,15 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM
-        run: wasm-pack build packages/taladb-wasm --target web --out-dir pkg --release
+        run: wasm-pack build packages/taladb-web --target web --out-dir pkg --release
 
       - name: Archive WASM pkg
-        run: tar -czf taladb-wasm-${{ needs.preflight.outputs.version }}.tar.gz -C packages/taladb-wasm/pkg .
+        run: tar -czf taladb-web-${{ needs.preflight.outputs.version }}.tar.gz -C packages/taladb-web/pkg .
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-wasm
-          path: taladb-wasm-${{ needs.preflight.outputs.version }}.tar.gz
+          path: taladb-web-${{ needs.preflight.outputs.version }}.tar.gz
 
   # ---------------------------------------------------------------------------
   # Build Node.js native module (linux / macos / windows)
@@ -244,7 +244,7 @@ jobs:
             ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.zip
 
   # ---------------------------------------------------------------------------
-  # Publish npm packages (taladb + taladb-wasm)
+  # Publish npm packages (taladb + taladb-web)
   # ---------------------------------------------------------------------------
   publish-npm:
     name: Publish — npm
@@ -276,14 +276,14 @@ jobs:
 
       - name: Extract WASM pkg into package
         run: |
-          mkdir -p packages/taladb-wasm/pkg
-          tar -xzf /tmp/wasm-artifact/*.tar.gz -C packages/taladb-wasm/pkg
+          mkdir -p packages/taladb-web/pkg
+          tar -xzf /tmp/wasm-artifact/*.tar.gz -C packages/taladb-web/pkg
 
       - name: Build taladb TS package
         run: pnpm --filter taladb build
 
-      - name: Publish taladb-wasm
-        working-directory: packages/taladb-wasm/pkg
+      - name: Publish taladb-web
+        working-directory: packages/taladb-web/pkg
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
