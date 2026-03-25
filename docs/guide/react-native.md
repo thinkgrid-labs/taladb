@@ -1,3 +1,8 @@
+---
+title: React Native Guide
+description: Integrate TalaDB into React Native apps using a JSI HostObject and C FFI. Synchronous Rust engine with no bridge overhead on iOS and Android.
+---
+
 # React Native
 
 TalaDB integrates with React Native through a [JSI (JavaScript Interface)](https://reactnative.dev/docs/the-new-architecture/landing-page) HostObject. Unlike a bridge-based module, JSI allows synchronous, zero-serialisation calls from JavaScript directly into the Rust engine — no JSON serialisation on the hot path, no async roundtrip for reads.

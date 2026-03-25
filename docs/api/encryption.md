@@ -1,3 +1,8 @@
+---
+title: Encryption at Rest
+description: Transparent AES-GCM-256 encryption for TalaDB using EncryptedBackend. Keys derived via PBKDF2-HMAC-SHA256. Per-write nonces, GCM authentication tags.
+---
+
 # Encryption at Rest
 
 TalaDB supports transparent AES-GCM-256 encryption of all stored values through the `EncryptedBackend` wrapper in `taladb-core`. Encryption is opt-in and gated behind a Cargo feature flag so it adds zero code-size overhead when not used.

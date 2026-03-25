@@ -1,3 +1,8 @@
+---
+title: Live Queries
+description: Subscribe to a filtered collection view with WatchHandle. Receive fresh document snapshots after every write — no polling, coalesced events, React and React Native hooks included.
+---
+
 # Live Queries
 
 Live queries let you subscribe to a filtered view of a collection and receive a fresh snapshot of matching documents after every write — without polling.

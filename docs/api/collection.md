@@ -1,3 +1,8 @@
+---
+title: Collection API
+description: Full reference for TalaDB's Collection interface — insert, find, findOne, updateOne, updateMany, deleteOne, deleteMany, count, createIndex, dropIndex, and watch.
+---
+
 # Collection API
 
 A `Collection<T>` is returned by `db.collection<T>(name)`. All methods return Promises, even on Node.js where the underlying Rust calls are synchronous.

@@ -1,3 +1,8 @@
+---
+title: Core Concepts
+description: Documents, collections, filters, secondary indexes, transactions, migrations, live queries, and encryption — the building blocks of TalaDB explained.
+---
+
 # Core Concepts
 
 ## Documents

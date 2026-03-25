@@ -1,3 +1,8 @@
+---
+title: Updates
+description: TalaDB update operator reference — $set, $unset, $inc, $push, and $pull. Combine operators in a single call; all changes are applied atomically.
+---
+
 # Updates
 
 An update object describes how to mutate the fields of a matched document. TalaDB uses operator-based updates rather than full document replacement, so unmentioned fields are left untouched.

@@ -1,3 +1,8 @@
+---
+title: Filters
+description: TalaDB filter DSL reference — $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $exists, $and, $or, $not, and $contains for full-text search.
+---
+
 # Filters
 
 A filter is a plain JavaScript/TypeScript object that describes which documents to match. TalaDB evaluates filters against each document's fields.

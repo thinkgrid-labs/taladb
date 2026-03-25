@@ -1,17 +1,64 @@
-import { defineConfig } from 'vitepress'
+import { defineConfig, type HeadConfig } from 'vitepress'
+
+const title       = 'TalaDB'
+const description = 'Local-first document database built in Rust. MongoDB-like API for browser (WASM + OPFS), Node.js, and React Native — zero cloud, zero GC.'
+const siteUrl     = 'https://thinkgrid-labs.github.io/taladb'
+const ogImage     = `${siteUrl}/taladb-banner.svg`
 
 export default defineConfig({
-  title: 'TalaDB',
-  description: 'Local-first document database. Zero cloud. Zero GC. Zero compromise.',
+  title,
+  description,
   base: '/taladb/',
 
+  // Canonical URL injected into every page <head>
+  transformHead({ pageData }) {
+    const canonicalUrl = `${siteUrl}/${pageData.relativePath}`
+      .replace(/index\.md$/, '')
+      .replace(/\.md$/, '')
+
+    const tags: HeadConfig[] = [
+      ['link', { rel: 'canonical', href: canonicalUrl }],
+    ]
+
+    // Per-page Open Graph overrides
+    const pageTitle       = pageData.frontmatter.title
+      ? `${pageData.frontmatter.title} | ${title}`
+      : title
+    const pageDescription = pageData.frontmatter.description ?? description
+
+    tags.push(
+      ['meta', { property: 'og:type',        content: 'website' }],
+      ['meta', { property: 'og:url',         content: canonicalUrl }],
+      ['meta', { property: 'og:title',       content: pageTitle }],
+      ['meta', { property: 'og:description', content: pageDescription }],
+      ['meta', { property: 'og:image',       content: ogImage }],
+      ['meta', { property: 'og:site_name',   content: title }],
+
+      ['meta', { name: 'twitter:card',        content: 'summary_large_image' }],
+      ['meta', { name: 'twitter:title',       content: pageTitle }],
+      ['meta', { name: 'twitter:description', content: pageDescription }],
+      ['meta', { name: 'twitter:image',       content: ogImage }],
+    )
+
+    return tags
+  },
+
   head: [
-    ['link', { rel: 'icon', href: '/taladb/favicon.svg' }],
-    ['meta', { name: 'theme-color', content: '#f97316' }],
+    ['link', { rel: 'icon',             href: '/taladb/favicon.svg', type: 'image/svg+xml' }],
+    ['link', { rel: 'icon',             href: '/taladb/favicon.svg' }],
+    ['meta', { name: 'theme-color',     content: '#f97316' }],
+    ['meta', { name: 'author',          content: 'thinkgrid-labs' }],
+    ['meta', { name: 'keywords',        content: 'local-first database, rust database, wasm database, react native database, embedded database, nosql, offline-first, taladb' }],
+    // Prevent indexing until stable release — remove before 1.0
+    // ['meta', { name: 'robots', content: 'noindex' }],
   ],
 
+  sitemap: {
+    hostname: siteUrl,
+  },
+
   themeConfig: {
-    logo: '/logo.svg',
+    logo: { src: '/logo.svg', alt: 'TalaDB logo' },
     siteTitle: 'TalaDB',
 
     nav: [

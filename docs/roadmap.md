@@ -1,3 +1,8 @@
+---
+title: Roadmap
+description: Planned and in-progress features for TalaDB — query engine improvements, sync, developer tooling, and new platform targets.
+---
+
 # Roadmap
 
 This page tracks planned and in-progress work for TalaDB. Items are grouped by theme and ordered roughly by priority within each group. The list is updated as the project evolves.
