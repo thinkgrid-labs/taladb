@@ -1,54 +1,65 @@
-import { defineConfig, type HeadConfig } from 'vitepress'
+import { defineConfig, type HeadConfig } from "vitepress";
 
-const title       = 'TalaDB'
-const description = 'Local-first document database built in Rust. MongoDB-like API for browser (WASM + OPFS), Node.js, and React Native — zero cloud, zero GC.'
-const siteUrl     = 'https://thinkgrid-labs.github.io/taladb'
-const ogImage     = `${siteUrl}/taladb-banner.svg`
+const title = "TalaDB";
+const description =
+  "Local-first document database built in Rust. MongoDB-like API for browser (WASM + OPFS), Node.js, and React Native — zero cloud, zero GC.";
+const siteUrl = "https://thinkgrid-labs.github.io/taladb";
+const ogImage = `${siteUrl}/taladb-banner.svg`;
 
 export default defineConfig({
   title,
   description,
-  base: '/taladb/',
+  base: "/taladb/",
 
   // Canonical URL injected into every page <head>
   transformHead({ pageData }) {
     const canonicalUrl = `${siteUrl}/${pageData.relativePath}`
-      .replace(/index\.md$/, '')
-      .replace(/\.md$/, '')
+      .replace(/index\.md$/, "")
+      .replace(/\.md$/, "");
 
     const tags: HeadConfig[] = [
-      ['link', { rel: 'canonical', href: canonicalUrl }],
-    ]
+      ["link", { rel: "canonical", href: canonicalUrl }],
+    ];
 
     // Per-page Open Graph overrides
-    const pageTitle       = pageData.frontmatter.title
+    const pageTitle = pageData.frontmatter.title
       ? `${pageData.frontmatter.title} | ${title}`
-      : title
-    const pageDescription = pageData.frontmatter.description ?? description
+      : title;
+    const pageDescription = pageData.frontmatter.description ?? description;
 
     tags.push(
-      ['meta', { property: 'og:type',        content: 'website' }],
-      ['meta', { property: 'og:url',         content: canonicalUrl }],
-      ['meta', { property: 'og:title',       content: pageTitle }],
-      ['meta', { property: 'og:description', content: pageDescription }],
-      ['meta', { property: 'og:image',       content: ogImage }],
-      ['meta', { property: 'og:site_name',   content: title }],
+      ["meta", { property: "og:type", content: "website" }],
+      ["meta", { property: "og:url", content: canonicalUrl }],
+      ["meta", { property: "og:title", content: pageTitle }],
+      ["meta", { property: "og:description", content: pageDescription }],
+      ["meta", { property: "og:image", content: ogImage }],
+      ["meta", { property: "og:site_name", content: title }],
 
-      ['meta', { name: 'twitter:card',        content: 'summary_large_image' }],
-      ['meta', { name: 'twitter:title',       content: pageTitle }],
-      ['meta', { name: 'twitter:description', content: pageDescription }],
-      ['meta', { name: 'twitter:image',       content: ogImage }],
-    )
+      ["meta", { name: "twitter:card", content: "summary_large_image" }],
+      ["meta", { name: "twitter:title", content: pageTitle }],
+      ["meta", { name: "twitter:description", content: pageDescription }],
+      ["meta", { name: "twitter:image", content: ogImage }],
+    );
 
-    return tags
+    return tags;
   },
 
   head: [
-    ['link', { rel: 'icon',             href: '/taladb/favicon.svg', type: 'image/svg+xml' }],
-    ['link', { rel: 'icon',             href: '/taladb/favicon.svg' }],
-    ['meta', { name: 'theme-color',     content: '#f97316' }],
-    ['meta', { name: 'author',          content: 'thinkgrid-labs' }],
-    ['meta', { name: 'keywords',        content: 'local-first database, rust database, wasm database, react native database, embedded database, nosql, offline-first, taladb' }],
+    [
+      "link",
+      { rel: "icon", href: "/taladb/favicon.svg", type: "image/svg+xml" },
+    ],
+    ["link", { rel: "icon", href: "/taladb/favicon.svg" }],
+    ["meta", { name: "theme-color", content: "#f97316" }],
+    ["meta", { name: "author", content: "thinkgrid-labs" }],
+    [
+      "meta",
+      {
+        name: "keywords",
+        content:
+          "local-first database, rust database, wasm database, react native database, embedded database, nosql, offline-first, taladb",
+      },
+    ],
     // Prevent indexing until stable release — remove before 1.0
     // ['meta', { name: 'robots', content: 'noindex' }],
   ],
@@ -58,76 +69,82 @@ export default defineConfig({
   },
 
   themeConfig: {
-    logo: { src: '/logo.svg', alt: 'TalaDB logo' },
-    siteTitle: 'TalaDB',
+    logo: { src: "/logo.svg", alt: "TalaDB logo" },
+    siteTitle: "TalaDB",
 
     nav: [
-      { text: 'Introduction', link: '/introduction' },
-      { text: 'Guides', link: '/guide/web' },
-      { text: 'API Reference', link: '/api/collection' },
-      { text: 'Roadmap', link: '/roadmap' },
+      { text: "Introduction", link: "/introduction" },
+      { text: "Guides", link: "/guide/web" },
+      { text: "API Reference", link: "/api/collection" },
+      { text: "Roadmap", link: "/roadmap" },
       {
-        text: 'v0.1.0',
+        text: "v0.1.0",
         items: [
-          { text: 'Changelog', link: 'https://github.com/thinkgrid-labs/taladb/releases' },
-          { text: 'Contributing', link: 'https://github.com/thinkgrid-labs/taladb/blob/main/CONTRIBUTING.md' },
+          {
+            text: "Changelog",
+            link: "https://github.com/thinkgrid-labs/taladb/releases",
+          },
+          {
+            text: "Contributing",
+            link: "https://github.com/thinkgrid-labs/taladb/blob/main/CONTRIBUTING.md",
+          },
         ],
       },
     ],
 
     sidebar: [
       {
-        text: 'Getting Started',
+        text: "Getting Started",
         items: [
-          { text: 'Introduction', link: '/introduction' },
-          { text: 'Core Concepts', link: '/concepts' },
-          { text: 'Features', link: '/features' },
+          { text: "Introduction", link: "/introduction" },
+          { text: "Core Concepts", link: "/concepts" },
+          { text: "Features", link: "/features" },
         ],
       },
       {
-        text: 'Platform Guides',
+        text: "Platform Guides",
         items: [
-          { text: 'Web (Browser / WASM)', link: '/guide/web' },
-          { text: 'Node.js', link: '/guide/node' },
-          { text: 'React Native', link: '/guide/react-native' },
+          { text: "Web (Browser / WASM)", link: "/guide/web" },
+          { text: "Node.js", link: "/guide/node" },
+          { text: "React Native", link: "/guide/react-native" },
         ],
       },
       {
-        text: 'API Reference',
+        text: "API Reference",
         items: [
-          { text: 'Collection', link: '/api/collection' },
-          { text: 'Filters', link: '/api/filters' },
-          { text: 'Updates', link: '/api/updates' },
-          { text: 'Migrations', link: '/api/migrations' },
-          { text: 'Encryption', link: '/api/encryption' },
-          { text: 'Live Queries', link: '/api/live-queries' },
+          { text: "Collection", link: "/api/collection" },
+          { text: "Filters", link: "/api/filters" },
+          { text: "Updates", link: "/api/updates" },
+          { text: "Migrations", link: "/api/migrations" },
+          { text: "Encryption", link: "/api/encryption" },
+          { text: "Live Queries", link: "/api/live-queries" },
         ],
       },
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/thinkgrid-labs/taladb' },
+      { icon: "github", link: "https://github.com/thinkgrid-labs/taladb" },
     ],
 
     footer: {
-      message: 'Released under the MIT License.',
-      copyright: 'Copyright © 2025-present thinkgrid-labs',
+      message: "Released under the MIT License.",
+      copyright: "Copyright © 2026 ThinkGrid Labs",
     },
 
     editLink: {
-      pattern: 'https://github.com/thinkgrid-labs/taladb/edit/main/docs/:path',
-      text: 'Edit this page on GitHub',
+      pattern: "https://github.com/thinkgrid-labs/taladb/edit/main/docs/:path",
+      text: "Edit this page on GitHub",
     },
 
     search: {
-      provider: 'local',
+      provider: "local",
     },
   },
 
   markdown: {
     theme: {
-      light: 'github-light',
-      dark: 'github-dark',
+      light: "github-light",
+      dark: "github-dark",
     },
   },
-})
+});
