@@ -1,4 +1,7 @@
 mod storage;
+mod worker_db;
+
+pub use worker_db::WorkerDB;
 
 use std::sync::Arc;
 
@@ -6,7 +9,7 @@ use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
 use taladb_core::{Collection, Database, Filter, Update, Value};
 
-pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_flush_snapshot, opfs_load_snapshot};
+pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_load_snapshot};
 
 /// Initialize panic hook for better error messages in the browser console.
 #[wasm_bindgen(start)]
@@ -214,7 +217,7 @@ fn value_to_json(v: &Value) -> serde_json::Value {
     }
 }
 
-fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
+pub(crate) fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     map.insert("_id".into(), serde_json::Value::String(doc.id.to_string()));
     for (k, v) in &doc.fields {

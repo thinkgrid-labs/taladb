@@ -1,16 +1,16 @@
-/// Full-text search index for TalaDB.
-///
-/// Strategy: token-based inverted index stored in a redb table.
-///
-/// Table name:  `fts::<collection>::<field>`
-/// Key format:  `<token_bytes> ++ <ulid_bytes>` (16 B ULID suffix)
-/// Value:       empty (the key itself is the record)
-///
-/// On insert/update/delete, the set of tokens for the affected field is
-/// computed and the corresponding index entries are added or removed.
-///
-/// Query:  tokenize the search string, collect ULID sets per token, return
-///         the intersection (AND semantics, i.e. all tokens must appear).
+//! Full-text search index for TalaDB.
+//!
+//! Strategy: token-based inverted index stored in a redb table.
+//!
+//! Table name:  `fts::<collection>::<field>`
+//! Key format:  `<token_bytes> ++ <ulid_bytes>` (16 B ULID suffix)
+//! Value:       empty (the key itself is the record)
+//!
+//! On insert/update/delete, the set of tokens for the affected field is
+//! computed and the corresponding index entries are added or removed.
+//!
+//! Query:  tokenize the search string, collect ULID sets per token, return
+//!         the intersection (AND semantics, i.e. all tokens must appear).
 
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;

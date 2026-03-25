@@ -11,7 +11,7 @@ export type Value =
   | Value[]
   | { [key: string]: Value };
 
-export type Document = { _id?: string; [key: string]: Value };
+export type Document = { _id?: string; [key: string]: Value | undefined };
 
 // --------------- Filter DSL ---------------
 

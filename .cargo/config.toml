@@ -1,5 +1,8 @@
 [target.wasm32-unknown-unknown]
 runner = "wasm-bindgen-test-runner"
+# getrandom v0.3+ requires both the `wasm_js` feature AND this cfg flag
+# to select the JS backend on wasm32-unknown-unknown.
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 
 [alias]
 wasm = "build --target wasm32-unknown-unknown --profile release-wasm"

@@ -1,29 +1,29 @@
-/// Encryption at rest for TalaDB.
-///
-/// Provides an `EncryptedBackend` wrapper that implements `StorageBackend`
-/// and transparently encrypts/decrypts all stored values using AES-GCM-256.
-///
-/// Keys / Nonces
-/// -------------
-/// - Key   : 32 bytes (256-bit), provided by the caller.
-/// - Nonce : 12 bytes, randomly generated per write and prepended to the
-///           ciphertext. Total overhead per value: 12 bytes nonce + 16 bytes
-///           GCM tag = 28 bytes.
-///
-/// Thread safety
-/// -------------
-/// `EncryptedBackend` is `Send + Sync` as long as the inner backend is.
-///
-/// Crate features
-/// --------------
-/// Requires the `encryption` feature flag to pull in `aes-gcm` and `rand`.
-/// Without it, the module still compiles but `EncryptedBackend::new` is
-/// gated behind a compile error.
+//! Encryption at rest for TalaDB.
+//!
+//! Provides an `EncryptedBackend` wrapper that implements `StorageBackend`
+//! and transparently encrypts/decrypts all stored values using AES-GCM-256.
+//!
+//! Keys / Nonces
+//! -------------
+//! - Key   : 32 bytes (256-bit), provided by the caller.
+//! - Nonce : 12 bytes, randomly generated per write and prepended to the
+//!   ciphertext. Total overhead per value: 12 bytes nonce + 16 bytes
+//!   GCM tag = 28 bytes.
+//!
+//! Thread safety
+//! -------------
+//! `EncryptedBackend` is `Send + Sync` as long as the inner backend is.
+//!
+//! Crate features
+//! --------------
+//! Requires the `encryption` feature flag to pull in `aes-gcm` and `rand`.
+//! Without it, the module still compiles but `EncryptedBackend::new` is
+//! gated behind a compile error.
 
 use std::ops::Bound;
 use std::sync::Arc;
 
-use crate::engine::{ReadTxn, StorageBackend, WriteTxn};
+use crate::engine::{KvPairs, ReadTxn, StorageBackend, WriteTxn};
 use crate::error::ZeroDbError;
 
 // ---------------------------------------------------------------------------
@@ -66,10 +66,11 @@ pub fn encrypt(key: &EncryptionKey, plaintext: &[u8]) -> Result<Vec<u8>, ZeroDbE
     }
     #[cfg(not(feature = "encryption"))]
     {
-        // Stub: XOR with key for testing without the `encryption` feature.
-        // DO NOT use in production.
-        let _ = key;
-        Ok(plaintext.to_vec())
+        let _ = (key, plaintext);
+        panic!(
+            "TalaDB: encrypt() called but the `encryption` feature is not enabled. \
+             Enable it in Cargo.toml: taladb-core = {{ features = [\"encryption\"] }}"
+        );
     }
 }
 
@@ -97,8 +98,11 @@ pub fn decrypt(key: &EncryptionKey, data: &[u8]) -> Result<Vec<u8>, ZeroDbError>
     }
     #[cfg(not(feature = "encryption"))]
     {
-        let _ = key;
-        Ok(data.to_vec())
+        let _ = (key, data);
+        panic!(
+            "TalaDB: decrypt() called but the `encryption` feature is not enabled. \
+             Enable it in Cargo.toml: taladb-core = {{ features = [\"encryption\"] }}"
+        );
     }
 }
 
@@ -112,18 +116,23 @@ pub struct EncryptedBackend {
 }
 
 impl EncryptedBackend {
+    /// Create an encrypted backend.
+    ///
+    /// **Requires** the `encryption` feature flag. Without it this function
+    /// does not exist, making misconfiguration a compile-time error.
+    #[cfg(feature = "encryption")]
     pub fn new(inner: Arc<dyn StorageBackend>, key: EncryptionKey) -> Self {
         EncryptedBackend { inner, key }
     }
 }
 
 impl StorageBackend for EncryptedBackend {
-    fn begin_write(&self) -> Result<Box<dyn WriteTxn>, ZeroDbError> {
+    fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, ZeroDbError> {
         let inner_txn = self.inner.begin_write()?;
         Ok(Box::new(EncryptedWriteTxn { inner: inner_txn, key: self.key }))
     }
 
-    fn begin_read(&self) -> Result<Box<dyn ReadTxn>, ZeroDbError> {
+    fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, ZeroDbError> {
         let inner_txn = self.inner.begin_read()?;
         Ok(Box::new(EncryptedReadTxn { inner: inner_txn, key: self.key }))
     }
@@ -133,18 +142,18 @@ impl StorageBackend for EncryptedBackend {
 // EncryptedWriteTxn
 // ---------------------------------------------------------------------------
 
-struct EncryptedWriteTxn {
-    inner: Box<dyn WriteTxn>,
+struct EncryptedWriteTxn<'a> {
+    inner: Box<dyn WriteTxn + 'a>,
     key: EncryptionKey,
 }
 
-impl WriteTxn for EncryptedWriteTxn {
+impl<'a> WriteTxn for EncryptedWriteTxn<'a> {
     fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), ZeroDbError> {
         let encrypted = encrypt(&self.key, value)?;
         self.inner.put(table, key, &encrypted)
     }
 
-    fn delete(&mut self, table: &str, key: &[u8]) -> Result<(), ZeroDbError> {
+    fn delete(&mut self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError> {
         self.inner.delete(table, key)
     }
 
@@ -160,7 +169,7 @@ impl WriteTxn for EncryptedWriteTxn {
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError> {
+    ) -> Result<KvPairs, ZeroDbError> {
         let raw = self.inner.range(table, start, end)?;
         raw.into_iter()
             .map(|(k, v)| Ok((k, decrypt(&self.key, &v)?)))
@@ -176,12 +185,12 @@ impl WriteTxn for EncryptedWriteTxn {
 // EncryptedReadTxn
 // ---------------------------------------------------------------------------
 
-struct EncryptedReadTxn {
-    inner: Box<dyn ReadTxn>,
+struct EncryptedReadTxn<'a> {
+    inner: Box<dyn ReadTxn + 'a>,
     key: EncryptionKey,
 }
 
-impl ReadTxn for EncryptedReadTxn {
+impl<'a> ReadTxn for EncryptedReadTxn<'a> {
     fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError> {
         match self.inner.get(table, key)? {
             Some(data) => Ok(Some(decrypt(&self.key, &data)?)),
@@ -194,14 +203,14 @@ impl ReadTxn for EncryptedReadTxn {
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError> {
+    ) -> Result<KvPairs, ZeroDbError> {
         let raw = self.inner.range(table, start, end)?;
         raw.into_iter()
             .map(|(k, v)| Ok((k, decrypt(&self.key, &v)?)))
             .collect()
     }
 
-    fn scan_all(&self, table: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ZeroDbError> {
+    fn scan_all(&self, table: &str) -> Result<KvPairs, ZeroDbError> {
         let raw = self.inner.scan_all(table)?;
         raw.into_iter()
             .map(|(k, v)| Ok((k, decrypt(&self.key, &v)?)))
