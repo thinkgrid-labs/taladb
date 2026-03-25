@@ -102,7 +102,7 @@ describe('React Native adapter — missing JSI host object', () => {
       const native = (globalThis as Record<string, unknown>).__TalaDB__;
       if (!native) {
         throw new Error(
-          'taladb-react-native JSI HostObject not found. ' +
+          '@taladb/react-native JSI HostObject not found. ' +
             'Did you call TalaDBModule.initialize() in your app entry point?',
         );
       }

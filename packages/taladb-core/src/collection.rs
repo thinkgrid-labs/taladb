@@ -48,9 +48,9 @@ impl Collection {
         let meta_key = meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
-        // Check not already exists
+        // Idempotent: no-op if already exists
         if wtxn.get(META_INDEXES_TABLE, meta_key.as_bytes())?.is_some() {
-            return Err(ZeroDbError::IndexExists(meta_key));
+            return Ok(());
         }
 
         // Write index metadata

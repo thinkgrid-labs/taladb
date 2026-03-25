@@ -16,7 +16,7 @@ Your React app
 SharedWorker (taladb.worker.js)
      │  FileSystemSyncAccessHandle (OPFS)
      ▼
-taladb-wasm (Rust + redb, compiled to WASM)
+@taladb/web (Rust + redb, compiled to WASM)
 ```
 
 The SharedWorker owns the OPFS file handle and the WASM instance. All tabs in the same origin share the same worker, so there is always exactly one writer — no write conflicts between tabs.
@@ -31,13 +31,13 @@ On browsers without SharedWorker (primarily iOS Safari before 16.4) the library 
 ## Installation
 
 ```bash
-npm install taladb taladb-wasm
+npm install taladb @taladb/web
 # or
-pnpm add taladb taladb-wasm
+pnpm add taladb @taladb/web
 ```
 
 ::: warning Build step required
-`taladb-wasm` ships prebuilt WASM artifacts. Run `wasm-pack build` inside `packages/taladb-wasm` during your CI pipeline or before local development.
+`@taladb/web` ships prebuilt WASM artifacts. Run `wasm-pack build` inside `packages/@taladb/web` during your CI pipeline or before local development.
 :::
 
 ## Vite setup
@@ -55,7 +55,7 @@ export default defineConfig({
   plugins: [react()],
   // SharedWorker assets are automatically included when new URL() is used
   optimizeDeps: {
-    exclude: ['taladb-wasm'],
+    exclude: ['@taladb/web'],
   },
 })
 ```

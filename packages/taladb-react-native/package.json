@@ -1,5 +1,5 @@
 {
-  "name": "taladb-react-native",
+  "name": "@taladb/react-native",
   "version": "0.1.0",
   "description": "TalaDB React Native module — JSI HostObject for iOS and Android",
   "main": "src/index",

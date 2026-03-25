@@ -1,5 +1,5 @@
 {
-  "name": "taladb-wasm",
+  "name": "@taladb/web",
   "version": "0.1.0",
   "description": "TalaDB WASM bindings for browser (wasm-bindgen)",
   "main": "pkg/taladb_wasm.js",

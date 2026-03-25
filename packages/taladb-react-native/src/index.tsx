@@ -3,7 +3,7 @@
  *
  * Usage:
  * ```ts
- * import { TalaDBModule, openDB } from 'taladb-react-native';
+ * import { TalaDBModule, openDB } from '@taladb/react-native';
  *
  * // In App.tsx / index.js (once, at startup)
  * await TalaDBModule.initialize('myapp.db');

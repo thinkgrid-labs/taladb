@@ -96,7 +96,7 @@ taladb inspect myapp.db
 Or in code (advanced):
 
 ```ts
-import { TalaDBNode } from 'taladb-node'
+import { TalaDBNode } from '@taladb/node'
 
 const db = TalaDBNode.open('./myapp.db')
 // The version is stored in the 'meta::db_version' redb table
