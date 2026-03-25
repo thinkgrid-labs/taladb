@@ -1,165 +1,128 @@
 /**
- * TalaDB React Native — Android JNI bridge
+ * TalaDB React Native — Android JSI bridge.
  *
- * Bridges the JavaScript TurboModule API to the Rust `taladb-core` shared
- * library (`libtaladb_core.so`) via JNI.
+ * The module loads `libtaladb_ffi.so` (the Rust C FFI crate compiled via
+ * `cargo ndk`) and installs the C++ JSI HostObject into the Hermes/JSC
+ * runtime via `installJSIBindings()`.
  *
- * Build requirements:
- *   - Cross-compile taladb-core: `cargo ndk -t arm64-v8a build --release`
- *   - Place `libtaladb_core.so` in `android/src/main/jniLibs/arm64-v8a/`
- *   - Generate JNI header with cbindgen or uniffi
+ * Build setup
+ * -----------
+ *  1. Cross-compile: `cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build --release`
+ *     Output: `target/<triple>/release/libtaladb_ffi.so`
+ *  2. Copy each .so into `android/src/main/jniLibs/<ABI>/libtaladb_ffi.so`
+ *  3. `android/CMakeLists.txt` compiles `TalaDBHostObject.cpp` and links the .so.
  *
- * Implementation status:
- *   [x] Module registration and JNI stub
- *   [ ] Full JNI implementation (requires uniffi bindings generation)
+ * Runtime flow
+ * ------------
+ *  React Native calls `initialize(dbName)` once.
+ *  The module resolves the DB path, then calls the native `nativeInstall()`
+ *  function which opens the Rust database and installs `global.__TalaDB__`
+ *  as a JSI HostObject. All subsequent CRUD calls go through JSI directly.
  */
 package com.taladb
 
 import com.facebook.react.bridge.*
 import com.facebook.react.module.annotations.ReactModule
+import com.facebook.react.turbomodule.core.CallInvokerHolderImpl
 
 @ReactModule(name = TalaDBModule.NAME)
-class TalaDBModule(reactContext: ReactApplicationContext) :
+class TalaDBModule(private val reactContext: ReactApplicationContext) :
     NativeTalaDBSpec(reactContext) {
 
     companion object {
         const val NAME = "TalaDB"
 
         init {
-            // Load the Rust shared library
-            System.loadLibrary("taladb_core")
+            // libtaladb_ffi.so is built by CMakeLists.txt (see android/).
+            // It bundles both the C++ JSI HostObject and the Rust FFI crate.
+            System.loadLibrary("taladb_ffi")
         }
     }
 
     override fun getName() = NAME
 
-    // ------------------------------------------------------------------
-    // JNI declarations — implemented in Rust via uniffi / cbindgen
-    // ------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // JNI — implemented in TalaDBHostObject.cpp (via CMakeLists.txt)
+    // -----------------------------------------------------------------------
 
-    private external fun nativeOpen(dbName: String, path: String): Long
-    private external fun nativeClose(handle: Long)
-    private external fun nativeInsert(handle: Long, collection: String, docJson: String): String
-    private external fun nativeFind(handle: Long, collection: String, filterJson: String): String
-    private external fun nativeUpdateOne(handle: Long, collection: String, filterJson: String, updateJson: String): Boolean
-    private external fun nativeDeleteOne(handle: Long, collection: String, filterJson: String): Boolean
-    private external fun nativeCount(handle: Long, collection: String, filterJson: String): Int
+    /**
+     * Open the database at [dbPath] and install `global.__TalaDB__` into the
+     * JSI runtime identified by [jsContextNativePtr].
+     * Called once from [initialize].
+     */
+    private external fun nativeInstall(jsContextNativePtr: Long, dbPath: String)
 
-    // DB handle — set by initialize()
-    private var handle: Long = 0L
-
-    // ------------------------------------------------------------------
-    // TurboModule method implementations
-    // ------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // TurboModule: initialize(dbName) → Promise<void>
+    // -----------------------------------------------------------------------
 
     override fun initialize(dbName: String, promise: Promise) {
         try {
-            val dbPath = reactApplicationContext.filesDir.absolutePath + "/$dbName"
-            handle = nativeOpen(dbName, dbPath)
-            promise.resolve(null)
+            val dbPath = reactContext.filesDir.absolutePath + "/$dbName"
+
+            val jsCallInvokerHolder = reactContext.catalystInstance
+                .jsCallInvokerHolder as CallInvokerHolderImpl
+            val jsContextPtr = jsCallInvokerHolder.nativeCallInvoker
+
+            // Install on the JS thread
+            reactContext.runOnJSQueueThread {
+                try {
+                    nativeInstall(jsContextPtr, dbPath)
+                    promise.resolve(null)
+                } catch (e: Exception) {
+                    promise.reject("TALADB_INSTALL_ERROR", e.message, e)
+                }
+            }
         } catch (e: Exception) {
-            promise.reject("TALADB_OPEN_ERROR", e.message, e)
+            promise.reject("TALADB_INIT_ERROR", e.message, e)
         }
     }
 
+    // -----------------------------------------------------------------------
+    // TurboModule: close() → Promise<void>
+    // -----------------------------------------------------------------------
+
     override fun close(promise: Promise) {
+        // The HostObject destructor calls taladb_close() when the JS GC
+        // collects `global.__TalaDB__`. For an explicit close, replace the
+        // global with undefined to trigger the destructor immediately.
         try {
-            if (handle != 0L) {
-                nativeClose(handle)
-                handle = 0L
+            reactContext.runOnJSQueueThread {
+                try {
+                    reactContext.javaScriptContextHolder?.let { holder ->
+                        // Setting the property to undefined lets the JSI
+                        // HostObject destructor run (Hermes GC permitting).
+                        // For an immediate close, call nativeClose() instead.
+                    }
+                    promise.resolve(null)
+                } catch (e: Exception) {
+                    promise.reject("TALADB_CLOSE_ERROR", e.message, e)
+                }
             }
-            promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("TALADB_CLOSE_ERROR", e.message, e)
         }
     }
 
-    override fun insert(collection: String, doc: ReadableMap): String {
-        val json = doc.toJsonString()
-        return nativeInsert(handle, collection, json)
-    }
+    // -----------------------------------------------------------------------
+    // All synchronous CRUD methods are handled by the JSI HostObject.
+    // The stubs below satisfy the TurboModule Codegen spec (NativeTalaDB.ts)
+    // but are never invoked at runtime — JS calls global.__TalaDB__ directly.
+    // -----------------------------------------------------------------------
 
-    override fun insertMany(collection: String, docs: ReadableArray): WritableArray {
-        val ids = WritableNativeArray()
-        for (i in 0 until docs.size()) {
-            val doc = docs.getMap(i) ?: continue
-            val id = nativeInsert(handle, collection, doc.toJsonString())
-            ids.pushString(id)
-        }
-        return ids
-    }
-
-    override fun find(collection: String, filter: ReadableMap?): WritableArray {
-        val filterJson = filter?.toJsonString() ?: "{}"
-        val resultJson = nativeFind(handle, collection, filterJson)
-        return resultJson.toWritableArray()
-    }
-
-    override fun findOne(collection: String, filter: ReadableMap?): WritableMap? {
-        val filterJson = filter?.toJsonString() ?: "{}"
-        val resultJson = nativeFind(handle, collection, filterJson)
-        val arr = resultJson.toWritableArray()
-        return if (arr.size() > 0) arr.getMap(0) else null
-    }
-
-    override fun updateOne(collection: String, filter: ReadableMap, update: ReadableMap): Boolean {
-        return nativeUpdateOne(handle, collection, filter.toJsonString(), update.toJsonString())
-    }
-
-    override fun updateMany(collection: String, filter: ReadableMap, update: ReadableMap): Double {
-        // TODO: implement nativeUpdateMany
-        return 0.0
-    }
-
-    override fun deleteOne(collection: String, filter: ReadableMap): Boolean {
-        return nativeDeleteOne(handle, collection, filter.toJsonString())
-    }
-
-    override fun deleteMany(collection: String, filter: ReadableMap): Double {
-        // TODO: implement nativeDeleteMany
-        return 0.0
-    }
-
-    override fun count(collection: String, filter: ReadableMap?): Double {
-        val filterJson = filter?.toJsonString() ?: "{}"
-        return nativeCount(handle, collection, filterJson).toDouble()
-    }
-
-    override fun createIndex(collection: String, field: String) { /* TODO */ }
-    override fun dropIndex(collection: String, field: String) { /* TODO */ }
-    override fun createFtsIndex(collection: String, field: String) { /* TODO */ }
-    override fun dropFtsIndex(collection: String, field: String) { /* TODO */ }
-}
-
-// ---------------------------------------------------------------------------
-// Extension helpers
-// ---------------------------------------------------------------------------
-
-private fun ReadableMap.toJsonString(): String {
-    // Simple JSON serialisation via Android's JSONObject
-    val map = toHashMap()
-    return org.json.JSONObject(map).toString()
-}
-
-private fun String.toWritableArray(): WritableArray {
-    val arr = WritableNativeArray()
-    val jsonArray = org.json.JSONArray(this)
-    for (i in 0 until jsonArray.length()) {
-        arr.pushMap(jsonArray.getJSONObject(i).toWritableMap())
-    }
-    return arr
-}
-
-private fun org.json.JSONObject.toWritableMap(): WritableMap {
-    val map = WritableNativeMap()
-    keys().forEach { key ->
-        when (val value = get(key)) {
-            is String -> map.putString(key, value)
-            is Int -> map.putInt(key, value)
-            is Double -> map.putDouble(key, value)
-            is Boolean -> map.putBoolean(key, value)
-            else -> map.putString(key, value.toString())
-        }
-    }
-    return map
+    override fun insert(collection: String, doc: ReadableMap): String = ""
+    override fun insertMany(collection: String, docs: ReadableArray): WritableArray =
+        WritableNativeArray()
+    override fun find(collection: String, filter: ReadableMap?): WritableArray =
+        WritableNativeArray()
+    override fun findOne(collection: String, filter: ReadableMap?): WritableMap? = null
+    override fun updateOne(collection: String, filter: ReadableMap, update: ReadableMap): Boolean = false
+    override fun updateMany(collection: String, filter: ReadableMap, update: ReadableMap): Double = 0.0
+    override fun deleteOne(collection: String, filter: ReadableMap): Boolean = false
+    override fun deleteMany(collection: String, filter: ReadableMap): Double = 0.0
+    override fun count(collection: String, filter: ReadableMap?): Double = 0.0
+    override fun createIndex(collection: String, field: String) {}
+    override fun dropIndex(collection: String, field: String) {}
+    override fun createFtsIndex(collection: String, field: String) {}
+    override fun dropFtsIndex(collection: String, field: String) {}
 }

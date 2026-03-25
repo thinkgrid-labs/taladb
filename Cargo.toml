@@ -5,6 +5,7 @@ members = [
     "packages/taladb-wasm",
     "packages/taladb-node",
     "packages/taladb-cli",
+    "packages/taladb-react-native/rust",
 ]
 
 [workspace.package]

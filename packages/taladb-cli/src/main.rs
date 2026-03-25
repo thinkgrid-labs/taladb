@@ -117,28 +117,36 @@ fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_inspect(file: &PathBuf) -> Result<()> {
-    let _db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
 
     println!("TalaDB Inspector");
     println!("────────────────");
     println!("File: {}", file.display());
 
-    // Collect known collections by scanning doc tables
-    // (In a future version, a collection registry table will make this trivial)
-    println!("\nNo collection registry yet — use `taladb collections` to list.");
-    println!("Use `taladb count <file> <collection>` to count documents.");
+    let collections = db.list_collection_names()?;
+    if collections.is_empty() {
+        println!("\nNo collections found.");
+    } else {
+        println!("\nCollections ({}):", collections.len());
+        for name in &collections {
+            let n = db.collection(name).count(Filter::All)?;
+            println!("  {name}  ({n} documents)");
+        }
+    }
 
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// collections (placeholder — needs collection registry in core)
+// collections
 // ---------------------------------------------------------------------------
 
 fn cmd_collections(file: &PathBuf) -> Result<()> {
-    let _db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
-    println!("Collection registry is planned for a future release.");
-    println!("Known collections must be specified explicitly on the command line.");
+    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    let collections = db.list_collection_names()?;
+    for name in &collections {
+        println!("{name}");
+    }
     Ok(())
 }
 

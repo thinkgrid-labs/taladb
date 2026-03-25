@@ -250,7 +250,8 @@ jobs:
     name: Publish — npm
     runs-on: ubuntu-latest
     needs: [build-wasm, build-node, build-cli]
-    environment: npm-publish       # optional: add a GitHub environment for approval
+    # To require manual approval before publishing, create an environment named
+    # "npm-publish" in Settings → Environments and add: environment: npm-publish
 
     steps:
       - uses: actions/checkout@v4
@@ -300,7 +301,8 @@ jobs:
     name: Publish — crates.io
     runs-on: ubuntu-latest
     needs: [build-wasm, build-node, build-cli]
-    environment: crates-publish    # optional: add a GitHub environment for approval
+    # To require manual approval before publishing, create an environment named
+    # "crates-publish" in Settings → Environments and add: environment: crates-publish
 
     steps:
       - uses: actions/checkout@v4

@@ -9,10 +9,14 @@
     "test": "cargo test --workspace && pnpm run -r test",
     "test:rust": "cargo test --workspace",
     "test:wasm": "wasm-pack test packages/taladb-wasm --headless --chrome",
-    "clean": "rimraf packages/*/pkg packages/*/dist packages/taladb-node/*.node target"
+    "clean": "rimraf packages/*/pkg packages/*/dist packages/taladb-node/*.node target",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "devDependencies": {
     "rimraf": "^5.0.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitepress": "^1.5.0"
   }
 }

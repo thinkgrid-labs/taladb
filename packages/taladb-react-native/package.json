@@ -5,7 +5,10 @@
   "main": "src/index",
   "types": "src/index.d.ts",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:ios": "sh scripts/build-ios.sh",
+    "build:android": "sh scripts/build-android.sh",
+    "build:cbindgen": "cbindgen --config rust/cbindgen.toml --crate taladb-ffi --output cpp/taladb.h"
   },
   "peerDependencies": {
     "react-native": ">=0.73.0"

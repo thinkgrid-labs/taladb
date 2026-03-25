@@ -1,0 +1,214 @@
+# Core Concepts
+
+## Documents
+
+A **document** is the basic unit of data in TalaDB. It is a flat or nested set of key-value pairs stored as a single record in a collection.
+
+```ts
+interface User {
+  _id?: string   // automatically assigned — a ULID string
+  name: string
+  email: string
+  age: number
+  tags?: string[]
+}
+```
+
+Every document receives a unique `_id` generated as a [ULID](https://github.com/ulid/spec) (Universally Unique Lexicographically Sortable Identifier). ULIDs are time-sortable, URL-safe, and 26 characters long — a strict improvement over UUID v4 for embedded databases because they sort in insertion order by default.
+
+### Supported value types
+
+| TypeScript | Rust (`Value`) | Notes |
+|---|---|---|
+| `null` | `Value::Null` | |
+| `boolean` | `Value::Bool` | |
+| `number` | `Value::Int(i64)` or `Value::Float(f64)` | Integers and floats are distinct |
+| `string` | `Value::Str` | UTF-8 |
+| `Uint8Array` | `Value::Bytes` | Raw binary |
+| `Array` | `Value::Array` | Nested arrays |
+| `Object` | `Value::Object` | Nested documents |
+
+Documents are serialised internally using [postcard](https://github.com/jamesmunns/postcard), a compact binary format with no runtime allocations, which keeps WASM bundle size small.
+
+## Collections
+
+A **collection** is a named group of documents, analogous to a table in a relational database or a collection in MongoDB. Collections do not enforce a schema — any document can be inserted into any collection.
+
+```ts
+const db = await openDB('myapp.db')
+
+const users = db.collection<User>('users')   // typed
+const logs  = db.collection('logs')           // untyped (Document)
+```
+
+Collections are created implicitly on first use. The name must be a non-empty string and may contain letters, digits, hyphens, and underscores.
+
+Internally, each collection maps to two redb tables:
+
+- `docs::{name}` — primary document store; key = 16-byte ULID, value = postcard bytes
+- `idx::{name}::{field}` — secondary index per indexed field (created explicitly)
+
+## Filters
+
+A **filter** describes the documents you want to match. TalaDB uses a MongoDB-inspired filter DSL expressed as a plain JavaScript/TypeScript object.
+
+### Field equality (shorthand)
+
+```ts
+// Match documents where name === 'Alice'
+await users.find({ name: 'Alice' })
+```
+
+### Comparison operators
+
+```ts
+await users.find({ age: { $gte: 18, $lte: 65 } })
+await users.find({ score: { $gt: 90 } })
+await users.find({ status: { $ne: 'deleted' } })
+```
+
+### Membership operators
+
+```ts
+await users.find({ role: { $in: ['admin', 'editor'] } })
+await users.find({ tag:  { $nin: ['spam', 'archived'] } })
+```
+
+### Logical operators
+
+```ts
+// AND — all conditions must match
+await users.find({ $and: [{ age: { $gte: 25 } }, { age: { $lte: 40 } }] })
+
+// OR — at least one condition must match
+await users.find({ $or: [{ role: 'admin' }, { role: 'superuser' }] })
+
+// NOT
+await users.find({ $not: { active: false } })
+```
+
+### Existence check
+
+```ts
+// Documents that have an `avatar` field (regardless of value)
+await users.find({ avatar: { $exists: true } })
+
+// Documents without a `deletedAt` field
+await users.find({ deletedAt: { $exists: false } })
+```
+
+See [Filters API reference](/api/filters) for the complete operator list.
+
+## Secondary Indexes
+
+A **secondary index** lets the query engine find documents by a non-`_id` field in O(log n) time instead of scanning the entire collection.
+
+```ts
+await users.createIndex('email')    // create at startup
+await users.createIndex('age')
+```
+
+Index entries are stored in the redb B-tree with type-prefixed, lexicographically-correct keys:
+
+```
+[type_prefix: 1 byte][encoded_value: N bytes][ulid: 16 bytes]
+```
+
+The fixed-width ULID suffix allows the engine to do single-range scans without needing a delimiter. Type prefixes ensure that values of different types sort consistently — integers never collide with strings in the index.
+
+The **query planner** automatically selects an index when the filter contains `$eq`, `$gt`, `$gte`, `$lt`, `$lte`, or `$in` on an indexed field inside an `$and` expression. All other cases fall back to a full collection scan followed by in-memory post-filtering.
+
+```ts
+// Uses the age index — O(log n) range scan
+await users.find({ age: { $gte: 18 } })
+
+// No index on `bio` — full scan
+await users.find({ bio: { $exists: true } })
+```
+
+## Updates
+
+An **update** describes how to mutate one or more documents. TalaDB uses update operators rather than full document replacement to avoid accidental data loss.
+
+```ts
+await users.updateOne(
+  { email: 'alice@example.com' },   // filter — which document
+  {
+    $set:   { age: 31 },            // set fields
+    $inc:   { loginCount: 1 },      // increment
+    $unset: { tempToken: true },    // remove field
+    $push:  { tags: 'verified' },   // append to array
+  }
+)
+```
+
+See [Updates API reference](/api/updates) for all operators.
+
+## Transactions
+
+Every read and write in TalaDB is wrapped in an ACID transaction at the storage layer. The `insert`, `update`, and `delete` collection methods each open a write transaction, perform their work, and commit atomically. If any step fails the transaction is rolled back automatically and an error is returned.
+
+Because redb uses exclusive write locks, only one write transaction can be open at a time per database instance. Reads are non-blocking and can run concurrently with each other (but not with an open write).
+
+In the browser, all writes go through the SharedWorker, which serialises them naturally — the tab that owns the OPFS handle is the single writer.
+
+## Migrations
+
+A **migration** is a versioned function that transforms the database schema or data as your application evolves.
+
+```ts
+const db = await openDB('myapp.db', {
+  migrations: [
+    {
+      version: 1,
+      description: 'Create email index',
+      up: async (db) => {
+        await db.collection('users').createIndex('email')
+      },
+    },
+    {
+      version: 2,
+      description: 'Backfill createdAt',
+      up: async (db) => {
+        const users = db.collection('users')
+        for (const user of await users.find({})) {
+          if (!user.createdAt) {
+            await users.updateOne({ _id: user._id }, { $set: { createdAt: Date.now() } })
+          }
+        }
+      },
+    },
+  ],
+})
+```
+
+TalaDB stores the current schema version in a `meta::db_version` table. On open, pending migrations run sequentially inside a single write transaction. If a migration throws, the transaction rolls back and the database is left at its previous version.
+
+## Live Queries
+
+A **live query** (watch) lets you subscribe to a filtered view of a collection. Instead of polling, you call `next()` and it blocks until the next write to that collection, then returns a fresh result set.
+
+```ts
+const handle = users.watch({ role: 'admin' })
+
+// Blocking — waits for next write, then returns all matching admins
+const admins = await handle.next()
+
+// Non-blocking — returns null if nothing has changed
+const snapshot = await handle.tryNext()
+
+// Iterate indefinitely
+for await (const snapshot of handle) {
+  console.log('Admins updated:', snapshot)
+}
+```
+
+Internally, each `WatchHandle` holds an MPSC channel receiver. On every write, the collection broadcasts a lightweight `WriteEvent` to all registered handles. The handle re-runs the query against the current database state and returns the result.
+
+## Encryption at Rest
+
+When the `encryption` feature is enabled, you can wrap any storage backend with `EncryptedBackend` for transparent AES-GCM-256 encryption. Each value is encrypted with a fresh random 12-byte nonce; the nonce is prepended to the ciphertext. Authentication tags catch any tampering or corruption.
+
+Keys can be derived from a passphrase using `derive_key`, which runs PBKDF2-HMAC-SHA256 with a user-supplied salt and iteration count.
+
+See [Encryption](/api/encryption) for setup instructions.

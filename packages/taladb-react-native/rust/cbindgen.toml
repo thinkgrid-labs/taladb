@@ -1,0 +1,20 @@
+# cbindgen configuration for taladb-ffi.
+# Run: cbindgen --config cbindgen.toml --crate taladb-ffi --output ../cpp/taladb.h
+
+language = "C"
+include_guard = "TALADB_FFI_H"
+pragma_once = true
+
+# Prepend fixed includes so the header is self-contained.
+after_includes = """
+#include <stdint.h>
+#include <stdlib.h>
+"""
+
+# Suppress C++ name-mangling — the header is included from C++ but the symbols
+# are plain C.
+[export]
+prefix = "taladb"
+
+[parse]
+parse_deps = false

@@ -30,8 +30,8 @@ use crate::error::ZeroDbError;
 // AES-GCM-256 primitives
 // ---------------------------------------------------------------------------
 
-// NOTE: In production add `aes-gcm = "0.10"` and `rand = "0.8"` to Cargo.toml.
-// The code below is structured so that adding the real crate is a 1-line swap.
+// Encryption primitives require `features = ["encryption"]` in Cargo.toml.
+// When enabled, Cargo pulls in: aes-gcm 0.10, rand 0.8, pbkdf2 0.12, hmac 0.12, sha2 0.10.
 
 /// A 256-bit encryption key.
 pub type EncryptionKey = [u8; 32];
@@ -216,6 +216,10 @@ impl<'a> ReadTxn for EncryptedReadTxn<'a> {
             .map(|(k, v)| Ok((k, decrypt(&self.key, &v)?)))
             .collect()
     }
+
+    fn list_tables(&self) -> Result<Vec<String>, ZeroDbError> {
+        self.inner.list_tables()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,18 +231,25 @@ impl<'a> ReadTxn for EncryptedReadTxn<'a> {
 /// `iterations` recommended minimum: 100_000.
 ///
 /// Returns a 32-byte key suitable for `EncryptedBackend::new`.
+///
+/// **Requires** the `encryption` feature flag.
 pub fn derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> EncryptionKey {
-    let mut key = [0u8; 32];
-    // Simple PBKDF2 via manual HMAC-SHA256 rounds.
-    // In production, use the `pbkdf2` crate with `feature = "encryption"`.
-    // This stub produces a deterministic key for testing only.
-    let mut state = [0u8; 32];
-    state[..passphrase.len().min(32)].copy_from_slice(&passphrase.as_bytes()[..passphrase.len().min(32)]);
-    for i in 0..iterations.min(1) as usize {
-        for (j, b) in salt.iter().enumerate() {
-            state[j % 32] ^= b.wrapping_add(i as u8);
-        }
+    #[cfg(feature = "encryption")]
+    {
+        use hmac::Hmac;
+        use pbkdf2::pbkdf2_hmac;
+        use sha2::Sha256;
+
+        let mut key = [0u8; 32];
+        pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, iterations, &mut key);
+        key
     }
-    key.copy_from_slice(&state);
-    key
+    #[cfg(not(feature = "encryption"))]
+    {
+        let _ = (passphrase, salt, iterations);
+        panic!(
+            "TalaDB: derive_key() called but the `encryption` feature is not enabled. \
+             Enable it in Cargo.toml: taladb-core = {{ features = [\"encryption\"] }}"
+        );
+    }
 }

@@ -1,0 +1,83 @@
+# Introduction
+
+## What is TalaDB?
+
+TalaDB is an open-source, **local-first document database** built in Rust and designed for the modern JavaScript ecosystem. It lets React and React Native developers store and query structured data directly on the user's device — with no server, no network dependency, and no cloud subscription.
+
+Data is stored as schemaless JSON-like documents, organised into named **collections**. Queries use a MongoDB-inspired filter DSL so the API feels familiar without requiring a separate query language.
+
+The same Rust core powers every runtime:
+
+| Runtime | Package | Mechanism |
+|---|---|---|
+| Browser | `taladb-wasm` | `wasm-bindgen` + OPFS |
+| Node.js | `taladb-node` | `napi-rs` native module |
+| React Native | `taladb-react-native` | JSI HostObject (C FFI) |
+
+All three surfaces expose a single unified TypeScript API from the `taladb` package, so application code never needs to branch on platform.
+
+## Architecture overview
+
+TalaDB is built in three layers:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Layer 3 — TypeScript / JavaScript API                        │
+│  wasm-bindgen (browser) · napi-rs (Node.js) · JSI (RN)       │
+└──────────────────────────────┬───────────────────────────────┘
+                               │  postcard bytes
+┌──────────────────────────────▼───────────────────────────────┐
+│  Layer 2 — Document Engine  (taladb-core)                     │
+│  Document model · Secondary indexes · Query planner/executor  │
+└──────────────────────────────┬───────────────────────────────┘
+                               │  raw key/value bytes
+┌──────────────────────────────▼───────────────────────────────┐
+│  Layer 1 — KV Storage Engine                                  │
+│  redb (native / Node.js) · OPFS backend (browser)            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Layer 1 — Storage.** [redb](https://github.com/cberner/redb) is a pure-Rust, B-tree embedded key-value store. In the browser, TalaDB replaces it with a custom OPFS backend that uses `FileSystemSyncAccessHandle` inside a SharedWorker, giving durable on-device persistence without IndexedDB's overhead.
+
+**Layer 2 — Document engine.** `taladb-core` sits above the storage layer and knows nothing about JavaScript bindings. It provides the document model, secondary index key encoding, the filter/update AST, the query planner, and schema migrations.
+
+**Layer 3 — Bindings.** Thin platform-specific wrappers translate JavaScript values into the Rust types that `taladb-core` expects and route them through the storage layer.
+
+## Repository structure
+
+```
+taladb/
+├── Cargo.toml                      # Rust workspace
+├── pnpm-workspace.yaml
+│
+├── packages/
+│   ├── taladb-core/                # Pure Rust core — no JS bindings
+│   │   └── src/
+│   │       ├── document.rs         # Value enum, Document struct (ULID IDs)
+│   │       ├── engine.rs           # StorageBackend trait + redb implementation
+│   │       ├── index.rs            # Secondary index key encoding
+│   │       ├── collection.rs       # CRUD operations
+│   │       ├── migration.rs        # Schema versioning
+│   │       ├── crypto.rs           # AES-GCM-256 encryption wrapper
+│   │       ├── watch.rs            # Live query subscriptions
+│   │       └── query/
+│   │           ├── filter.rs       # Filter AST
+│   │           ├── planner.rs      # Index selection
+│   │           └── executor.rs     # Scan + post-filter
+│   │
+│   ├── taladb-wasm/                # Browser (wasm-bindgen + OPFS)
+│   ├── taladb-node/                # Node.js (napi-rs native module)
+│   ├── taladb-react-native/        # React Native (JSI HostObject + C FFI)
+│   └── taladb/                     # Unified TypeScript package
+│
+└── examples/
+    ├── web-vite/                   # React + Vite demo
+    ├── expo-app/                   # Expo React Native demo
+    └── node-script/                # Node.js script demo
+```
+
+## Status
+
+TalaDB is under **active development**. The Rust core, browser WASM, and Node.js bindings are functional and tested. The React Native JSI layer has a complete scaffold but full iOS / Android integration requires platform-specific build tooling. APIs may change before a stable 1.0 release.
+
+Follow the [GitHub repository](https://github.com/thinkgrid-labs/taladb) for progress updates.
