@@ -4,6 +4,18 @@
   "description": "TalaDB WASM bindings for browser (wasm-bindgen)",
   "main": "pkg/taladb_wasm.js",
   "types": "pkg/taladb_wasm.d.ts",
+  "exports": {
+    ".": {
+      "import": "./pkg/taladb_wasm.js",
+      "types": "./pkg/taladb_wasm.d.ts"
+    },
+    "./pkg/*": "./pkg/*",
+    "./worker/*": "./worker/*"
+  },
+  "files": [
+    "pkg/",
+    "worker/"
+  ],
   "scripts": {
     "build": "wasm-pack build --target web --out-dir pkg --release",
     "build:dev": "wasm-pack build --target web --out-dir pkg --dev",

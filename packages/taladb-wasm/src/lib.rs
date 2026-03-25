@@ -35,22 +35,41 @@ impl TalaDBWasm {
         Ok(TalaDBWasm { inner: Arc::new(db) })
     }
 
-    /// Open a database and restore its state from an OPFS snapshot (if one exists).
+    /// Open a database, restoring from a previously exported snapshot if provided.
     ///
-    /// This is an async factory. In JavaScript:
+    /// Pass the bytes returned by `opfs_load_snapshot` (or `null`/`undefined` for
+    /// a fresh empty database).  After each write, call `exportSnapshot()` and
+    /// pass the bytes to `opfs_flush_snapshot` to persist across page reloads.
+    ///
     /// ```js
-    /// const db = await TalaDBWasm.openWithOpfs('myapp.db');
+    /// const bytes = await opfs_load_snapshot('myapp.db');   // null on first open
+    /// const db = TalaDBWasm.openWithSnapshot(bytes);
+    /// // … mutations …
+    /// await opfs_flush_snapshot('myapp.db', db.exportSnapshot());
     /// ```
-    ///
-    /// After each write you should call `db.flushToOpfs('myapp.db')` to persist.
     #[wasm_bindgen(js_name = openWithSnapshot)]
     pub fn open_with_snapshot(snapshot: Option<Vec<u8>>) -> Result<TalaDBWasm, JsValue> {
-        // In v1 we always start from an in-memory DB and optionally replay
-        // the serialized snapshot. True OPFS-backed redb requires a SharedWorker
-        // with FileSystemSyncAccessHandle (see opfs.rs docs).
-        let _ = snapshot; // Snapshot replay is pending redb InMemoryBackend export API
-        let db = Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let db = match snapshot {
+            Some(ref data) if !data.is_empty() => {
+                Database::restore_from_snapshot(data)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?
+            }
+            _ => Database::open_in_memory()
+                .map_err(|e| JsValue::from_str(&e.to_string()))?,
+        };
         Ok(TalaDBWasm { inner: Arc::new(db) })
+    }
+
+    /// Serialize the entire in-memory database to bytes.
+    ///
+    /// Pass the returned `Uint8Array` to `opfs_flush_snapshot` to persist, or
+    /// store it yourself.  On the next page load, pass the same bytes to
+    /// `openWithSnapshot` to restore all data.
+    #[wasm_bindgen(js_name = exportSnapshot)]
+    pub fn export_snapshot(&self) -> Result<Vec<u8>, JsValue> {
+        self.inner
+            .export_snapshot()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Get a collection handle by name.

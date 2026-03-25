@@ -2,7 +2,7 @@ use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableTable, TableDefinition, TableHandle};
 
 use crate::error::ZeroDbError;
 
@@ -40,6 +40,8 @@ pub trait ReadTxn {
         end: Bound<&[u8]>,
     ) -> Result<KvPairs, ZeroDbError>;
     fn scan_all(&self, table: &str) -> Result<KvPairs, ZeroDbError>;
+    /// Return the names of every table in the database.
+    fn list_tables(&self) -> Result<Vec<String>, ZeroDbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +103,9 @@ fn intern_name(name: &str) -> &'static str {
 
     static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
     let set = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut guard = set.lock().unwrap();
+    // Recover from a poisoned mutex: the only content is interned strings
+    // (immutable &'static str), so the state is always valid even after panic.
+    let mut guard = set.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(&existing) = guard.get(name) {
         return existing;
     }
@@ -169,6 +173,15 @@ struct RedbReadTxn {
 }
 
 impl ReadTxn for RedbReadTxn {
+    fn list_tables(&self) -> Result<Vec<String>, ZeroDbError> {
+        let names = self
+            .txn
+            .list_tables()?
+            .map(|t| t.name().to_string())
+            .collect();
+        Ok(names)
+    }
+
     fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => Ok(tbl.get(key)?.map(|v| v.value().to_vec())),

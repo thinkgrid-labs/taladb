@@ -10,7 +10,7 @@ type Platform = 'browser' | 'react-native' | 'node';
 
 function detectPlatform(): Platform {
   // React Native exposes nativeCallSyncHook on the global object
-  if ((globalThis as any).nativeCallSyncHook !== undefined) {
+  if ((globalThis as Record<string, unknown>).nativeCallSyncHook !== undefined) {
     return 'react-native';
   }
   // Browser: window + navigator exist
@@ -184,8 +184,8 @@ async function createNodeDB(dbName: string): Promise<ZeroDB> {
   function wrapCollection<T extends Document>(name: string): Collection<T> {
     const col = db.collection(name);
     return {
-      insert: async (doc) => col.insert(doc as any),
-      insertMany: async (docs) => col.insertMany(docs as any),
+      insert: async (doc) => col.insert(doc as Record<string, unknown>),
+      insertMany: async (docs) => col.insertMany(docs as Record<string, unknown>[]),
       find: async (filter?) => col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
       updateOne: async (filter, update) => col.updateOne(filter, update),
@@ -208,25 +208,46 @@ async function createNodeDB(dbName: string): Promise<ZeroDB> {
 // React Native adapter (wraps JSI HostObject installed by taladb-react-native)
 // ============================================================
 
+/** Shape of the JSI HostObject installed by taladb-react-native. */
+interface NativeCollection {
+  insert(doc: Record<string, unknown>): string;
+  insertMany(docs: Record<string, unknown>[]): string[];
+  find(filter: Record<string, unknown>): Record<string, unknown>[];
+  findOne(filter: Record<string, unknown>): Record<string, unknown> | null;
+  updateOne(filter: Record<string, unknown>, update: Record<string, unknown>): boolean;
+  updateMany(filter: Record<string, unknown>, update: Record<string, unknown>): number;
+  deleteOne(filter: Record<string, unknown>): boolean;
+  deleteMany(filter: Record<string, unknown>): number;
+  count(filter: Record<string, unknown>): number;
+  createIndex(field: string): void;
+  dropIndex(field: string): void;
+}
+
+interface NativeHostObject {
+  collection(name: string): NativeCollection;
+  close(): void;
+}
+
 async function createNativeDB(_dbName: string): Promise<ZeroDB> {
   // The JSI HostObject is installed by taladb-react-native's TurboModule
   // at app startup via ZeroDBModule.initialize(dbName).
   // After that, it is available at globalThis.__TalaDB__.
-  const native = (globalThis as any).__TalaDB__;
-  if (!native) {
+  const maybeNative = (globalThis as Record<string, unknown>).__TalaDB__ as NativeHostObject | undefined;
+  if (!maybeNative) {
     throw new Error(
       'taladb-react-native JSI HostObject not found. ' +
       'Did you call TalaDBModule.initialize() in your app entry point?'
     );
   }
+  const native: NativeHostObject = maybeNative;
 
   function wrapCollection<T extends Document>(name: string): Collection<T> {
     const col = native.collection(name);
     return {
-      insert: async (doc) => col.insert(doc),
-      insertMany: async (docs) => col.insertMany(docs),
-      find: async (filter?) => col.find(filter ?? {}),
-      findOne: async (filter) => col.findOne(filter) ?? null,
+      insert: async (doc) => col.insert(doc as Record<string, unknown>),
+      insertMany: async (docs) => col.insertMany(docs as Record<string, unknown>[]),
+      find: async (filter?) => col.find(filter ?? {}) as T[],
+      findOne: async (filter) => col.findOne(filter ?? {}) as T | null,
       updateOne: async (filter, update) => col.updateOne(filter, update),
       updateMany: async (filter, update) => col.updateMany(filter, update),
       deleteOne: async (filter) => col.deleteOne(filter),

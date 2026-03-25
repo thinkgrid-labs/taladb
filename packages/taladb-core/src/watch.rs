@@ -136,7 +136,7 @@ pub fn create_watch<F>(
 where
     F: Fn(&Filter) -> Result<Vec<Document>, ZeroDbError> + Send + 'static,
 {
-    let rx = registry.lock().unwrap().subscribe();
+    let rx = registry.lock().unwrap_or_else(|p| p.into_inner()).subscribe();
     WatchHandle {
         rx,
         filter,

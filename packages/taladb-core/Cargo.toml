@@ -12,9 +12,15 @@ postcard   = { version = "1.0", features = ["alloc"] }
 serde      = { version = "1.0", features = ["derive"] }
 ulid       = { version = "1.1", features = ["serde"] }
 thiserror  = "1.0"
+# Encryption optional deps — only pulled in when `encryption` feature is enabled.
+aes-gcm    = { version = "0.10", optional = true }
+rand       = { version = "0.8",  optional = true }
+pbkdf2     = { version = "0.12", optional = true }
+hmac       = { version = "0.12", optional = true }
+sha2       = { version = "0.10", optional = true }
 
 [features]
-encryption = []
+encryption = ["dep:aes-gcm", "dep:rand", "dep:pbkdf2", "dep:hmac", "dep:sha2"]
 
 [dev-dependencies]
 tempfile = "3.10"

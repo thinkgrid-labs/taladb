@@ -31,6 +31,9 @@ pub enum ZeroDbError {
 
     #[error("watch channel closed")]
     WatchClosed,
+
+    #[error("invalid or corrupt snapshot data")]
+    InvalidSnapshot,
 }
 
 impl From<redb::DatabaseError> for ZeroDbError {
