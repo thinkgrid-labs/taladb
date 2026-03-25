@@ -1,0 +1,19 @@
+{
+  "name": "taladb-react-native",
+  "version": "0.1.0",
+  "description": "TalaDB React Native module — JSI HostObject for iOS and Android",
+  "main": "src/index",
+  "types": "src/index.d.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react-native": ">=0.73.0"
+  },
+  "keywords": ["database", "local-first", "react-native", "jsi", "offline"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "react-native": "^0.83.0"
+  }
+}

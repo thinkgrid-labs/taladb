@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "packages/zerodb-core",
-    "packages/zerodb-wasm",
-    "packages/zerodb-node",
+    "packages/taladb-core",
+    "packages/taladb-wasm",
+    "packages/taladb-node",
+    "packages/taladb-cli",
 ]
 
 [workspace.package]

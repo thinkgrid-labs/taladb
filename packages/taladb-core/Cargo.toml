@@ -1,0 +1,17 @@
+[package]
+name = "taladb-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TalaDB core: embedded local-first document database powered by redb"
+
+[dependencies]
+redb       = "2.1"
+postcard   = { version = "1.0", features = ["alloc"] }
+serde      = { version = "1.0", features = ["derive"] }
+ulid       = { version = "1.1", features = ["serde"] }
+thiserror  = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"

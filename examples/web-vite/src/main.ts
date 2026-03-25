@@ -1,4 +1,4 @@
-import { openDB } from 'zerodb';
+import { openDB } from 'taladb';
 
 interface User {
   _id?: string;

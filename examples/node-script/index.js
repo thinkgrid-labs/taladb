@@ -1,12 +1,12 @@
 /**
  * ZeroDB Node.js example
  * Run: node index.js
- * (requires zerodb-node native module to be built first: pnpm --filter zerodb-node build)
+ * (requires taladb-node native module to be built first: pnpm --filter taladb-node build)
  */
-const { ZeroDBNode } = require('zerodb-node');
+const { TalaDBNode } = require('taladb-node');
 
 async function main() {
-  const db = ZeroDBNode.openInMemory();
+  const db = TalaDBNode.openInMemory();
   const users = db.collection('users');
 
   // Create indexes

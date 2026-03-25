@@ -1,28 +1,28 @@
 <div align="center">
 
 <!-- Replace with your actual logo file once designed -->
-<img src=".github/assets/zerodb.svg" alt="ZeroDB" width="200" />
+<img src=".github/assets/taladb.svg" alt="TalaDB" width="200" />
 
 **Local-first document database. Zero cloud. Zero GC. Zero compromise.**
 
-[![Status: Active Development](https://img.shields.io/badge/Status-Active%20Development-yellow)](https://github.com/thinkgrid-labs/zerodb)
+[![Status: Active Development](https://img.shields.io/badge/Status-Active%20Development-yellow)](https://github.com/thinkgrid-labs/taladb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
-[![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/thinkgrid-labs/zerodb)
+[![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/thinkgrid-labs/taladb)
 
 </div>
 
 > [!WARNING]
-> **ZeroDB is under active development.** APIs may change between releases. It is not yet recommended for production use. Follow the [roadmap](#roadmap) to track progress toward a stable release.
+> **TalaDB is under active development.** APIs may change between releases. It is not yet recommended for production use. Follow the [roadmap](#roadmap) to track progress toward a stable release.
 
 ---
 
-## What is ZeroDB?
+## What is TalaDB?
 
-ZeroDB is an **open-source, local-first document database** built in Rust and designed for the modern JavaScript ecosystem. It gives React and React Native developers a MongoDB-like query API while running entirely on the user's device — no server, no network, no subscriptions.
+TalaDB is an **open-source, local-first document database** built in Rust and designed for the modern JavaScript ecosystem. It gives React and React Native developers a MongoDB-like query API while running entirely on the user's device — no server, no network, no subscriptions.
 
-Under the hood, ZeroDB is a three-layer system:
+Under the hood, TalaDB is a three-layer system:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -31,7 +31,7 @@ Under the hood, ZeroDB is a three-layer system:
 └──────────────────────────┬───────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────┐
-│  Layer 2 — Document Engine  (zerodb-core)                 │
+│  Layer 2 — Document Engine  (taladb-core)                 │
 │  Document model · Secondary indexes · Query planner       │
 └──────────────────────────┬───────────────────────────────┘
                            │
@@ -45,9 +45,9 @@ The **Rust core** compiles to a sub-400 KB WASM bundle for browsers, a native `.
 
 ---
 
-## Why ZeroDB?
+## Why TalaDB?
 
-|                        | ZeroDB  | RxDB       | WatermelonDB | SQLite WASM |
+|                        | TalaDB  | RxDB       | WatermelonDB | SQLite WASM |
 | ---------------------- | ------- | ---------- | ------------ | ----------- |
 | **Core language**      | Rust    | JavaScript | JavaScript   | C           |
 | **WASM bundle size**   | ~350 KB | ~800 KB+   | N/A          | ~1 MB+      |
@@ -78,7 +78,7 @@ The **Rust core** compiles to a sub-400 KB WASM bundle for browsers, a native `.
 ### Browser (Vite / Next.js)
 
 ```ts
-import { openDB } from "zerodb";
+import { openDB } from "taladb";
 
 interface User {
   _id?: string;
@@ -127,9 +127,9 @@ await users.deleteOne({ email: "alice@example.com" });
 ### Node.js
 
 ```js
-const { ZeroDBNode } = require("zerodb-node");
+const { TalaDBNode } = require("taladb-node");
 
-const db = ZeroDBNode.open("./myapp.db");
+const db = TalaDBNode.open("./myapp.db");
 const users = db.collection("users");
 
 users.createIndex("email");
@@ -140,11 +140,11 @@ const alice = users.findOne({ email: "alice@example.com" });
 ### React Native
 
 ```ts
-import { ZeroDBModule } from "zerodb-react-native";
-import { openDB } from "zerodb";
+import { TalaDBModule } from "taladb-react-native";
+import { openDB } from "taladb";
 
 // In your app entry point (App.tsx / index.js)
-await ZeroDBModule.initialize("myapp.db");
+await TalaDBModule.initialize("myapp.db");
 
 // Everywhere else — same API as browser
 const db = await openDB("myapp.db");
@@ -190,9 +190,9 @@ const posts = db.collection<Post>("posts");
 ## Migrations
 
 ```ts
-import { openDB } from "zerodb";
+import { openDB } from "taladb";
 
-// Rust side — define migrations in zerodb-core (or zerodb-react-native/rust)
+// Rust side — define migrations in taladb-core (or taladb-react-native/rust)
 // JS side — migrations are described and applied at open time
 
 const db = await openDB("myapp.db", {
@@ -231,12 +231,12 @@ const db = await openDB("myapp.db", {
 ### Repository Structure
 
 ```
-zerodb/
+taladb/
 ├── Cargo.toml                      # Rust workspace
 ├── pnpm-workspace.yaml             # npm workspace
 │
 ├── packages/
-│   ├── zerodb-core/                # Pure Rust — no JS bindings
+│   ├── taladb-core/                # Pure Rust — no JS bindings
 │   │   └── src/
 │   │       ├── document.rs         # Value enum, Document struct (ULID IDs)
 │   │       ├── engine.rs           # StorageBackend trait + redb implementation
@@ -248,10 +248,10 @@ zerodb/
 │   │           ├── planner.rs      # Index selection (greedy)
 │   │           └── executor.rs     # Scan + post-filter
 │   │
-│   ├── zerodb-wasm/                # Browser (wasm-bindgen + OPFS)
-│   ├── zerodb-node/                # Node.js (napi-rs native module)
-│   ├── zerodb-react-native/        # React Native (JSI HostObject)   [planned]
-│   └── zerodb/                     # Unified TypeScript package
+│   ├── taladb-wasm/                # Browser (wasm-bindgen + OPFS)
+│   ├── taladb-node/                # Node.js (napi-rs native module)
+│   ├── taladb-react-native/        # React Native (JSI HostObject)   [planned]
+│   └── taladb/                     # Unified TypeScript package
 │
 └── examples/
     ├── web-vite/                   # React + Vite demo
@@ -304,24 +304,24 @@ end   = [0x20][big_endian(40 ^ sign_bit)][0x00 × 16]
 cargo test --workspace
 
 # Browser WASM tests (requires Chrome)
-wasm-pack test packages/zerodb-wasm --headless --chrome
+wasm-pack test packages/taladb-wasm --headless --chrome
 
 # Node.js tests (after building the native module)
-pnpm --filter zerodb-node build
-pnpm --filter zerodb-node test
+pnpm --filter taladb-node build
+pnpm --filter taladb-node test
 ```
 
 ### Building
 
 ```bash
 # Browser WASM
-pnpm --filter zerodb-wasm build
+pnpm --filter taladb-wasm build
 
 # Node.js native module
-pnpm --filter zerodb-node build
+pnpm --filter taladb-node build
 
 # TypeScript types
-pnpm --filter zerodb build
+pnpm --filter taladb build
 
 # Everything
 pnpm build
@@ -338,20 +338,25 @@ pnpm build
 - [x] Schema migrations
 - [x] Browser WASM bindings (wasm-bindgen)
 - [x] Node.js native module (napi-rs)
-- [ ] React Native JSI HostObject
-- [ ] OPFS-backed persistent browser storage (file-based redb in a SharedWorker)
-- [ ] `$or` index union (multi-index merge)
-- [ ] Full-text search index
-- [ ] Encryption at rest (AES-GCM via Web Crypto / platform keychain)
-- [ ] Live queries / reactive subscriptions
-- [ ] Sync adapter interface (CRDTs / last-write-wins)
-- [ ] CLI dev tools (`zerodb studio`, `zerodb export`)
+- [x] `$or` index union (`IndexOr` plan — all branches must be index-backed)
+- [x] Full-text search index (token inverted index, `Filter::Contains`)
+- [x] Encryption at rest (`EncryptedBackend` wrapper, AES-GCM-256 via `encryption` feature)
+- [x] Live queries / reactive subscriptions (`WatchHandle`, MPSC broadcast)
+- [x] OPFS-backed persistent browser storage (snapshot flush on write)
+- [x] React Native JSI HostObject (iOS `.mm` + Android Kotlin JNI scaffold)
+- [x] Sync adapter interface (`SyncAdapter` trait + `LastWriteWins` implementation)
+- [x] CLI dev tools (`taladb inspect`, `export`, `import`, `count`, `drop`)
+- [ ] Full OPFS persistence via SharedWorker + `FileSystemSyncAccessHandle`
+- [ ] React Native JSI — full C FFI via cbindgen / uniffi
+- [ ] Encryption with real AES-GCM (`aes-gcm` + `pbkdf2` crates under `encryption` feature)
+- [ ] `$or` index union across different fields (multi-field merge)
+- [ ] CLI interactive shell (`taladb shell <file>`)
 
 ---
 
 ## Contributing
 
-Contributions are welcome! ZeroDB is MIT-licensed and fully open source.
+Contributions are welcome! TalaDB is MIT-licensed and fully open source.
 
 1. Fork the repo and create a branch: `git checkout -b feat/my-feature`
 2. Make your changes and add tests
