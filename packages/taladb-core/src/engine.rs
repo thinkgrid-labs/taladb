@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use redb::{Database, ReadableTable, TableDefinition, TableHandle};
 
-use crate::error::ZeroDbError;
+use crate::error::TalaDbError;
 
 // ---------------------------------------------------------------------------
 // Storage abstraction — lets WASM swap in an OPFS backend
@@ -14,34 +14,34 @@ use crate::error::ZeroDbError;
 pub type KvPairs = Vec<(Vec<u8>, Vec<u8>)>;
 
 pub trait StorageBackend: Send + Sync {
-    fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, ZeroDbError>;
-    fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, ZeroDbError>;
+    fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, TalaDbError>;
+    fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, TalaDbError>;
 }
 
 pub trait WriteTxn {
-    fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), ZeroDbError>;
-    fn delete(&mut self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError>;
-    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError>;
+    fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), TalaDbError>;
+    fn delete(&mut self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError>;
+    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError>;
     fn range(
         &self,
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<KvPairs, ZeroDbError>;
-    fn commit(self: Box<Self>) -> Result<(), ZeroDbError>;
+    ) -> Result<KvPairs, TalaDbError>;
+    fn commit(self: Box<Self>) -> Result<(), TalaDbError>;
 }
 
 pub trait ReadTxn {
-    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError>;
+    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError>;
     fn range(
         &self,
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<KvPairs, ZeroDbError>;
-    fn scan_all(&self, table: &str) -> Result<KvPairs, ZeroDbError>;
+    ) -> Result<KvPairs, TalaDbError>;
+    fn scan_all(&self, table: &str) -> Result<KvPairs, TalaDbError>;
     /// Return the names of every table in the database.
-    fn list_tables(&self) -> Result<Vec<String>, ZeroDbError>;
+    fn list_tables(&self) -> Result<Vec<String>, TalaDbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,12 +53,12 @@ pub struct RedbBackend {
 }
 
 impl RedbBackend {
-    pub fn open(path: &Path) -> Result<Self, ZeroDbError> {
+    pub fn open(path: &Path) -> Result<Self, TalaDbError> {
         let db = Database::create(path)?;
         Ok(RedbBackend { db: Arc::new(db) })
     }
 
-    pub fn open_in_memory() -> Result<Self, ZeroDbError> {
+    pub fn open_in_memory() -> Result<Self, TalaDbError> {
         let db = Database::builder()
             .create_with_backend(redb::backends::InMemoryBackend::new())?;
         Ok(RedbBackend { db: Arc::new(db) })
@@ -67,19 +67,19 @@ impl RedbBackend {
     /// Open a database using any `redb::StorageBackend` (e.g. OPFS in WASM).
     pub fn open_with_redb_backend<B: redb::StorageBackend + 'static>(
         backend: B,
-    ) -> Result<Self, ZeroDbError> {
+    ) -> Result<Self, TalaDbError> {
         let db = Database::builder().create_with_backend(backend)?;
         Ok(RedbBackend { db: Arc::new(db) })
     }
 }
 
 impl StorageBackend for RedbBackend {
-    fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, ZeroDbError> {
+    fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, TalaDbError> {
         let txn = self.db.begin_write()?;
         Ok(Box::new(RedbWriteTxn { txn }))
     }
 
-    fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, ZeroDbError> {
+    fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, TalaDbError> {
         let txn = self.db.begin_read()?;
         Ok(Box::new(RedbReadTxn { txn }))
     }
@@ -119,19 +119,19 @@ fn table_def(name: &str) -> TableDefinition<'static, &'static [u8], &'static [u8
 }
 
 impl WriteTxn for RedbWriteTxn {
-    fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), ZeroDbError> {
+    fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), TalaDbError> {
         let mut tbl = self.txn.open_table(table_def(table))?;
         tbl.insert(key, value)?;
         Ok(())
     }
 
-    fn delete(&mut self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError> {
+    fn delete(&mut self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
         let mut tbl = self.txn.open_table(table_def(table))?;
         let old = tbl.remove(key)?.map(|v| v.value().to_vec());
         Ok(old)
     }
 
-    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError> {
+    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => Ok(tbl.get(key)?.map(|v| v.value().to_vec())),
             Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
@@ -144,7 +144,7 @@ impl WriteTxn for RedbWriteTxn {
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<KvPairs, ZeroDbError> {
+    ) -> Result<KvPairs, TalaDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => {
                 let iter = tbl.range::<&[u8]>((start, end))?;
@@ -160,7 +160,7 @@ impl WriteTxn for RedbWriteTxn {
         }
     }
 
-    fn commit(self: Box<Self>) -> Result<(), ZeroDbError> {
+    fn commit(self: Box<Self>) -> Result<(), TalaDbError> {
         self.txn.commit()?;
         Ok(())
     }
@@ -173,7 +173,7 @@ struct RedbReadTxn {
 }
 
 impl ReadTxn for RedbReadTxn {
-    fn list_tables(&self) -> Result<Vec<String>, ZeroDbError> {
+    fn list_tables(&self) -> Result<Vec<String>, TalaDbError> {
         let names = self
             .txn
             .list_tables()?
@@ -182,7 +182,7 @@ impl ReadTxn for RedbReadTxn {
         Ok(names)
     }
 
-    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ZeroDbError> {
+    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => Ok(tbl.get(key)?.map(|v| v.value().to_vec())),
             Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
@@ -195,7 +195,7 @@ impl ReadTxn for RedbReadTxn {
         table: &str,
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
-    ) -> Result<KvPairs, ZeroDbError> {
+    ) -> Result<KvPairs, TalaDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => {
                 let iter = tbl.range::<&[u8]>((start, end))?;
@@ -211,7 +211,7 @@ impl ReadTxn for RedbReadTxn {
         }
     }
 
-    fn scan_all(&self, table: &str) -> Result<KvPairs, ZeroDbError> {
+    fn scan_all(&self, table: &str) -> Result<KvPairs, TalaDbError> {
         match self.txn.open_table(table_def(table)) {
             Ok(tbl) => {
                 let iter = tbl.iter()?;

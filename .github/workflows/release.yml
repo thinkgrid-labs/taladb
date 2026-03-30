@@ -244,15 +244,97 @@ jobs:
             ${{ matrix.artifact }}-${{ needs.preflight.outputs.version }}.zip
 
   # ---------------------------------------------------------------------------
+  # Build React Native iOS static library (universal arm64 + x86_64)
+  # ---------------------------------------------------------------------------
+  build-rn-ios:
+    name: Build — React Native iOS
+    runs-on: macos-latest
+    needs: [rust-check, ts-check]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rn-ios-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-rn-ios-
+
+      - name: Build iOS targets
+        working-directory: packages/taladb-react-native/rust
+        run: |
+          cargo build --release --target aarch64-apple-ios
+          cargo build --release --target x86_64-apple-ios
+
+      - name: Create universal static library
+        run: |
+          lipo -create \
+            target/aarch64-apple-ios/release/libtaladb_ffi.a \
+            target/x86_64-apple-ios/release/libtaladb_ffi.a \
+            -output packages/taladb-react-native/ios/libtaladb.a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-rn-ios
+          path: packages/taladb-react-native/ios/libtaladb.a
+
+  # ---------------------------------------------------------------------------
+  # Build React Native Android shared libraries (arm64-v8a, armeabi-v7a, x86_64)
+  # ---------------------------------------------------------------------------
+  build-rn-android:
+    name: Build — React Native Android
+    runs-on: ubuntu-latest
+    needs: [rust-check, ts-check]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rn-android-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-rn-android-
+
+      - name: Install Android NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build Android targets
+        working-directory: packages/taladb-react-native/rust
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -o ../android/src/main/jniLibs \
+            build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-rn-android
+          path: packages/taladb-react-native/android/src/main/jniLibs/
+
+  # ---------------------------------------------------------------------------
   # Publish npm packages
-  # Publishes: taladb, @taladb/web, @taladb/node
-  # Deferred: @taladb/react-native (requires iOS/Android native build toolchain;
-  #           scheduled for v0.2 once the mobile CI matrix is in place)
+  # Publishes: taladb, @taladb/web, @taladb/node, @taladb/react-native
   # ---------------------------------------------------------------------------
   publish-npm:
     name: Publish — npm
     runs-on: ubuntu-latest
-    needs: [build-wasm, build-node, build-cli]
+    needs: [build-wasm, build-node, build-cli, build-rn-ios, build-rn-android]
     # To require manual approval before publishing, create an environment named
     # "npm-publish" in Settings → Environments and enable required reviewers.
 
@@ -314,6 +396,25 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # -- @taladb/react-native ------------------------------------------------
+      - name: Download React Native iOS library
+        uses: actions/download-artifact@v4
+        with:
+          name: release-rn-ios
+          path: packages/taladb-react-native/ios
+
+      - name: Download React Native Android libraries
+        uses: actions/download-artifact@v4
+        with:
+          name: release-rn-android
+          path: packages/taladb-react-native/android/src/main/jniLibs
+
+      - name: Publish @taladb/react-native
+        working-directory: packages/taladb-react-native
+        run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       # -- taladb (TS wrapper) -------------------------------------------------
       - name: Build taladb TS package
         run: pnpm --filter taladb build
@@ -330,7 +431,7 @@ jobs:
   publish-crates:
     name: Publish — crates.io
     runs-on: ubuntu-latest
-    needs: [build-wasm, build-node, build-cli]
+    needs: [build-wasm, build-node, build-cli, build-rn-ios, build-rn-android]
     # To require manual approval before publishing, create an environment named
     # "crates-publish" in Settings → Environments and enable required reviewers.
 

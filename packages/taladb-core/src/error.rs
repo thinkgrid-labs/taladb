@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum ZeroDbError {
+pub enum TalaDbError {
     #[error("storage error: {0}")]
     Storage(String),
 
@@ -36,44 +36,44 @@ pub enum ZeroDbError {
     InvalidSnapshot,
 }
 
-impl From<redb::DatabaseError> for ZeroDbError {
+impl From<redb::DatabaseError> for TalaDbError {
     fn from(e: redb::DatabaseError) -> Self {
-        ZeroDbError::Storage(e.to_string())
+        TalaDbError::Storage(e.to_string())
     }
 }
 
-impl From<redb::Error> for ZeroDbError {
+impl From<redb::Error> for TalaDbError {
     fn from(e: redb::Error) -> Self {
-        ZeroDbError::Storage(e.to_string())
+        TalaDbError::Storage(e.to_string())
     }
 }
 
-impl From<redb::TransactionError> for ZeroDbError {
+impl From<redb::TransactionError> for TalaDbError {
     fn from(e: redb::TransactionError) -> Self {
-        ZeroDbError::Storage(e.to_string())
+        TalaDbError::Storage(e.to_string())
     }
 }
 
-impl From<redb::TableError> for ZeroDbError {
+impl From<redb::TableError> for TalaDbError {
     fn from(e: redb::TableError) -> Self {
-        ZeroDbError::Storage(e.to_string())
+        TalaDbError::Storage(e.to_string())
     }
 }
 
-impl From<redb::StorageError> for ZeroDbError {
+impl From<redb::StorageError> for TalaDbError {
     fn from(e: redb::StorageError) -> Self {
-        ZeroDbError::Storage(e.to_string())
+        TalaDbError::Storage(e.to_string())
     }
 }
 
-impl From<redb::CommitError> for ZeroDbError {
+impl From<redb::CommitError> for TalaDbError {
     fn from(e: redb::CommitError) -> Self {
-        ZeroDbError::Storage(e.to_string())
+        TalaDbError::Storage(e.to_string())
     }
 }
 
-impl From<postcard::Error> for ZeroDbError {
+impl From<postcard::Error> for TalaDbError {
     fn from(e: postcard::Error) -> Self {
-        ZeroDbError::Serialization(e.to_string())
+        TalaDbError::Serialization(e.to_string())
     }
 }

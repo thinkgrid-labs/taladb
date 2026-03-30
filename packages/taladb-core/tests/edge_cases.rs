@@ -252,6 +252,120 @@ fn nested_and_or_filter() {
 }
 
 // ---------------------------------------------------------------------------
+// Update $inc on missing field creates the field
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_inc_creates_field_on_missing() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("counters");
+
+    col.insert(vec![("name".into(), s("Alice"))]).unwrap();
+
+    col.update_one(
+        Filter::Eq("name".into(), s("Alice")),
+        Update::Inc(vec![("visits".into(), i(1))]),
+    ).unwrap();
+
+    let doc = col.find_one(Filter::All).unwrap().unwrap();
+    assert_eq!(doc.get("visits"), Some(&i(1)), "$inc on missing field must create it");
+}
+
+// ---------------------------------------------------------------------------
+// Update $push on non-existent field creates array
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_push_on_nonexistent_creates_array() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("docs");
+
+    col.insert(vec![("name".into(), s("Bob"))]).unwrap();
+
+    col.update_one(
+        Filter::Eq("name".into(), s("Bob")),
+        Update::Push("tags".into(), s("rust")),
+    ).unwrap();
+
+    let doc = col.find_one(Filter::All).unwrap().unwrap();
+    assert_eq!(
+        doc.get("tags"),
+        Some(&Value::Array(vec![s("rust")])),
+        "$push on missing field must create a single-element array"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Update $pull on missing field is a no-op (does not error)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_pull_on_missing_field_is_noop() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("docs");
+
+    col.insert(vec![("name".into(), s("Carol"))]).unwrap();
+
+    let updated = col.update_one(
+        Filter::Eq("name".into(), s("Carol")),
+        Update::Pull("tags".into(), s("rust")),
+    ).unwrap();
+
+    assert!(updated, "$pull on missing field should still return true (doc found)");
+    let doc = col.find_one(Filter::All).unwrap().unwrap();
+    // Field should still not exist after noop pull
+    assert!(doc.get("tags").is_none(), "missing field must remain absent after $pull noop");
+}
+
+// ---------------------------------------------------------------------------
+// Update $inc on string field returns TypeError
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_inc_on_string_returns_type_error() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("docs");
+
+    col.insert(vec![("label".into(), s("hello"))]).unwrap();
+
+    let result = col.update_one(
+        Filter::Eq("label".into(), s("hello")),
+        Update::Inc(vec![("label".into(), i(1))]),
+    );
+
+    assert!(result.is_err(), "$inc on a string field must return an error");
+    let err = result.unwrap_err();
+    assert!(
+        format!("{err}").contains("type"),
+        "error must be a TypeError, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Update $push on non-array field returns TypeError
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_push_on_non_array_returns_type_error() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("docs");
+
+    col.insert(vec![("count".into(), i(5))]).unwrap();
+
+    let result = col.update_one(
+        Filter::Eq("count".into(), i(5)),
+        Update::Push("count".into(), i(1)),
+    );
+
+    assert!(result.is_err(), "$push on a non-array field must return an error");
+    let err = result.unwrap_err();
+    assert!(
+        format!("{err}").contains("type"),
+        "error must be a TypeError, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot faithfulness after writes
 // ---------------------------------------------------------------------------
 

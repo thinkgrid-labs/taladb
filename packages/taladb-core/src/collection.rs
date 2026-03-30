@@ -4,7 +4,7 @@ use ulid::Ulid;
 
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
-use crate::error::ZeroDbError;
+use crate::error::TalaDbError;
 use crate::fts::{encode_fts_key, fts_table_name, tokenize, FtsDef};
 use crate::index::{
     docs_table_name, encode_index_key, index_table_name, meta_key, IndexDef, META_INDEXES_TABLE,
@@ -44,7 +44,7 @@ impl Collection {
     // Index management
     // ------------------------------------------------------------------
 
-    pub fn create_index(&self, field: &str) -> Result<(), ZeroDbError> {
+    pub fn create_index(&self, field: &str) -> Result<(), TalaDbError> {
         let meta_key = meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
@@ -75,12 +75,12 @@ impl Collection {
         Ok(())
     }
 
-    pub fn drop_index(&self, field: &str) -> Result<(), ZeroDbError> {
+    pub fn drop_index(&self, field: &str) -> Result<(), TalaDbError> {
         let meta_key = meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
         if wtxn.get(META_INDEXES_TABLE, meta_key.as_bytes())?.is_none() {
-            return Err(ZeroDbError::IndexNotFound(meta_key));
+            return Err(TalaDbError::IndexNotFound(meta_key));
         }
 
         // Remove all index entries (range scan on the index table)
@@ -102,12 +102,12 @@ impl Collection {
 
     /// Create a full-text search index on a string field.
     /// After calling this, `Filter::Contains(field, query)` will use the index.
-    pub fn create_fts_index(&self, field: &str) -> Result<(), ZeroDbError> {
+    pub fn create_fts_index(&self, field: &str) -> Result<(), TalaDbError> {
         let meta_key = format!("{}::{}", self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
         if wtxn.get(META_FTS_TABLE, meta_key.as_bytes())?.is_some() {
-            return Err(ZeroDbError::IndexExists(format!("fts:{}", meta_key)));
+            return Err(TalaDbError::IndexExists(format!("fts:{}", meta_key)));
         }
 
         let def = FtsDef { collection: self.name.clone(), field: field.to_string() };
@@ -133,12 +133,12 @@ impl Collection {
     }
 
     /// Drop a full-text search index and all its entries.
-    pub fn drop_fts_index(&self, field: &str) -> Result<(), ZeroDbError> {
+    pub fn drop_fts_index(&self, field: &str) -> Result<(), TalaDbError> {
         let meta_key = format!("{}::{}", self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
         if wtxn.get(META_FTS_TABLE, meta_key.as_bytes())?.is_none() {
-            return Err(ZeroDbError::IndexNotFound(format!("fts:{}", meta_key)));
+            return Err(TalaDbError::IndexNotFound(format!("fts:{}", meta_key)));
         }
 
         // Clear all FTS entries for this field
@@ -152,7 +152,7 @@ impl Collection {
         Ok(())
     }
 
-    fn load_fts_indexes(&self) -> Result<Vec<FtsDef>, ZeroDbError> {
+    fn load_fts_indexes(&self) -> Result<Vec<FtsDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
         let prefix = format!("{}::", self.name);
         let all = rtxn.scan_all(META_FTS_TABLE).unwrap_or_default();
@@ -167,7 +167,7 @@ impl Collection {
         Ok(defs)
     }
 
-    fn load_indexes(&self) -> Result<Vec<IndexDef>, ZeroDbError> {
+    fn load_indexes(&self) -> Result<Vec<IndexDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
         let prefix = format!("{}::", self.name);
         // Scan meta table and filter by collection prefix
@@ -194,7 +194,7 @@ impl Collection {
         indexes: &[IndexDef],
         fts_indexes: &[FtsDef],
         wtxn: &mut dyn crate::engine::WriteTxn,
-    ) -> Result<(), ZeroDbError> {
+    ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
         let doc_bytes = postcard::to_allocvec(doc)?;
         wtxn.put(&docs_table, &doc.id.to_bytes(), &doc_bytes)?;
@@ -244,7 +244,7 @@ impl Collection {
     // Public API
     // ------------------------------------------------------------------
 
-    pub fn insert(&self, fields: Vec<(String, Value)>) -> Result<Ulid, ZeroDbError> {
+    pub fn insert(&self, fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
         let doc = Document::new(fields);
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
@@ -255,7 +255,7 @@ impl Collection {
         Ok(id)
     }
 
-    pub fn insert_many(&self, items: Vec<Vec<(String, Value)>>) -> Result<Vec<Ulid>, ZeroDbError> {
+    pub fn insert_many(&self, items: Vec<Vec<(String, Value)>>) -> Result<Vec<Ulid>, TalaDbError> {
         let docs: Vec<Document> = items.into_iter().map(Document::new).collect();
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
@@ -269,7 +269,7 @@ impl Collection {
         Ok(ids)
     }
 
-    pub fn find(&self, filter: Filter) -> Result<Vec<Document>, ZeroDbError> {
+    pub fn find(&self, filter: Filter) -> Result<Vec<Document>, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
@@ -277,11 +277,11 @@ impl Collection {
         execute(&qplan, &filter, rtxn.as_ref(), &self.name)
     }
 
-    pub fn find_one(&self, filter: Filter) -> Result<Option<Document>, ZeroDbError> {
+    pub fn find_one(&self, filter: Filter) -> Result<Option<Document>, TalaDbError> {
         Ok(self.find(filter)?.into_iter().next())
     }
 
-    pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, ZeroDbError> {
+    pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
@@ -300,7 +300,7 @@ impl Collection {
         Ok(false)
     }
 
-    pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, ZeroDbError> {
+    pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
@@ -320,7 +320,7 @@ impl Collection {
         Ok(count)
     }
 
-    pub fn delete_one(&self, filter: Filter) -> Result<bool, ZeroDbError> {
+    pub fn delete_one(&self, filter: Filter) -> Result<bool, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
@@ -337,7 +337,7 @@ impl Collection {
         Ok(false)
     }
 
-    pub fn delete_many(&self, filter: Filter) -> Result<u64, ZeroDbError> {
+    pub fn delete_many(&self, filter: Filter) -> Result<u64, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
@@ -355,7 +355,7 @@ impl Collection {
         Ok(count)
     }
 
-    pub fn count(&self, filter: Filter) -> Result<u64, ZeroDbError> {
+    pub fn count(&self, filter: Filter) -> Result<u64, TalaDbError> {
         Ok(self.find(filter)?.len() as u64)
     }
 
@@ -365,7 +365,7 @@ impl Collection {
         indexes: &[IndexDef],
         fts_indexes: &[FtsDef],
         wtxn: &mut dyn crate::engine::WriteTxn,
-    ) -> Result<(), ZeroDbError> {
+    ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
         wtxn.delete(&docs_table, &doc.id.to_bytes())?;
 
@@ -391,7 +391,7 @@ impl Collection {
     }
 }
 
-fn apply_update(doc: &mut Document, update: &Update) -> Result<(), ZeroDbError> {
+fn apply_update(doc: &mut Document, update: &Update) -> Result<(), TalaDbError> {
     match update {
         Update::Set(pairs) => {
             for (k, v) in pairs {
@@ -410,7 +410,7 @@ fn apply_update(doc: &mut Document, update: &Update) -> Result<(), ZeroDbError> 
                     (Some(Value::Float(n)), Value::Float(d)) => Value::Float(n + d),
                     (Some(Value::Int(n)), Value::Float(d)) => Value::Float(*n as f64 + d),
                     (None, _) => delta.clone(),
-                    (Some(existing), _) => return Err(ZeroDbError::TypeError {
+                    (Some(existing), _) => return Err(TalaDbError::TypeError {
                         expected: "numeric".into(),
                         got: existing.type_name().into(),
                     }),
@@ -427,7 +427,7 @@ fn apply_update(doc: &mut Document, update: &Update) -> Result<(), ZeroDbError> 
                 None => {
                     doc.set(key.clone(), Value::Array(vec![val.clone()]));
                 }
-                Some(existing) => return Err(ZeroDbError::TypeError {
+                Some(existing) => return Err(TalaDbError::TypeError {
                     expected: "array".into(),
                     got: existing.type_name().into(),
                 }),

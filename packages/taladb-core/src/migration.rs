@@ -1,5 +1,5 @@
 use crate::engine::{StorageBackend, WriteTxn};
-use crate::error::ZeroDbError;
+use crate::error::TalaDbError;
 use crate::index::{META_VERSION_KEY, META_VERSION_TABLE};
 
 /// A single schema migration step.
@@ -7,11 +7,11 @@ pub struct Migration {
     pub from_version: u32,
     pub to_version: u32,
     pub description: &'static str,
-    pub up: fn(&mut dyn WriteTxn) -> Result<(), ZeroDbError>,
+    pub up: fn(&mut dyn WriteTxn) -> Result<(), TalaDbError>,
 }
 
 /// Read the current database version (0 if unset).
-pub fn read_version(txn: &dyn crate::engine::ReadTxn) -> Result<u32, ZeroDbError> {
+pub fn read_version(txn: &dyn crate::engine::ReadTxn) -> Result<u32, TalaDbError> {
     match txn.get(META_VERSION_TABLE, META_VERSION_KEY)? {
         Some(bytes) => Ok(postcard::from_bytes(&bytes)?),
         None => Ok(0),
@@ -19,7 +19,7 @@ pub fn read_version(txn: &dyn crate::engine::ReadTxn) -> Result<u32, ZeroDbError
 }
 
 /// Write the current database version.
-fn write_version(txn: &mut dyn WriteTxn, version: u32) -> Result<(), ZeroDbError> {
+fn write_version(txn: &mut dyn WriteTxn, version: u32) -> Result<(), TalaDbError> {
     let bytes = postcard::to_allocvec(&version)?;
     txn.put(META_VERSION_TABLE, META_VERSION_KEY, &bytes)?;
     Ok(())
@@ -30,11 +30,11 @@ fn write_version(txn: &mut dyn WriteTxn, version: u32) -> Result<(), ZeroDbError
 pub fn run_migrations(
     backend: &dyn StorageBackend,
     migrations: &[Migration],
-) -> Result<(), ZeroDbError> {
+) -> Result<(), TalaDbError> {
     // Validate that migrations form a contiguous chain
     for pair in migrations.windows(2) {
         if pair[0].to_version != pair[1].from_version {
-            return Err(ZeroDbError::Migration(format!(
+            return Err(TalaDbError::Migration(format!(
                 "migration gap: {} -> {} then {} -> {}",
                 pair[0].from_version, pair[0].to_version,
                 pair[1].from_version, pair[1].to_version,
@@ -51,7 +51,7 @@ pub fn run_migrations(
             continue; // already applied
         }
         if migration.from_version != current_version {
-            return Err(ZeroDbError::Migration(format!(
+            return Err(TalaDbError::Migration(format!(
                 "migration out of order: db is at v{}, migration starts at v{}",
                 current_version, migration.from_version
             )));
