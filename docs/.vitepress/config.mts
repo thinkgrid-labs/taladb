@@ -78,7 +78,7 @@ export default defineConfig({
       { text: "API Reference", link: "/api/collection" },
       { text: "Roadmap", link: "/roadmap" },
       {
-        text: "v0.1.0",
+        text: "v0.1.2",
         items: [
           {
             text: "Changelog",
@@ -107,6 +107,7 @@ export default defineConfig({
           { text: "Web (Browser / WASM)", link: "/guide/web" },
           { text: "Node.js", link: "/guide/node" },
           { text: "React Native", link: "/guide/react-native" },
+          { text: "CLI Dev Tools", link: "/guide/cli" },
         ],
       },
       {
