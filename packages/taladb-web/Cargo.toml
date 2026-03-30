@@ -1,5 +1,5 @@
 [package]
-name = "taladb-wasm"
+name = "taladb-web"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

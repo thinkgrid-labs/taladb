@@ -8,7 +8,7 @@
     "build:node": "pnpm --filter @taladb/node build",
     "test": "cargo test --workspace && pnpm run -r test",
     "test:rust": "cargo test --workspace",
-    "test:web": "wasm-pack test packages/taladb-wasm --headless --chrome",
+    "test:web": "wasm-pack test packages/taladb-web --headless --chrome",
     "clean": "rimraf packages/*/pkg packages/*/dist packages/taladb-node/*.node target",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
