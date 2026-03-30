@@ -13,7 +13,7 @@ TalaDB integrates with React Native through a [JSI (JavaScript Interface)](https
 React Native (JS thread)
         │  JSI direct call (synchronous)
         ▼
-ZeroDBHostObject  (C++ HostObject — cpp/ZeroDBHostObject.cpp)
+TalaDBHostObject  (C++ HostObject — cpp/TalaDBHostObject.cpp)
         │  C FFI
         ▼
 taladb-ffi  (Rust cdylib — no_mangle extern "C")
@@ -92,7 +92,7 @@ Use this option when you have no shared code requirements and want the simplest 
 cd ios && pod install
 ```
 
-The pod install step picks up `@taladb/react-native.podspec`, which includes the pre-compiled `libzerodb.a` universal static library and the C++ HostObject sources.
+The pod install step picks up `@taladb/react-native.podspec`, which includes the pre-compiled `libtaladb.a` universal static library and the C++ HostObject sources.
 
 ### Android
 

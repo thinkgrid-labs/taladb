@@ -19,7 +19,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::document::Document;
-use crate::error::ZeroDbError;
+use crate::error::TalaDbError;
 use crate::query::filter::Filter;
 
 // ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ impl WatchRegistry {
 // WatchHandle — returned to the caller
 // ---------------------------------------------------------------------------
 
-type QueryFn = Box<dyn Fn(&Filter) -> Result<Vec<Document>, ZeroDbError> + Send>;
+type QueryFn = Box<dyn Fn(&Filter) -> Result<Vec<Document>, TalaDbError> + Send>;
 
 /// A live query handle.
 ///
@@ -78,22 +78,22 @@ pub struct WatchHandle {
 
 impl WatchHandle {
     /// Block until the next write event, then return the fresh snapshot.
-    pub fn next(&self) -> Result<Vec<Document>, ZeroDbError> {
-        self.rx.recv().map_err(|_| ZeroDbError::WatchClosed)?;
+    pub fn next(&self) -> Result<Vec<Document>, TalaDbError> {
+        self.rx.recv().map_err(|_| TalaDbError::WatchClosed)?;
         // Drain any additional coalesced events
         while self.rx.try_recv().is_ok() {}
         (self.query_fn)(&self.filter)
     }
 
     /// Non-blocking: return `None` if no write has occurred since last call.
-    pub fn try_next(&self) -> Result<Option<Vec<Document>>, ZeroDbError> {
+    pub fn try_next(&self) -> Result<Option<Vec<Document>>, TalaDbError> {
         match self.rx.try_recv() {
             Ok(_) => {
                 while self.rx.try_recv().is_ok() {}
                 Ok(Some((self.query_fn)(&self.filter)?))
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(ZeroDbError::WatchClosed),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(TalaDbError::WatchClosed),
         }
     }
 
@@ -108,7 +108,7 @@ pub struct WatchIter<'a> {
 }
 
 impl<'a> Iterator for WatchIter<'a> {
-    type Item = Result<Vec<Document>, ZeroDbError>;
+    type Item = Result<Vec<Document>, TalaDbError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         Some(self.handle.next())
@@ -134,7 +134,7 @@ pub fn create_watch<F>(
     query_fn: F,
 ) -> WatchHandle
 where
-    F: Fn(&Filter) -> Result<Vec<Document>, ZeroDbError> + Send + 'static,
+    F: Fn(&Filter) -> Result<Vec<Document>, TalaDbError> + Send + 'static,
 {
     let rx = registry.lock().unwrap_or_else(|p| p.into_inner()).subscribe();
     WatchHandle {

@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::document::{Document, Value};
-use crate::error::ZeroDbError;
+use crate::error::TalaDbError;
 use crate::query::filter::Filter;
 
 // ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ pub trait SyncAdapter: Send + Sync {
         db: &crate::Database,
         collections: &[&str],
         since_ms: u64,
-    ) -> Result<Changeset, ZeroDbError>;
+    ) -> Result<Changeset, TalaDbError>;
 
     /// Import a remote `Changeset` and merge it into the local database.
     /// Returns the number of documents actually changed (upserted or deleted).
@@ -81,7 +81,7 @@ pub trait SyncAdapter: Send + Sync {
         &self,
         db: &crate::Database,
         changeset: Changeset,
-    ) -> Result<u64, ZeroDbError>;
+    ) -> Result<u64, TalaDbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ impl SyncAdapter for LastWriteWins {
         db: &crate::Database,
         collections: &[&str],
         since_ms: u64,
-    ) -> Result<Changeset, ZeroDbError> {
+    ) -> Result<Changeset, TalaDbError> {
         let mut changes = Vec::new();
 
         for &col_name in collections {
@@ -143,7 +143,7 @@ impl SyncAdapter for LastWriteWins {
         &self,
         db: &crate::Database,
         changeset: Changeset,
-    ) -> Result<u64, ZeroDbError> {
+    ) -> Result<u64, TalaDbError> {
         let mut applied = 0u64;
 
         for change in changeset {

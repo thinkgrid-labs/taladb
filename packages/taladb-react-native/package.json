@@ -10,10 +10,29 @@
     "build:android": "sh scripts/build-android.sh",
     "build:cbindgen": "cbindgen --config rust/cbindgen.toml --crate taladb-ffi --output cpp/taladb.h"
   },
+  "files": [
+    "src/",
+    "cpp/",
+    "ios/",
+    "android/",
+    "taladb-react-native.podspec"
+  ],
   "peerDependencies": {
     "react-native": ">=0.73.0"
   },
   "keywords": ["database", "local-first", "react-native", "jsi", "offline"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thinkgrid-labs/taladb.git",
+    "directory": "packages/taladb-react-native"
+  },
+  "homepage": "https://thinkgrid-labs.github.io/taladb/guide/react-native",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/taladb/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "license": "MIT",
   "devDependencies": {
     "typescript": "^5.9.3",

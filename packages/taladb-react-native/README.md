@@ -57,13 +57,13 @@ await tasks.updateOne({ title: 'Buy groceries' }, { $set: { status: 'done' } });
 ```tsx
 import { useEffect, useState } from 'react';
 import { openDB } from 'taladb';
-import type { ZeroDB } from 'taladb';
+import type { TalaDB } from 'taladb';
 
 export function useDatabase() {
-  const [db, setDb] = useState<ZeroDB | null>(null);
+  const [db, setDb] = useState<TalaDB | null>(null);
 
   useEffect(() => {
-    let instance: ZeroDB;
+    let instance: TalaDB;
     openDB('myapp.db').then((opened) => {
       instance = opened;
       setDb(opened);
@@ -81,7 +81,7 @@ export function useDatabase() {
 JavaScript (React Native)
         │  JSI (synchronous, no bridge)
         ▼
-C++ HostObject (ZeroDBHostObject.cpp)
+C++ HostObject (TalaDBHostObject.cpp)
         │  C FFI
         ▼
 Rust static library (taladb-core)

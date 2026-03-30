@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "packages/taladb-core",
-    "packages/taladb-wasm",
+    "packages/taladb-web",
     "packages/taladb-node",
     "packages/taladb-cli",
     "packages/taladb-react-native/rust",

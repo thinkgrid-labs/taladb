@@ -1,5 +1,5 @@
 // ============================================================
-// ZeroDB — Shared TypeScript Types
+// TalaDB — Shared TypeScript Types
 // ============================================================
 
 export type Value =
@@ -27,6 +27,8 @@ type FieldOps<T> = T extends null | undefined
       $in?: T[];
       $nin?: T[];
       $exists?: boolean;
+      /** Full-text search: matches documents where this string field contains the given token. */
+      $contains?: string;
     };
 
 export type Filter<T extends Document = Document> = {
@@ -61,11 +63,26 @@ export interface Collection<T extends Document = Document> {
   count(filter?: Filter<T>): Promise<number>;
   createIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   dropIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+  /**
+   * Subscribe to live query results. The callback receives a full snapshot of
+   * matching documents immediately and again after every write that could
+   * affect the result set.
+   *
+   * @returns An unsubscribe function. Call it to stop receiving updates.
+   *
+   * @example
+   * const unsub = users.subscribe({ active: true }, (docs) => {
+   *   console.log('active users:', docs);
+   * });
+   * // later…
+   * unsub();
+   */
+  subscribe(filter: Filter<T>, callback: (docs: T[]) => void): () => void;
 }
 
-// --------------- ZeroDB interface ---------------
+// --------------- TalaDB interface ---------------
 
-export interface ZeroDB {
+export interface TalaDB {
   collection<T extends Document = Document>(name: string): Collection<T>;
   close(): Promise<void>;
 }

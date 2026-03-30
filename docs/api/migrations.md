@@ -67,7 +67,7 @@ const db = await openDB('myapp.db', {
 interface Migration {
   version: number        // positive integer, must be unique and monotonically increasing
   description: string   // human-readable label (shown in logs)
-  up: (db: ZeroDB) => Promise<void>
+  up: (db: TalaDB) => Promise<void>
 }
 ```
 

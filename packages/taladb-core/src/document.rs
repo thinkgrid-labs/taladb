@@ -1,5 +1,17 @@
+use std::cell::RefCell;
+
 use serde::{Deserialize, Serialize};
-use ulid::Ulid;
+use ulid::{Generator, Ulid};
+
+thread_local! {
+    static ULID_GEN: RefCell<Generator> = const { RefCell::new(Generator::new()) };
+}
+
+fn new_ulid() -> Ulid {
+    ULID_GEN.with(|gen| {
+        gen.borrow_mut().generate().unwrap_or_else(|_| Ulid::new())
+    })
+}
 
 /// A dynamically-typed value that maps to JSON conceptually but serializes via postcard.
 /// Uses Vec<(String, Value)> for objects (not HashMap) to guarantee deterministic serialization.
@@ -69,7 +81,7 @@ pub struct Document {
 
 impl Document {
     pub fn new(fields: Vec<(String, Value)>) -> Self {
-        Document { id: Ulid::new(), fields }
+        Document { id: new_ulid(), fields }
     }
 
     pub fn with_id(id: Ulid, fields: Vec<(String, Value)>) -> Self {

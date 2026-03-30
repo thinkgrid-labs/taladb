@@ -365,6 +365,81 @@ fn or_across_same_indexed_field() {
 }
 
 // ---------------------------------------------------------------------------
+// $or across different indexed fields (v0.1.0 feature: IndexOr cross-field)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn or_across_different_indexed_fields() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("content");
+
+    col.create_index("status").unwrap();
+    col.create_index("priority").unwrap();
+
+    col.insert(vec![("status".into(), s("pinned")),  ("priority".into(), i(0))]).unwrap();
+    col.insert(vec![("status".into(), s("normal")),  ("priority".into(), i(1))]).unwrap();
+    col.insert(vec![("status".into(), s("normal")),  ("priority".into(), i(0))]).unwrap();
+    col.insert(vec![("status".into(), s("archived")), ("priority".into(), i(0))]).unwrap();
+
+    // status = 'pinned' OR priority = 1 — crosses two different indexed fields
+    let results = col.find(Filter::Or(vec![
+        Filter::Eq("status".into(), s("pinned")),
+        Filter::Eq("priority".into(), i(1)),
+    ])).unwrap();
+
+    assert_eq!(results.len(), 2, "$or across different indexed fields must return 2 docs");
+
+    let statuses: Vec<&str> = results.iter()
+        .map(|d| d.get("status").and_then(|v| v.as_str()).unwrap())
+        .collect();
+    assert!(statuses.contains(&"pinned"), "pinned doc must be in results");
+    assert!(statuses.contains(&"normal"), "priority=1 doc must be in results");
+}
+
+// ---------------------------------------------------------------------------
+// $nin with index excludes matched values
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nin_with_index_excludes_values() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("items");
+
+    col.create_index("status").unwrap();
+    for status in ["active", "pending", "deleted", "archived"] {
+        col.insert(vec![("status".into(), s(status))]).unwrap();
+    }
+
+    // $nin on a field with an index should fall back to full-scan post-filter
+    let results = col.find(Filter::Nin(
+        "status".into(),
+        vec![s("deleted"), s("archived")],
+    )).unwrap();
+
+    assert_eq!(results.len(), 2);
+    for doc in &results {
+        let st = doc.get("status").and_then(|v| v.as_str()).unwrap();
+        assert!(st == "active" || st == "pending", "unexpected status: {st}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// drop_index on nonexistent field returns error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn drop_index_on_nonexistent_returns_error() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("users");
+
+    let err = col.drop_index("nonexistent_field").unwrap_err();
+    assert!(
+        format!("{err}").contains("not found"),
+        "expected IndexNotFound error, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Large collection index performance (correctness, not timing)
 // ---------------------------------------------------------------------------
 

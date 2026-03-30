@@ -5,7 +5,7 @@ use ulid::Ulid;
 
 use crate::document::Document;
 use crate::engine::ReadTxn;
-use crate::error::ZeroDbError;
+use crate::error::TalaDbError;
 use crate::fts::{fts_table_name, fts_token_range, ulid_from_fts_key};
 use crate::index::{docs_table_name, index_table_name, ulid_from_index_key};
 use crate::query::filter::Filter;
@@ -18,7 +18,7 @@ pub fn execute(
     filter: &Filter,
     txn: &dyn ReadTxn,
     collection: &str,
-) -> Result<Vec<Document>, ZeroDbError> {
+) -> Result<Vec<Document>, TalaDbError> {
     let candidates = match plan {
         QueryPlan::FullScan => full_scan(txn, collection)?,
 
@@ -101,7 +101,7 @@ fn bound_as_ref(b: &Bound<Vec<u8>>) -> Bound<&[u8]> {
     }
 }
 
-fn full_scan(txn: &dyn ReadTxn, collection: &str) -> Result<Vec<Document>, ZeroDbError> {
+fn full_scan(txn: &dyn ReadTxn, collection: &str) -> Result<Vec<Document>, TalaDbError> {
     let table = docs_table_name(collection);
     let entries = txn.scan_all(&table)?;
     let mut docs = Vec::with_capacity(entries.len());
@@ -118,7 +118,7 @@ fn index_range_scan(
     field: &str,
     start: Bound<&[u8]>,
     end: Bound<&[u8]>,
-) -> Result<Vec<Ulid>, ZeroDbError> {
+) -> Result<Vec<Ulid>, TalaDbError> {
     let table = index_table_name(collection, field);
     let entries = txn.range(&table, start, end)?;
     let ulids = entries
@@ -132,7 +132,7 @@ fn fetch_by_ulids(
     txn: &dyn ReadTxn,
     collection: &str,
     ulids: Vec<Ulid>,
-) -> Result<Vec<Document>, ZeroDbError> {
+) -> Result<Vec<Document>, TalaDbError> {
     let table = docs_table_name(collection);
     let mut docs = Vec::with_capacity(ulids.len());
     for ulid in ulids {

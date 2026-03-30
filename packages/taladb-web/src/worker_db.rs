@@ -53,7 +53,7 @@ impl WorkerDB {
         let redb_backend = RedbBackend::open_with_redb_backend(opfs)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let db = Database::open_with_backend(Box::new(redb_backend))
-            .map_err(|e: taladb_core::ZeroDbError| JsValue::from_str(&e.to_string()))?;
+            .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
         Ok(WorkerDB { db })
     }
 

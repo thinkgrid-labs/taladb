@@ -1,0 +1,37 @@
+{
+  "name": "@taladb/web",
+  "version": "0.1.0",
+  "description": "TalaDB WASM bindings for browser (wasm-bindgen + OPFS SharedWorker)",
+  "main": "pkg/taladb_web.js",
+  "types": "pkg/taladb_web.d.ts",
+  "exports": {
+    ".": {
+      "import": "./pkg/taladb_web.js",
+      "types": "./pkg/taladb_web.d.ts"
+    },
+    "./pkg/*": "./pkg/*",
+    "./worker/*": "./worker/*"
+  },
+  "files": [
+    "pkg/",
+    "worker/"
+  ],
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir pkg --release",
+    "build:dev": "wasm-pack build --target web --out-dir pkg --dev",
+    "test": "wasm-pack test --headless --chrome"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thinkgrid-labs/taladb.git",
+    "directory": "packages/taladb-web"
+  },
+  "homepage": "https://thinkgrid-labs.github.io/taladb/guide/web",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/taladb/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

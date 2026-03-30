@@ -13,7 +13,7 @@ pub mod watch;
 pub use collection::{Collection, Update};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
-pub use error::ZeroDbError;
+pub use error::TalaDbError;
 pub use migration::{run_migrations, Migration};
 pub use query::Filter;
 
@@ -24,31 +24,31 @@ use std::sync::Arc;
 const SNAPSHOT_MAGIC: &[u8; 4] = b"TDBS";
 const SNAPSHOT_VERSION: u32 = 1;
 
-/// The main ZeroDB database handle.
+/// The main TalaDB database handle.
 pub struct Database {
     backend: Arc<dyn StorageBackend>,
 }
 
 impl Database {
     /// Open a file-backed database at the given path.
-    pub fn open(path: &Path) -> Result<Self, ZeroDbError> {
+    pub fn open(path: &Path) -> Result<Self, TalaDbError> {
         let backend = RedbBackend::open(path)?;
         Ok(Database { backend: Arc::new(backend) })
     }
 
     /// Open a database with a custom storage backend (e.g. OPFS in WASM).
-    pub fn open_with_backend(backend: Box<dyn StorageBackend>) -> Result<Self, ZeroDbError> {
+    pub fn open_with_backend(backend: Box<dyn StorageBackend>) -> Result<Self, TalaDbError> {
         Ok(Database { backend: Arc::from(backend) })
     }
 
     /// Open an in-memory database (useful for tests).
-    pub fn open_in_memory() -> Result<Self, ZeroDbError> {
+    pub fn open_in_memory() -> Result<Self, TalaDbError> {
         let backend = RedbBackend::open_in_memory()?;
         Ok(Database { backend: Arc::new(backend) })
     }
 
     /// Open a database and run any pending migrations before returning.
-    pub fn open_with_migrations(path: &Path, migrations: &[Migration]) -> Result<Self, ZeroDbError> {
+    pub fn open_with_migrations(path: &Path, migrations: &[Migration]) -> Result<Self, TalaDbError> {
         let backend = Arc::new(RedbBackend::open(path)?);
         run_migrations(backend.as_ref(), migrations)?;
         Ok(Database { backend })
@@ -63,7 +63,7 @@ impl Database {
     ///
     /// Derived by scanning table names for the `docs::` prefix used by the
     /// document storage layer.
-    pub fn list_collection_names(&self) -> Result<Vec<String>, ZeroDbError> {
+    pub fn list_collection_names(&self) -> Result<Vec<String>, TalaDbError> {
         let txn = self.backend.begin_read()?;
         let mut names: Vec<String> = txn
             .list_tables()?
@@ -85,7 +85,7 @@ impl Database {
     /// then for each table: name length u32 LE, name bytes, entry count u64 LE,
     /// then for each entry: key length u32 LE, key bytes, value length u32 LE,
     /// value bytes.
-    pub fn export_snapshot(&self) -> Result<Vec<u8>, ZeroDbError> {
+    pub fn export_snapshot(&self) -> Result<Vec<u8>, TalaDbError> {
         let txn = self.backend.begin_read()?;
         let table_names = txn.list_tables()?;
 
@@ -119,17 +119,17 @@ impl Database {
     /// Restore a database from a snapshot produced by [`Database::export_snapshot`].
     ///
     /// Returns an in-memory database pre-loaded with all data from the snapshot.
-    /// Returns [`ZeroDbError::InvalidSnapshot`] if the data is corrupt or from an
+    /// Returns [`TalaDbError::InvalidSnapshot`] if the data is corrupt or from an
     /// incompatible snapshot version.
-    pub fn restore_from_snapshot(data: &[u8]) -> Result<Self, ZeroDbError> {
+    pub fn restore_from_snapshot(data: &[u8]) -> Result<Self, TalaDbError> {
         if data.len() < 12 || &data[..4] != SNAPSHOT_MAGIC {
-            return Err(ZeroDbError::InvalidSnapshot);
+            return Err(TalaDbError::InvalidSnapshot);
         }
         let version = u32::from_le_bytes(
-            data[4..8].try_into().map_err(|_| ZeroDbError::InvalidSnapshot)?,
+            data[4..8].try_into().map_err(|_| TalaDbError::InvalidSnapshot)?,
         );
         if version != SNAPSHOT_VERSION {
-            return Err(ZeroDbError::InvalidSnapshot);
+            return Err(TalaDbError::InvalidSnapshot);
         }
 
         let db = Database::open_in_memory()?;
@@ -139,7 +139,7 @@ impl Database {
         for _ in 0..table_count {
             let name_len = read_u32(data, &mut cursor)? as usize;
             let name = std::str::from_utf8(read_slice(data, &mut cursor, name_len)?)
-                .map_err(|_| ZeroDbError::InvalidSnapshot)?
+                .map_err(|_| TalaDbError::InvalidSnapshot)?
                 .to_string();
 
             let entry_count = read_u64(data, &mut cursor)? as usize;
@@ -164,30 +164,30 @@ impl Database {
 // Snapshot binary helpers
 // ---------------------------------------------------------------------------
 
-fn read_u32(data: &[u8], cursor: &mut usize) -> Result<u32, ZeroDbError> {
-    let end = cursor.checked_add(4).ok_or(ZeroDbError::InvalidSnapshot)?;
+fn read_u32(data: &[u8], cursor: &mut usize) -> Result<u32, TalaDbError> {
+    let end = cursor.checked_add(4).ok_or(TalaDbError::InvalidSnapshot)?;
     if end > data.len() {
-        return Err(ZeroDbError::InvalidSnapshot);
+        return Err(TalaDbError::InvalidSnapshot);
     }
     let val = u32::from_le_bytes(data[*cursor..end].try_into().unwrap());
     *cursor = end;
     Ok(val)
 }
 
-fn read_u64(data: &[u8], cursor: &mut usize) -> Result<u64, ZeroDbError> {
-    let end = cursor.checked_add(8).ok_or(ZeroDbError::InvalidSnapshot)?;
+fn read_u64(data: &[u8], cursor: &mut usize) -> Result<u64, TalaDbError> {
+    let end = cursor.checked_add(8).ok_or(TalaDbError::InvalidSnapshot)?;
     if end > data.len() {
-        return Err(ZeroDbError::InvalidSnapshot);
+        return Err(TalaDbError::InvalidSnapshot);
     }
     let val = u64::from_le_bytes(data[*cursor..end].try_into().unwrap());
     *cursor = end;
     Ok(val)
 }
 
-fn read_slice<'a>(data: &'a [u8], cursor: &mut usize, len: usize) -> Result<&'a [u8], ZeroDbError> {
-    let end = cursor.checked_add(len).ok_or(ZeroDbError::InvalidSnapshot)?;
+fn read_slice<'a>(data: &'a [u8], cursor: &mut usize, len: usize) -> Result<&'a [u8], TalaDbError> {
+    let end = cursor.checked_add(len).ok_or(TalaDbError::InvalidSnapshot)?;
     if end > data.len() {
-        return Err(ZeroDbError::InvalidSnapshot);
+        return Err(TalaDbError::InvalidSnapshot);
     }
     let slice = &data[*cursor..end];
     *cursor = end;

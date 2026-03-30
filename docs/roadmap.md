@@ -11,19 +11,6 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 ---
 
-## In progress
-
-### React Native — full iOS + Android TurboModule integration
-The C FFI layer (`taladb-ffi`) and C++ JSI HostObject are complete. The remaining work is wiring the Xcode build phase (universal `.a` via `lipo`) and the Android Gradle AAR packaging so that `pod install` / Gradle are the only steps a consumer needs.
-
-### `$or` index union across different fields
-The query planner currently handles `$or` across multiple values of the **same** field (e.g. `role = 'admin' OR role = 'editor'`). The next step is merging results from **different** indexed fields (e.g. `status = 'pinned' OR priority = 1`) using a sorted-merge join on ULIDs.
-
-### CLI interactive shell
-`taladb shell <file>` — a REPL that accepts filter expressions in JSON, displays results as formatted tables, and supports tab-completion for collection and field names.
-
----
-
 ## Query engine
 
 ### Compound indexes

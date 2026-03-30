@@ -67,7 +67,7 @@ pnpm add taladb @taladb/react-native
 ### Database
 
 ```ts
-const db = await openDB(name?: string): Promise<ZeroDB>
+const db = await openDB(name?: string): Promise<TalaDB>
 
 db.collection<T>(name: string): Collection<T>
 db.close(): Promise<void>

@@ -1,5 +1,5 @@
 use taladb_core::engine::{RedbBackend, WriteTxn};
-use taladb_core::error::ZeroDbError;
+use taladb_core::error::TalaDbError;
 use taladb_core::{Database, Filter, Migration, StorageBackend, Value};
 
 fn s(v: &str) -> Value { Value::Str(v.to_string()) }
@@ -25,7 +25,7 @@ fn empty_migrations_list_opens_cleanly() {
 
 #[test]
 fn single_migration_runs_on_fresh_db() {
-    fn m1(txn: &mut dyn WriteTxn) -> Result<(), ZeroDbError> {
+    fn m1(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
         txn.put("meta::flags", b"migrated", b"\x01")
     }
 
@@ -44,11 +44,11 @@ fn single_migration_runs_on_fresh_db() {
 fn two_migrations_run_in_order() {
     static ORDER: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
-    fn m1(txn: &mut dyn WriteTxn) -> Result<(), ZeroDbError> {
+    fn m1(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
         ORDER.lock().unwrap().push(1);
         txn.put("meta::order", b"step1", b"1")
     }
-    fn m2(txn: &mut dyn WriteTxn) -> Result<(), ZeroDbError> {
+    fn m2(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
         ORDER.lock().unwrap().push(2);
         txn.put("meta::order", b"step2", b"2")
     }
@@ -69,7 +69,7 @@ fn two_migrations_run_in_order() {
 
 #[test]
 fn already_applied_migration_is_skipped() {
-    fn m1(txn: &mut dyn WriteTxn) -> Result<(), ZeroDbError> {
+    fn m1(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
         txn.put("meta::test", b"k", b"v")
     }
 
@@ -88,10 +88,10 @@ fn already_applied_migration_is_skipped() {
 
 #[test]
 fn second_open_only_runs_pending_migration() {
-    fn m1(txn: &mut dyn WriteTxn) -> Result<(), ZeroDbError> {
+    fn m1(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
         txn.put("meta::test", b"m1", b"1")
     }
-    fn m2(txn: &mut dyn WriteTxn) -> Result<(), ZeroDbError> {
+    fn m2(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
         txn.put("meta::test", b"m2", b"2")
     }
 
@@ -119,7 +119,7 @@ fn second_open_only_runs_pending_migration() {
 
 #[test]
 fn gap_in_migration_chain_returns_error() {
-    fn noop(_: &mut dyn WriteTxn) -> Result<(), ZeroDbError> { Ok(()) }
+    fn noop(_: &mut dyn WriteTxn) -> Result<(), TalaDbError> { Ok(()) }
 
     let backend = RedbBackend::open_in_memory().unwrap();
     let result = taladb_core::migration::run_migrations(&backend, &[
@@ -137,7 +137,7 @@ fn gap_in_migration_chain_returns_error() {
 
 #[test]
 fn post_migration_db_accepts_collection_index() {
-    fn noop(_: &mut dyn WriteTxn) -> Result<(), ZeroDbError> { Ok(()) }
+    fn noop(_: &mut dyn WriteTxn) -> Result<(), TalaDbError> { Ok(()) }
 
     let db = open_migrated(&[
         Migration { from_version: 0, to_version: 1, description: "init", up: noop },
@@ -152,12 +152,30 @@ fn post_migration_db_accepts_collection_index() {
 }
 
 // ---------------------------------------------------------------------------
+// Out-of-order migration versions return an error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn out_of_order_migration_versions_returns_error() {
+    fn noop(_: &mut dyn WriteTxn) -> Result<(), TalaDbError> { Ok(()) }
+
+    let backend = RedbBackend::open_in_memory().unwrap();
+    // from_version 1 before from_version 0 — not in chain order
+    let result = taladb_core::migration::run_migrations(&backend, &[
+        Migration { from_version: 1, to_version: 2, description: "m2_first", up: noop },
+        Migration { from_version: 0, to_version: 1, description: "m1_second", up: noop },
+    ]);
+
+    assert!(result.is_err(), "out-of-order migrations must return an error");
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot round-trip after migrations
 // ---------------------------------------------------------------------------
 
 #[test]
 fn snapshot_after_migration_restores_correctly() {
-    fn noop(_: &mut dyn WriteTxn) -> Result<(), ZeroDbError> { Ok(()) }
+    fn noop(_: &mut dyn WriteTxn) -> Result<(), TalaDbError> { Ok(()) }
 
     let db = open_migrated(&[
         Migration { from_version: 0, to_version: 1, description: "seed", up: noop },
