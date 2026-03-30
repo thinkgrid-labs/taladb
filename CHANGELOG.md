@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-30
+
+### Fixed
+- tsup build: mark `@taladb/web`, `@taladb/node`, `@taladb/react-native` as external to avoid bundle-time resolution errors
+- clippy: `thread_local!` initializer made `const` in `document.rs`
+
 ## [0.1.0] - 2026-03-30
 
 ### Added

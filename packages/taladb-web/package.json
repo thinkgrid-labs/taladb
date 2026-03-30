@@ -1,6 +1,6 @@
 {
   "name": "@taladb/web",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TalaDB WASM bindings for browser (wasm-bindgen + OPFS SharedWorker)",
   "main": "pkg/taladb_web.js",
   "types": "pkg/taladb_web.d.ts",
