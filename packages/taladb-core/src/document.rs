@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use ulid::{Generator, Ulid};
 
 thread_local! {
-    static ULID_GEN: RefCell<Generator> = RefCell::new(Generator::new());
+    static ULID_GEN: RefCell<Generator> = const { RefCell::new(Generator::new()) };
 }
 
 fn new_ulid() -> Ulid {
