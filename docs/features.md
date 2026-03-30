@@ -99,7 +99,7 @@ await products.updateOne({ name: 'Widget' }, { $set: { price: 49.99 } })
 
 ## CLI dev tools
 
-The `taladb-cli` binary ships with the workspace for local development and debugging:
+Download the pre-built `taladb-cli` binary for your platform from the [GitHub Releases page](https://github.com/thinkgrid-labs/taladb/releases):
 
 ```bash
 taladb inspect myapp.db          # show collections, document counts, index names

@@ -426,50 +426,12 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # ---------------------------------------------------------------------------
-  # Publish crates.io (taladb-core + taladb-cli)
-  # ---------------------------------------------------------------------------
-  publish-crates:
-    name: Publish — crates.io
-    runs-on: ubuntu-latest
-    needs: [build-wasm, build-node, build-cli, build-rn-ios, build-rn-android]
-    # To require manual approval before publishing, create an environment named
-    # "crates-publish" in Settings → Environments and enable required reviewers.
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-publish-
-
-      # Publish dependency-first: core before cli
-      - name: Publish taladb-core
-        run: cargo publish -p taladb-core --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Wait for crates.io to index taladb-core
-        run: sleep 30
-
-      - name: Publish taladb-cli
-        run: cargo publish -p taladb-cli --no-verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-  # ---------------------------------------------------------------------------
   # GitHub Release — create release and attach all binaries
   # ---------------------------------------------------------------------------
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: [publish-npm, publish-crates]
+    needs: [publish-npm]
     permissions:
       contents: write
 
