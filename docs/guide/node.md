@@ -262,11 +262,10 @@ Using an in-memory database in tests means no file system cleanup and no interfe
 
 ## CLI
 
-The `taladb-cli` binary is built alongside `@taladb/node` and can inspect any redb database file produced by TalaDB:
+The `taladb-cli` binary can inspect any redb database file produced by TalaDB.
+Download the pre-built binary for your platform from the [GitHub Releases page](https://github.com/thinkgrid-labs/taladb/releases), then:
 
 ```bash
-cargo install --path packages/taladb-cli
-
 taladb inspect ./myapp.db
 taladb export  ./myapp.db
 taladb count   ./myapp.db users
