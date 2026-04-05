@@ -1,0 +1,63 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Fill in as much as you can — a minimal reproduction makes fixes much faster.
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      description: Which platform are you running TalaDB on?
+      multiple: true
+      options:
+        - Browser (WASM)
+        - Node.js
+        - React Native
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: TalaDB version
+      placeholder: "e.g. 0.2.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What went wrong? What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest code snippet that triggers the issue.
+      render: typescript
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: Paste the full error message or stack trace if there is one.
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, browser / Node.js version, bundler, etc.
+      placeholder: |
+        OS: macOS 14.4
+        Node.js: 22.1.0
+        Browser: Chrome 124

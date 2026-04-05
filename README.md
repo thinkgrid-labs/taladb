@@ -4,7 +4,7 @@
 
 **Local-first document + vector database. Zero cloud. Zero GC. Zero compromise.**
 
-[![Status: Active Development](https://img.shields.io/badge/Status-Active%20Development-yellow)](https://github.com/thinkgrid-labs/taladb)
+[![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange)](https://github.com/thinkgrid-labs/taladb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
@@ -14,8 +14,8 @@
 
 </div>
 
-> [!WARNING]
-> **TalaDB is under active development.** APIs may change before a stable release. Not yet recommended for production use.
+> [!NOTE]
+> **TalaDB is in alpha.** Core APIs are stable but may change before v1.0. Not yet recommended for production use.
 
 ---
 

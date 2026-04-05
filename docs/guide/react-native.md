@@ -26,7 +26,7 @@ The HostObject is installed into the JSI runtime once at app startup by the nati
 
 ## Status
 
-::: warning Active development
+::: warning Alpha — integration in progress
 The React Native integration has a complete C FFI layer (`taladb-ffi`), C++ HostObject scaffold, and iOS / Android TurboModule stubs. Full end-to-end integration (Xcode build phases, Gradle AAR packaging) is in progress. The API documented here reflects the intended final shape.
 :::
 
