@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master, dev]
+    branches: [main, dev]
   pull_request:
-    branches: [main, master, dev]
+    branches: [main, dev]
 
 env:
   CARGO_TERM_COLOR: always
@@ -129,7 +129,6 @@ jobs:
             artifact: taladb-node-macos
           - os: windows-latest
             artifact: taladb-node-windows
-
 
     steps:
       - uses: actions/checkout@v4
