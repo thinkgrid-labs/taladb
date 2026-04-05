@@ -1,6 +1,6 @@
 {
   "name": "taladb",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Local-first document and vector database for React, React Native, and Node.js",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "prepublishOnly": "npm run build",
-    "build": "tsup src/index.ts --format cjs,esm --dts --out-dir dist --external @taladb/web --external @taladb/node --external @taladb/react-native",
+    "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
