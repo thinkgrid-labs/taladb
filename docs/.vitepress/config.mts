@@ -2,9 +2,9 @@ import { defineConfig, type HeadConfig } from "vitepress";
 
 const title = "TalaDB";
 const description =
-  "Local-first document database built in Rust. MongoDB-like API for browser (WASM + OPFS), Node.js, and React Native — zero cloud, zero GC.";
+  "Local-first document + vector database built in Rust. MongoDB-like API for browser (WASM + OPFS), Node.js, and React Native — zero cloud, zero GC.";
 const siteUrl = "https://thinkgrid-labs.github.io/taladb";
-const ogImage = `${siteUrl}/taladb-banner.svg`;
+const ogImage = `${siteUrl}/tala-db-banner.png`;
 
 export default defineConfig({
   title,
@@ -50,7 +50,7 @@ export default defineConfig({
       { rel: "icon", href: "/taladb/favicon.svg", type: "image/svg+xml" },
     ],
     ["link", { rel: "icon", href: "/taladb/favicon.svg" }],
-    ["meta", { name: "theme-color", content: "#f97316" }],
+    ["meta", { name: "theme-color", content: "#00CED1" }],
     ["meta", { name: "author", content: "thinkgrid-labs" }],
     [
       "meta",
@@ -69,7 +69,7 @@ export default defineConfig({
   },
 
   themeConfig: {
-    logo: { src: "/logo.svg", alt: "TalaDB logo" },
+    logo: { src: "/tala-db.png", alt: "TalaDB logo" },
     siteTitle: "TalaDB",
 
     nav: [

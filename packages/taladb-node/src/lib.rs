@@ -1,6 +1,26 @@
 use napi_derive::napi;
 use serde_json::Value as JsonValue;
-use taladb_core::{Collection, Database, Filter, Update, Value, VectorMetric};
+use taladb_core::{Collection, Database, Filter, TalaDbError, Update, Value, VectorMetric};
+
+fn err_to_napi(e: TalaDbError) -> napi::Error {
+    let code = match &e {
+        TalaDbError::Storage(_) => "Storage",
+        TalaDbError::Serialization(_) => "Serialization",
+        TalaDbError::NotFound => "NotFound",
+        TalaDbError::InvalidFilter(_) => "InvalidFilter",
+        TalaDbError::IndexExists(_) => "IndexExists",
+        TalaDbError::IndexNotFound(_) => "IndexNotFound",
+        TalaDbError::Migration(_) => "Migration",
+        TalaDbError::TypeError { .. } => "TypeError",
+        TalaDbError::Encryption(_) => "Encryption",
+        TalaDbError::WatchClosed => "WatchClosed",
+        TalaDbError::WatchBackpressure => "WatchBackpressure",
+        TalaDbError::InvalidSnapshot => "InvalidSnapshot",
+        TalaDbError::VectorIndexNotFound(_) => "VectorIndexNotFound",
+        TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
+    };
+    napi::Error::from_reason(format!("{}: {}", code, e))
+}
 
 // ---------------------------------------------------------------------------
 // Helpers: JSON ↔ taladb_core::Value
@@ -244,15 +264,14 @@ impl TalaDBNode {
     /// Open an in-memory database (useful for testing).
     #[napi(factory)]
     pub fn open_in_memory() -> napi::Result<Self> {
-        let db = Database::open_in_memory().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let db = Database::open_in_memory().map_err(err_to_napi)?;
         Ok(TalaDBNode { inner: db })
     }
 
     /// Open a file-backed database at the given path.
     #[napi(factory)]
     pub fn open(path: String) -> napi::Result<Self> {
-        let db = Database::open(std::path::Path::new(&path))
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let db = Database::open(std::path::Path::new(&path)).map_err(err_to_napi)?;
         Ok(TalaDBNode { inner: db })
     }
 
@@ -275,10 +294,7 @@ impl CollectionNode {
     #[napi]
     pub fn insert(&self, doc: JsonValue) -> napi::Result<String> {
         let fields = obj_to_fields(doc)?;
-        let id = self
-            .inner
-            .insert(fields)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let id = self.inner.insert(fields).map_err(err_to_napi)?;
         Ok(id.to_string())
     }
 
@@ -287,10 +303,7 @@ impl CollectionNode {
     pub fn insert_many(&self, docs: Vec<JsonValue>) -> napi::Result<Vec<String>> {
         let items: napi::Result<Vec<Vec<(String, Value)>>> =
             docs.into_iter().map(obj_to_fields).collect();
-        let ids = self
-            .inner
-            .insert_many(items?)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let ids = self.inner.insert_many(items?).map_err(err_to_napi)?;
         Ok(ids.iter().map(|id| id.to_string()).collect())
     }
 
@@ -298,10 +311,7 @@ impl CollectionNode {
     #[napi]
     pub fn find(&self, filter: JsonValue) -> napi::Result<Vec<JsonValue>> {
         let f = json_to_filter(&filter)?;
-        let docs = self
-            .inner
-            .find(f)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let docs = self.inner.find(f).map_err(err_to_napi)?;
         Ok(docs.iter().map(doc_to_json).collect())
     }
 
@@ -309,10 +319,7 @@ impl CollectionNode {
     #[napi(js_name = "findOne")]
     pub fn find_one(&self, filter: JsonValue) -> napi::Result<Option<JsonValue>> {
         let f = json_to_filter(&filter)?;
-        let doc = self
-            .inner
-            .find_one(f)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let doc = self.inner.find_one(f).map_err(err_to_napi)?;
         Ok(doc.map(|d| doc_to_json(&d)))
     }
 
@@ -321,9 +328,7 @@ impl CollectionNode {
     pub fn update_one(&self, filter: JsonValue, update: JsonValue) -> napi::Result<bool> {
         let f = json_to_filter(&filter)?;
         let u = json_to_update(update)?;
-        self.inner
-            .update_one(f, u)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        self.inner.update_one(f, u).map_err(err_to_napi)
     }
 
     /// Update all matching documents.
@@ -331,10 +336,7 @@ impl CollectionNode {
     pub fn update_many(&self, filter: JsonValue, update: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
         let u = json_to_update(update)?;
-        let n = self
-            .inner
-            .update_many(f, u)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let n = self.inner.update_many(f, u).map_err(err_to_napi)?;
         Ok(n as u32)
     }
 
@@ -342,19 +344,14 @@ impl CollectionNode {
     #[napi(js_name = "deleteOne")]
     pub fn delete_one(&self, filter: JsonValue) -> napi::Result<bool> {
         let f = json_to_filter(&filter)?;
-        self.inner
-            .delete_one(f)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        self.inner.delete_one(f).map_err(err_to_napi)
     }
 
     /// Delete all matching documents.
     #[napi(js_name = "deleteMany")]
     pub fn delete_many(&self, filter: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
-        let n = self
-            .inner
-            .delete_many(f)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let n = self.inner.delete_many(f).map_err(err_to_napi)?;
         Ok(n as u32)
     }
 
@@ -362,27 +359,20 @@ impl CollectionNode {
     #[napi]
     pub fn count(&self, filter: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
-        let n = self
-            .inner
-            .count(f)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let n = self.inner.count(f).map_err(err_to_napi)?;
         Ok(n as u32)
     }
 
     /// Create a secondary index on a field.
     #[napi(js_name = "createIndex")]
     pub fn create_index(&self, field: String) -> napi::Result<()> {
-        self.inner
-            .create_index(&field)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        self.inner.create_index(&field).map_err(err_to_napi)
     }
 
     /// Drop a secondary index.
     #[napi(js_name = "dropIndex")]
     pub fn drop_index(&self, field: String) -> napi::Result<()> {
-        self.inner
-            .drop_index(&field)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        self.inner.drop_index(&field).map_err(err_to_napi)
     }
 
     /// Create a vector index on `field`.
@@ -398,15 +388,13 @@ impl CollectionNode {
         let m = parse_metric(metric)?;
         self.inner
             .create_vector_index(&field, dimensions as usize, m)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+            .map_err(err_to_napi)
     }
 
     /// Drop a vector index.
     #[napi(js_name = "dropVectorIndex")]
     pub fn drop_vector_index(&self, field: String) -> napi::Result<()> {
-        self.inner
-            .drop_vector_index(&field)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))
+        self.inner.drop_vector_index(&field).map_err(err_to_napi)
     }
 
     /// Find the `top_k` nearest documents to `query`.
@@ -432,7 +420,7 @@ impl CollectionNode {
         let results = self
             .inner
             .find_nearest(&field, &query_f32, top_k as usize, pre_filter)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            .map_err(err_to_napi)?;
 
         Ok(results
             .iter()

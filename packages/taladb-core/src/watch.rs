@@ -48,7 +48,15 @@ pub struct WatchRegistry {
 impl WatchRegistry {
     /// Notify all active subscribers of a write.
     pub fn notify(&mut self) {
-        self.senders.retain(|tx| tx.try_send(WriteEvent).is_ok());
+        self.senders.retain(|tx| match tx.try_send(WriteEvent) {
+            Ok(()) => true,
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                // Subscriber is too slow to consume events; drop it (WatchBackpressure).
+                eprintln!("taladb: watch subscriber dropped: channel full (backpressure)");
+                false
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+        });
     }
 
     /// Register a new subscriber and return the receiving end.
