@@ -1,0 +1,3 @@
+# Let "files" in package.json control what gets published.
+# This file exists so pnpm/npm uses it instead of the root
+# .gitignore (which excludes packages/*/pkg/).
