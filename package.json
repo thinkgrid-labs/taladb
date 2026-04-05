@@ -1,7 +1,7 @@
 {
   "name": "taladb-workspace",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "scripts": {
     "sync-version": "node scripts/sync-version.js",
     "build": "pnpm run -r build",
