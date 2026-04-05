@@ -129,6 +129,7 @@ impl SyncAdapter for LastWriteWins {
                             None
                         }
                     })
+                    // _changed_at defaults to 0 if absent — document always loses conflicts
                     .unwrap_or(0);
 
                 if changed_at > since_ms {
@@ -157,9 +158,10 @@ impl SyncAdapter for LastWriteWins {
 
             match change.op {
                 ChangeOp::Upsert(remote_doc) => {
-                    // Look up local version of the document
-                    let local =
-                        col.find_one(Filter::Eq("_id".into(), Value::Str(change.id.to_string())))?;
+                    // Look up local version of the document by ULID.
+                    // _id is the Document::id field, not a field in the fields vec,
+                    // so Filter::Eq("_id", ...) would never match. Use find_by_id instead.
+                    let local = col.find_by_id(change.id)?;
 
                     let should_apply = match &local {
                         None => true,
@@ -173,6 +175,7 @@ impl SyncAdapter for LastWriteWins {
                                         None
                                     }
                                 })
+                                // _changed_at defaults to 0 if absent — document always loses conflicts
                                 .unwrap_or(0);
                             // Remote wins if newer; ties broken by ULID order
                             change.changed_at > local_ts
@@ -181,22 +184,18 @@ impl SyncAdapter for LastWriteWins {
                     };
 
                     if should_apply {
-                        // Delete local copy (if any) then insert remote doc
+                        // Delete local copy (if any) then insert remote doc preserving its ULID
                         if local.is_some() {
-                            col.delete_one(Filter::Eq(
-                                "_id".into(),
-                                Value::Str(change.id.to_string()),
-                            ))?;
+                            col.delete_by_id(change.id)?;
                         }
-                        let fields: Vec<(String, Value)> = remote_doc.fields.into_iter().collect();
-                        col.insert(fields)?;
+                        col.insert_with_id(remote_doc)?;
                         applied += 1;
                     }
                 }
 
                 ChangeOp::Delete => {
-                    let deleted = col
-                        .delete_one(Filter::Eq("_id".into(), Value::Str(change.id.to_string())))?;
+                    // _id is Document::id, not a field — use delete_by_id
+                    let deleted = col.delete_by_id(change.id)?;
                     if deleted {
                         applied += 1;
                     }

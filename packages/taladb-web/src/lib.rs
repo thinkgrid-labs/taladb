@@ -6,10 +6,34 @@ pub use worker_db::WorkerDB;
 use std::sync::Arc;
 
 use serde_wasm_bindgen::{from_value, to_value};
-use taladb_core::{Collection, Database, Filter, Update, Value, VectorMetric};
+use taladb_core::{Collection, Database, Filter, TalaDbError, Update, Value, VectorMetric};
 use wasm_bindgen::prelude::*;
 
 pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_load_snapshot};
+
+fn err_to_js(e: TalaDbError) -> JsValue {
+    let msg = e.to_string();
+    let code = match &e {
+        TalaDbError::Storage(_) => "Storage",
+        TalaDbError::Serialization(_) => "Serialization",
+        TalaDbError::NotFound => "NotFound",
+        TalaDbError::InvalidFilter(_) => "InvalidFilter",
+        TalaDbError::IndexExists(_) => "IndexExists",
+        TalaDbError::IndexNotFound(_) => "IndexNotFound",
+        TalaDbError::Migration(_) => "Migration",
+        TalaDbError::TypeError { .. } => "TypeError",
+        TalaDbError::Encryption(_) => "Encryption",
+        TalaDbError::WatchClosed => "WatchClosed",
+        TalaDbError::WatchBackpressure => "WatchBackpressure",
+        TalaDbError::InvalidSnapshot => "InvalidSnapshot",
+        TalaDbError::VectorIndexNotFound(_) => "VectorIndexNotFound",
+        TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
+    };
+    let obj = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&obj, &"error".into(), &JsValue::from_str(&msg));
+    let _ = js_sys::Reflect::set(&obj, &"code".into(), &JsValue::from_str(code));
+    obj.into()
+}
 
 /// Initialize panic hook for better error messages in the browser console.
 #[wasm_bindgen(start)]
@@ -31,7 +55,7 @@ impl TalaDBWasm {
     /// Open an in-memory database (suitable for tests and environments without OPFS).
     #[wasm_bindgen(js_name = openInMemory)]
     pub fn open_in_memory() -> Result<TalaDBWasm, JsValue> {
-        let db = Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let db = Database::open_in_memory().map_err(err_to_js)?;
         Ok(TalaDBWasm {
             inner: Arc::new(db),
         })
@@ -52,9 +76,10 @@ impl TalaDBWasm {
     #[wasm_bindgen(js_name = openWithSnapshot)]
     pub fn open_with_snapshot(snapshot: Option<Vec<u8>>) -> Result<TalaDBWasm, JsValue> {
         let db = match snapshot {
-            Some(ref data) if !data.is_empty() => Database::restore_from_snapshot(data)
-                .map_err(|e| JsValue::from_str(&e.to_string()))?,
-            _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
+            Some(ref data) if !data.is_empty() => {
+                Database::restore_from_snapshot(data).map_err(err_to_js)?
+            }
+            _ => Database::open_in_memory().map_err(err_to_js)?,
         };
         Ok(TalaDBWasm {
             inner: Arc::new(db),
@@ -68,9 +93,7 @@ impl TalaDBWasm {
     /// `openWithSnapshot` to restore all data.
     #[wasm_bindgen(js_name = exportSnapshot)]
     pub fn export_snapshot(&self) -> Result<Vec<u8>, JsValue> {
-        self.inner
-            .export_snapshot()
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner.export_snapshot().map_err(err_to_js)
     }
 
     /// Get a collection handle by name.
@@ -94,10 +117,7 @@ impl CollectionWasm {
     /// Insert a document. Accepts a plain JS object, returns the ULID string id.
     pub fn insert(&self, doc: JsValue) -> Result<String, JsValue> {
         let fields = js_object_to_fields(doc)?;
-        let id = self
-            .inner
-            .insert(fields)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let id = self.inner.insert(fields).map_err(err_to_js)?;
         Ok(id.to_string())
     }
 
@@ -107,10 +127,7 @@ impl CollectionWasm {
         let arr = js_sys::Array::from(&docs);
         let items: Result<Vec<Vec<(String, Value)>>, JsValue> =
             arr.iter().map(js_object_to_fields).collect();
-        let ids = self
-            .inner
-            .insert_many(items?)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let ids = self.inner.insert_many(items?).map_err(err_to_js)?;
         let id_strings: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
         to_value(&id_strings).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -118,10 +135,7 @@ impl CollectionWasm {
     /// Find documents matching the filter. Returns a JS array of plain objects.
     pub fn find(&self, filter: JsValue) -> Result<JsValue, JsValue> {
         let f = js_to_filter(filter)?;
-        let docs = self
-            .inner
-            .find(f)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let docs = self.inner.find(f).map_err(err_to_js)?;
         let result: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
         to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -130,11 +144,7 @@ impl CollectionWasm {
     #[wasm_bindgen(js_name = findOne)]
     pub fn find_one(&self, filter: JsValue) -> Result<JsValue, JsValue> {
         let f = js_to_filter(filter)?;
-        match self
-            .inner
-            .find_one(f)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?
-        {
+        match self.inner.find_one(f).map_err(err_to_js)? {
             Some(doc) => {
                 let json = doc_to_json(&doc);
                 to_value(&json).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -148,9 +158,7 @@ impl CollectionWasm {
     pub fn update_one(&self, filter: JsValue, update: JsValue) -> Result<bool, JsValue> {
         let f = js_to_filter(filter)?;
         let u = js_to_update(update)?;
-        self.inner
-            .update_one(f, u)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner.update_one(f, u).map_err(err_to_js)
     }
 
     /// Update all matching documents. Returns the count updated.
@@ -158,10 +166,7 @@ impl CollectionWasm {
     pub fn update_many(&self, filter: JsValue, update: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
         let u = js_to_update(update)?;
-        let n = self
-            .inner
-            .update_many(f, u)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let n = self.inner.update_many(f, u).map_err(err_to_js)?;
         Ok(n as u32)
     }
 
@@ -169,46 +174,34 @@ impl CollectionWasm {
     #[wasm_bindgen(js_name = deleteOne)]
     pub fn delete_one(&self, filter: JsValue) -> Result<bool, JsValue> {
         let f = js_to_filter(filter)?;
-        self.inner
-            .delete_one(f)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner.delete_one(f).map_err(err_to_js)
     }
 
     /// Delete all matching documents. Returns the count deleted.
     #[wasm_bindgen(js_name = deleteMany)]
     pub fn delete_many(&self, filter: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
-        let n = self
-            .inner
-            .delete_many(f)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let n = self.inner.delete_many(f).map_err(err_to_js)?;
         Ok(n as u32)
     }
 
     /// Count documents matching the filter.
     pub fn count(&self, filter: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
-        let n = self
-            .inner
-            .count(f)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let n = self.inner.count(f).map_err(err_to_js)?;
         Ok(n as u32)
     }
 
     /// Create a secondary index on a field.
     #[wasm_bindgen(js_name = createIndex)]
     pub fn create_index(&self, field: &str) -> Result<(), JsValue> {
-        self.inner
-            .create_index(field)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner.create_index(field).map_err(err_to_js)
     }
 
     /// Drop a secondary index.
     #[wasm_bindgen(js_name = dropIndex)]
     pub fn drop_index(&self, field: &str) -> Result<(), JsValue> {
-        self.inner
-            .drop_index(field)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner.drop_index(field).map_err(err_to_js)
     }
 
     /// Create a vector index on `field`.
@@ -225,15 +218,13 @@ impl CollectionWasm {
         let m = parse_metric(metric)?;
         self.inner
             .create_vector_index(field, dimensions as usize, m)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+            .map_err(err_to_js)
     }
 
     /// Drop a vector index.
     #[wasm_bindgen(js_name = dropVectorIndex)]
     pub fn drop_vector_index(&self, field: &str) -> Result<(), JsValue> {
-        self.inner
-            .drop_vector_index(field)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner.drop_vector_index(field).map_err(err_to_js)
     }
 
     /// Find the `top_k` nearest documents to `query` on a vector index.
@@ -258,7 +249,7 @@ impl CollectionWasm {
         let results = self
             .inner
             .find_nearest(field, &query, top_k as usize, pre_filter)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            .map_err(err_to_js)?;
 
         let json: Vec<serde_json::Value> = results
             .iter()

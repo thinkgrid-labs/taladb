@@ -26,11 +26,35 @@
 // Safety contract is documented at the module level above.
 #![allow(clippy::missing_safety_doc)]
 
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::Path;
 
 use taladb_core::{Database, Filter, Update, Value};
+
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
+}
+
+fn set_last_error(msg: String) {
+    LAST_ERROR.with(|e| {
+        *e.borrow_mut() = CString::new(msg).ok();
+    });
+}
+
+/// Return the last error message as a null-terminated C string, or NULL if no error.
+/// The returned pointer is valid until the next taladb_* call on this thread.
+/// Do NOT free the returned string.
+#[no_mangle]
+pub extern "C" fn taladb_last_error() -> *const c_char {
+    LAST_ERROR.with(|e| {
+        e.borrow()
+            .as_ref()
+            .map(|s| s.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Opaque database handle
@@ -99,7 +123,10 @@ pub unsafe extern "C" fn taladb_insert(
     };
     match db.collection(&col_name).insert(fields) {
         Ok(id) => to_cstring(id.to_string()),
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -129,7 +156,10 @@ pub unsafe extern "C" fn taladb_insert_many(
             let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
             to_cstring(serde_json::to_string(&id_strs).unwrap_or_default())
         }
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -157,7 +187,10 @@ pub unsafe extern "C" fn taladb_find(
             let json_docs: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
             to_cstring(serde_json::to_string(&json_docs).unwrap_or_default())
         }
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -177,7 +210,10 @@ pub unsafe extern "C" fn taladb_find_one(
     match db.collection(&col_name).find_one(filter) {
         Ok(Some(doc)) => to_cstring(doc_to_json(&doc).to_string()),
         Ok(None) => to_cstring("null".to_string()),
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -205,7 +241,10 @@ pub unsafe extern "C" fn taladb_update_one(
                 Some(update) => match h.db.collection(&col).update_one(filter, update) {
                     Ok(true) => 1,
                     Ok(false) => 0,
-                    Err(_) => -1,
+                    Err(e) => {
+                        set_last_error(e.to_string());
+                        -1
+                    }
                 },
                 None => -1,
             }
@@ -233,7 +272,10 @@ pub unsafe extern "C" fn taladb_update_many(
             match parse_update(&us) {
                 Some(update) => match h.db.collection(&col).update_many(filter, update) {
                     Ok(n) => n as i32,
-                    Err(_) => -1,
+                    Err(e) => {
+                        set_last_error(e.to_string());
+                        -1
+                    }
                 },
                 None => -1,
             }
@@ -261,7 +303,10 @@ pub unsafe extern "C" fn taladb_delete_one(
     match db.collection(&col_name).delete_one(parse_filter(&json)) {
         Ok(true) => 1,
         Ok(false) => 0,
-        Err(_) => -1,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
     }
 }
 
@@ -279,7 +324,10 @@ pub unsafe extern "C" fn taladb_delete_many(
     };
     match db.collection(&col_name).delete_many(parse_filter(&json)) {
         Ok(n) => n as i32,
-        Err(_) => -1,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
     }
 }
 
@@ -301,7 +349,10 @@ pub unsafe extern "C" fn taladb_count(
     };
     match db.collection(&col_name).count(parse_filter(&json)) {
         Ok(n) => n as i32,
-        Err(_) => -1,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
     }
 }
 

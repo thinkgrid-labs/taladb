@@ -3,10 +3,10 @@ use std::ops::Bound;
 
 use ulid::Ulid;
 
-use crate::document::Document;
+use crate::document::{Document, Value};
 use crate::engine::ReadTxn;
 use crate::error::TalaDbError;
-use crate::fts::{fts_table_name, fts_token_range, ulid_from_fts_key};
+use crate::fts::{fts_table_name, fts_token_range, tokenize, ulid_from_fts_key};
 use crate::index::{docs_table_name, index_table_name, ulid_from_index_key};
 use crate::query::filter::Filter;
 use crate::query::planner::QueryPlan;
@@ -86,27 +86,93 @@ pub fn execute(
             fetch_by_ulids(txn, collection, ulids)?
         }
 
-        // Union the results of multiple index-backed sub-plans, deduplicating by ULID.
+        // Union the results of multiple index-backed sub-plans, deduplicating by ULID
+        // before loading documents to avoid fetching the same document multiple times.
         QueryPlan::IndexOr { plans } => {
             let mut seen: HashSet<[u8; 16]> = HashSet::new();
-            let mut docs: Vec<Document> = Vec::new();
             for sub_plan in plans {
-                let batch = execute(sub_plan, &Filter::All, txn, collection)?;
-                for doc in batch {
-                    let key = doc.id.to_bytes();
-                    if seen.insert(key) {
-                        docs.push(doc);
-                    }
+                let ulids = collect_ulids(sub_plan, txn, collection)?;
+                for id_bytes in ulids {
+                    seen.insert(id_bytes);
                 }
             }
-            docs
+            let ulids: Vec<Ulid> = seen.into_iter().map(Ulid::from_bytes).collect();
+            fetch_by_ulids(txn, collection, ulids)?
         }
     };
+
+    // Pre-tokenize Contains query once before the document loop to avoid
+    // re-tokenizing the same query string for every candidate document.
+    if let Filter::Contains(field, query) = filter {
+        let query_tokens = tokenize(query);
+        return Ok(candidates
+            .into_iter()
+            .filter(|d| {
+                if query_tokens.is_empty() {
+                    return true;
+                }
+                if let Some(Value::Str(text)) = d.get(field) {
+                    let doc_tokens = tokenize(text);
+                    query_tokens
+                        .iter()
+                        .all(|qt| doc_tokens.iter().any(|dt| dt == qt))
+                } else {
+                    false
+                }
+            })
+            .collect());
+    }
 
     Ok(candidates
         .into_iter()
         .filter(|d| filter.matches(d))
         .collect())
+}
+
+/// Collect raw ULID bytes from an index-backed plan without loading documents.
+/// Used by `IndexOr` to deduplicate before fetching.
+fn collect_ulids(
+    plan: &QueryPlan,
+    txn: &dyn ReadTxn,
+    collection: &str,
+) -> Result<Vec<[u8; 16]>, TalaDbError> {
+    match plan {
+        QueryPlan::IndexEq { field, start, end } => {
+            let ulids = index_range_scan(
+                txn,
+                collection,
+                field,
+                Bound::Included(start.as_slice()),
+                Bound::Included(end.as_slice()),
+            )?;
+            Ok(ulids.into_iter().map(|u| u.to_bytes()).collect())
+        }
+        QueryPlan::IndexRange { field, start, end } => {
+            let start_ref = bound_as_ref(start);
+            let end_ref = bound_as_ref(end);
+            let ulids = index_range_scan(txn, collection, field, start_ref, end_ref)?;
+            Ok(ulids.into_iter().map(|u| u.to_bytes()).collect())
+        }
+        QueryPlan::IndexIn { field, ranges } => {
+            let mut result: Vec<[u8; 16]> = Vec::new();
+            for (start, end) in ranges {
+                let batch = index_range_scan(
+                    txn,
+                    collection,
+                    field,
+                    Bound::Included(start.as_slice()),
+                    Bound::Included(end.as_slice()),
+                )?;
+                result.extend(batch.into_iter().map(|u| u.to_bytes()));
+            }
+            Ok(result)
+        }
+        _ => {
+            // For non-index plans, fall back to executing and extracting ids
+            let docs = execute(plan, &Filter::All, txn, collection)?;
+            Ok(docs.into_iter().map(|d| d.id.to_bytes()).collect())
+        }
+    }
 }
 
 fn bound_as_ref(b: &Bound<Vec<u8>>) -> Bound<&[u8]> {

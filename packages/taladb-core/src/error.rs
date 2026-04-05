@@ -32,6 +32,9 @@ pub enum TalaDbError {
     #[error("watch channel closed")]
     WatchClosed,
 
+    #[error("watch subscriber dropped due to full channel")]
+    WatchBackpressure,
+
     #[error("invalid or corrupt snapshot data")]
     InvalidSnapshot,
 

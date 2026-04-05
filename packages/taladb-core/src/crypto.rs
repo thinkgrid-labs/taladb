@@ -67,10 +67,11 @@ pub fn encrypt(key: &EncryptionKey, plaintext: &[u8]) -> Result<Vec<u8>, TalaDbE
     #[cfg(not(feature = "encryption"))]
     {
         let _ = (key, plaintext);
-        panic!(
-            "TalaDB: encrypt() called but the `encryption` feature is not enabled. \
-             Enable it in Cargo.toml: taladb-core = {{ features = [\"encryption\"] }}"
-        );
+        Err(TalaDbError::Encryption(
+            "encrypt() called but the `encryption` feature is not enabled; \
+             enable it in Cargo.toml: taladb-core = { features = [\"encryption\"] }"
+                .into(),
+        ))
     }
 }
 
@@ -99,10 +100,11 @@ pub fn decrypt(key: &EncryptionKey, data: &[u8]) -> Result<Vec<u8>, TalaDbError>
     #[cfg(not(feature = "encryption"))]
     {
         let _ = (key, data);
-        panic!(
-            "TalaDB: decrypt() called but the `encryption` feature is not enabled. \
-             Enable it in Cargo.toml: taladb-core = {{ features = [\"encryption\"] }}"
-        );
+        Err(TalaDbError::Encryption(
+            "decrypt() called but the `encryption` feature is not enabled; \
+             enable it in Cargo.toml: taladb-core = { features = [\"encryption\"] }"
+                .into(),
+        ))
     }
 }
 
@@ -239,7 +241,11 @@ impl<'a> ReadTxn for EncryptedReadTxn<'a> {
 /// Returns a 32-byte key suitable for `EncryptedBackend::new`.
 ///
 /// **Requires** the `encryption` feature flag.
-pub fn derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> EncryptionKey {
+pub fn derive_key(
+    passphrase: &str,
+    salt: &[u8],
+    iterations: u32,
+) -> Result<EncryptionKey, TalaDbError> {
     #[cfg(feature = "encryption")]
     {
         use hmac::Hmac;
@@ -248,14 +254,15 @@ pub fn derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> EncryptionK
 
         let mut key = [0u8; 32];
         pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, iterations, &mut key);
-        key
+        Ok(key)
     }
     #[cfg(not(feature = "encryption"))]
     {
         let _ = (passphrase, salt, iterations);
-        panic!(
-            "TalaDB: derive_key() called but the `encryption` feature is not enabled. \
-             Enable it in Cargo.toml: taladb-core = {{ features = [\"encryption\"] }}"
-        );
+        Err(TalaDbError::Encryption(
+            "derive_key() called but the `encryption` feature is not enabled; \
+             enable it in Cargo.toml: taladb-core = { features = [\"encryption\"] }"
+                .into(),
+        ))
     }
 }

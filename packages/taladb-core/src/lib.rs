@@ -182,7 +182,11 @@ fn read_u32(data: &[u8], cursor: &mut usize) -> Result<u32, TalaDbError> {
     if end > data.len() {
         return Err(TalaDbError::InvalidSnapshot);
     }
-    let val = u32::from_le_bytes(data[*cursor..end].try_into().unwrap());
+    let val = u32::from_le_bytes(
+        data[*cursor..end]
+            .try_into()
+            .map_err(|_| TalaDbError::InvalidSnapshot)?,
+    );
     *cursor = end;
     Ok(val)
 }
@@ -192,7 +196,11 @@ fn read_u64(data: &[u8], cursor: &mut usize) -> Result<u64, TalaDbError> {
     if end > data.len() {
         return Err(TalaDbError::InvalidSnapshot);
     }
-    let val = u64::from_le_bytes(data[*cursor..end].try_into().unwrap());
+    let val = u64::from_le_bytes(
+        data[*cursor..end]
+            .try_into()
+            .map_err(|_| TalaDbError::InvalidSnapshot)?,
+    );
     *cursor = end;
     Ok(val)
 }

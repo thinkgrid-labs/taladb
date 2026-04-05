@@ -71,22 +71,22 @@ fn encrypt_is_nondeterministic() {
 
 #[test]
 fn derive_key_is_deterministic() {
-    let k1 = derive_key("passphrase", b"salt1234", 1_000);
-    let k2 = derive_key("passphrase", b"salt1234", 1_000);
+    let k1 = derive_key("passphrase", b"salt1234", 1_000).unwrap();
+    let k2 = derive_key("passphrase", b"salt1234", 1_000).unwrap();
     assert_eq!(k1, k2, "same passphrase + salt must derive the same key");
 }
 
 #[test]
 fn derive_key_differs_with_different_passphrase() {
-    let k1 = derive_key("passphrase_a", b"salt", 1_000);
-    let k2 = derive_key("passphrase_b", b"salt", 1_000);
+    let k1 = derive_key("passphrase_a", b"salt", 1_000).unwrap();
+    let k2 = derive_key("passphrase_b", b"salt", 1_000).unwrap();
     assert_ne!(k1, k2);
 }
 
 #[test]
 fn derive_key_differs_with_different_salt() {
-    let k1 = derive_key("passphrase", b"salt_a", 1_000);
-    let k2 = derive_key("passphrase", b"salt_b", 1_000);
+    let k1 = derive_key("passphrase", b"salt_a", 1_000).unwrap();
+    let k2 = derive_key("passphrase", b"salt_b", 1_000).unwrap();
     assert_ne!(k1, k2);
 }
 

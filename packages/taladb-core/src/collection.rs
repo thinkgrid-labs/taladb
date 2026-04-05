@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
@@ -19,6 +19,12 @@ use crate::vector::{
 
 const META_FTS_TABLE: &str = "meta::fts_indexes";
 
+struct CachedIndexes {
+    indexes: Vec<IndexDef>,
+    fts_indexes: Vec<FtsDef>,
+    vec_indexes: Vec<VectorDef>,
+}
+
 /// An update operation on a document.
 #[derive(Debug, Clone)]
 pub enum Update {
@@ -37,6 +43,7 @@ pub enum Update {
 pub struct Collection {
     pub(crate) name: String,
     backend: Arc<dyn StorageBackend>,
+    index_cache: Mutex<Option<CachedIndexes>>,
 }
 
 impl Collection {
@@ -44,7 +51,38 @@ impl Collection {
         Collection {
             name: name.into(),
             backend,
+            index_cache: Mutex::new(None),
         }
+    }
+
+    fn invalidate_index_cache(&self) {
+        if let Ok(mut guard) = self.index_cache.lock() {
+            *guard = None;
+        }
+    }
+
+    fn load_indexes_cached(&self) -> Result<CachedIndexes, TalaDbError> {
+        let mut guard = self.index_cache.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(ref cached) = *guard {
+            return Ok(CachedIndexes {
+                indexes: cached.indexes.clone(),
+                fts_indexes: cached.fts_indexes.clone(),
+                vec_indexes: cached.vec_indexes.clone(),
+            });
+        }
+        let indexes = self.load_indexes()?;
+        let fts_indexes = self.load_fts_indexes()?;
+        let vec_indexes = self.load_vector_indexes()?;
+        *guard = Some(CachedIndexes {
+            indexes: indexes.clone(),
+            fts_indexes: fts_indexes.clone(),
+            vec_indexes: vec_indexes.clone(),
+        });
+        Ok(CachedIndexes {
+            indexes,
+            fts_indexes,
+            vec_indexes,
+        })
     }
 
     // ------------------------------------------------------------------
@@ -86,6 +124,7 @@ impl Collection {
         }
 
         wtxn.commit()?;
+        self.invalidate_index_cache();
         Ok(())
     }
 
@@ -111,6 +150,7 @@ impl Collection {
         // Remove metadata
         wtxn.delete(META_INDEXES_TABLE, meta_key.as_bytes())?;
         wtxn.commit()?;
+        self.invalidate_index_cache();
         Ok(())
     }
 
@@ -154,6 +194,7 @@ impl Collection {
         }
 
         wtxn.commit()?;
+        self.invalidate_index_cache();
         Ok(())
     }
 
@@ -178,6 +219,7 @@ impl Collection {
         }
         wtxn.delete(META_FTS_TABLE, meta_key.as_bytes())?;
         wtxn.commit()?;
+        self.invalidate_index_cache();
         Ok(())
     }
 
@@ -235,6 +277,7 @@ impl Collection {
         }
 
         wtxn.commit()?;
+        self.invalidate_index_cache();
         Ok(())
     }
 
@@ -261,6 +304,7 @@ impl Collection {
         }
         wtxn.delete(META_VECTOR_TABLE, meta_key.as_bytes())?;
         wtxn.commit()?;
+        self.invalidate_index_cache();
         Ok(())
     }
 
@@ -303,7 +347,10 @@ impl Collection {
         let mut vec_map: Vec<(ulid::Ulid, Vec<f32>)> = Vec::with_capacity(all_entries.len());
         for (key_bytes, val_bytes) in &all_entries {
             if key_bytes.len() == 16 {
-                let arr: [u8; 16] = key_bytes.as_slice().try_into().unwrap();
+                let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
                 let id = ulid::Ulid::from_bytes(arr);
                 if let Some(v) = decode_f32_vec(val_bytes) {
                     vec_map.push((id, v));
@@ -476,9 +523,8 @@ impl Collection {
 
     pub fn insert(&self, fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
         let doc = Document::new(fields);
-        let indexes = self.load_indexes()?;
-        let fts = self.load_fts_indexes()?;
-        let vecs = self.load_vector_indexes()?;
+        let cache = self.load_indexes_cached()?;
+        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
         let mut wtxn = self.backend.begin_write()?;
         self.write_doc_and_indexes(&doc, None, &indexes, &fts, &vecs, wtxn.as_mut())?;
         let id = doc.id;
@@ -488,9 +534,8 @@ impl Collection {
 
     pub fn insert_many(&self, items: Vec<Vec<(String, Value)>>) -> Result<Vec<Ulid>, TalaDbError> {
         let docs: Vec<Document> = items.into_iter().map(Document::new).collect();
-        let indexes = self.load_indexes()?;
-        let fts = self.load_fts_indexes()?;
-        let vecs = self.load_vector_indexes()?;
+        let cache = self.load_indexes_cached()?;
+        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
         let mut wtxn = self.backend.begin_write()?;
         let mut ids = Vec::with_capacity(docs.len());
         for doc in &docs {
@@ -513,10 +558,49 @@ impl Collection {
         Ok(self.find(filter)?.into_iter().next())
     }
 
+    pub fn insert_with_id(&self, doc: Document) -> Result<Ulid, TalaDbError> {
+        let cache = self.load_indexes_cached()?;
+        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
+        let mut wtxn = self.backend.begin_write()?;
+        let id = doc.id;
+        self.write_doc_and_indexes(&doc, None, &indexes, &fts, &vecs, wtxn.as_mut())?;
+        wtxn.commit()?;
+        Ok(id)
+    }
+
+    pub fn find_by_id(&self, id: Ulid) -> Result<Option<Document>, TalaDbError> {
+        let docs_table = docs_table_name(&self.name);
+        let rtxn = self.backend.begin_read()?;
+        match rtxn.get(&docs_table, &id.to_bytes())? {
+            Some(bytes) => Ok(Some(postcard::from_bytes(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete_by_id(&self, id: Ulid) -> Result<bool, TalaDbError> {
+        let cache = self.load_indexes_cached()?;
+        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
+        let docs_table = docs_table_name(&self.name);
+        let rtxn = self.backend.begin_read()?;
+        let doc: Option<Document> = match rtxn.get(&docs_table, &id.to_bytes())? {
+            Some(bytes) => Some(postcard::from_bytes(&bytes)?),
+            None => None,
+        };
+        drop(rtxn);
+        match doc {
+            None => Ok(false),
+            Some(doc) => {
+                let mut wtxn = self.backend.begin_write()?;
+                self.delete_doc_and_indexes(&doc, &indexes, &fts, &vecs, wtxn.as_mut())?;
+                wtxn.commit()?;
+                Ok(true)
+            }
+        }
+    }
+
     pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
-        let indexes = self.load_indexes()?;
-        let fts = self.load_fts_indexes()?;
-        let vecs = self.load_vector_indexes()?;
+        let cache = self.load_indexes_cached()?;
+        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
         let qplan = plan_with_fts(&filter, &indexes, &fts);
         let rtxn = self.backend.begin_read()?;
         let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
@@ -524,7 +608,7 @@ impl Collection {
 
         if let Some(old_doc) = candidates.drain(..).next() {
             let mut new_doc = old_doc.clone();
-            apply_update(&mut new_doc, &update)?;
+            apply_update(&mut new_doc, update)?;
             let mut wtxn = self.backend.begin_write()?;
             self.write_doc_and_indexes(
                 &new_doc,
@@ -541,9 +625,8 @@ impl Collection {
     }
 
     pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, TalaDbError> {
-        let indexes = self.load_indexes()?;
-        let fts = self.load_fts_indexes()?;
-        let vecs = self.load_vector_indexes()?;
+        let cache = self.load_indexes_cached()?;
+        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
         let qplan = plan_with_fts(&filter, &indexes, &fts);
         let rtxn = self.backend.begin_read()?;
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
@@ -553,7 +636,7 @@ impl Collection {
         let mut wtxn = self.backend.begin_write()?;
         for old_doc in &candidates {
             let mut new_doc = old_doc.clone();
-            apply_update(&mut new_doc, &update)?;
+            apply_update(&mut new_doc, update.clone())?;
             self.write_doc_and_indexes(
                 &new_doc,
                 Some(old_doc),
@@ -569,9 +652,8 @@ impl Collection {
     }
 
     pub fn delete_one(&self, filter: Filter) -> Result<bool, TalaDbError> {
-        let indexes = self.load_indexes()?;
-        let fts = self.load_fts_indexes()?;
-        let vecs = self.load_vector_indexes()?;
+        let cache = self.load_indexes_cached()?;
+        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
         let qplan = plan_with_fts(&filter, &indexes, &fts);
         let rtxn = self.backend.begin_read()?;
         let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
@@ -587,9 +669,8 @@ impl Collection {
     }
 
     pub fn delete_many(&self, filter: Filter) -> Result<u64, TalaDbError> {
-        let indexes = self.load_indexes()?;
-        let fts = self.load_fts_indexes()?;
-        let vecs = self.load_vector_indexes()?;
+        let cache = self.load_indexes_cached()?;
+        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
         let qplan = plan_with_fts(&filter, &indexes, &fts);
         let rtxn = self.backend.begin_read()?;
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
@@ -648,25 +729,25 @@ impl Collection {
     }
 }
 
-fn apply_update(doc: &mut Document, update: &Update) -> Result<(), TalaDbError> {
+fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
     match update {
         Update::Set(pairs) => {
             for (k, v) in pairs {
-                doc.set(k.clone(), v.clone());
+                doc.set(k, v);
             }
         }
         Update::Unset(keys) => {
             for k in keys {
-                doc.remove(k);
+                doc.remove(&k);
             }
         }
         Update::Inc(pairs) => {
             for (k, delta) in pairs {
-                let new_val = match (doc.get(k), delta) {
+                let new_val = match (doc.get(&k), &delta) {
                     (Some(Value::Int(n)), Value::Int(d)) => Value::Int(n + d),
                     (Some(Value::Float(n)), Value::Float(d)) => Value::Float(n + d),
                     (Some(Value::Int(n)), Value::Float(d)) => Value::Float(*n as f64 + d),
-                    (None, _) => delta.clone(),
+                    (None, _) => delta,
                     (Some(existing), _) => {
                         return Err(TalaDbError::TypeError {
                             expected: "numeric".into(),
@@ -674,16 +755,16 @@ fn apply_update(doc: &mut Document, update: &Update) -> Result<(), TalaDbError> 
                         })
                     }
                 };
-                doc.set(k.clone(), new_val);
+                doc.set(k, new_val);
             }
         }
-        Update::Push(key, val) => match doc.get(key).cloned() {
+        Update::Push(key, val) => match doc.get(&key).cloned() {
             Some(Value::Array(mut arr)) => {
-                arr.push(val.clone());
-                doc.set(key.clone(), Value::Array(arr));
+                arr.push(val);
+                doc.set(key, Value::Array(arr));
             }
             None => {
-                doc.set(key.clone(), Value::Array(vec![val.clone()]));
+                doc.set(key, Value::Array(vec![val]));
             }
             Some(existing) => {
                 return Err(TalaDbError::TypeError {
@@ -693,9 +774,9 @@ fn apply_update(doc: &mut Document, update: &Update) -> Result<(), TalaDbError> 
             }
         },
         Update::Pull(key, val) => {
-            if let Some(Value::Array(arr)) = doc.get(key).cloned() {
-                let filtered: Vec<Value> = arr.into_iter().filter(|v| v != val).collect();
-                doc.set(key.clone(), Value::Array(filtered));
+            if let Some(Value::Array(arr)) = doc.get(&key).cloned() {
+                let filtered: Vec<Value> = arr.into_iter().filter(|v| v != &val).collect();
+                doc.set(key, Value::Array(filtered));
             }
         }
     }
