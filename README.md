@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src=".github/assets/table-db-banner.png" alt="TalaDB" width="300" />
+<img src=".github/assets/tala-db-banner.png" alt="TalaDB" width="300" />
 
 **Local-first document + vector database. Zero cloud. Zero GC. Zero compromise.**
 
