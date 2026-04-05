@@ -1,0 +1,14 @@
+{
+  "installCommand": "cd examples/web-vite && npm install",
+  "buildCommand": "cd examples/web-vite && npm run build",
+  "outputDirectory": "examples/web-vite/dist",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" }
+      ]
+    }
+  ]
+}

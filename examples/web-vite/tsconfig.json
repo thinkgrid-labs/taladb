@@ -3,12 +3,10 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true,
-    "paths": {
-      "taladb": ["../../packages/taladb/src/index.ts"]
-    }
+    "skipLibCheck": true
   },
   "include": ["src"]
 }
