@@ -190,7 +190,7 @@ fn iter_yields_successive_snapshots() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let registry = new_registry();
     let db_clone = Arc::clone(&db);
-    let col = db.collection("log");
+    let _col = db.collection("log");
 
     let handle = create_watch(&registry, Filter::All, move |f| {
         db_clone.collection("log").find(f.clone())

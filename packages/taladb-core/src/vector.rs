@@ -32,22 +32,17 @@ pub const META_VECTOR_TABLE: &str = "meta::vector_indexes";
 // ---------------------------------------------------------------------------
 
 /// Similarity metric used when searching a vector index.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum VectorMetric {
     /// Cosine similarity — angle between vectors, range [-1, 1].
     /// Best for text embeddings where magnitude is not meaningful.
+    #[default]
     Cosine,
     /// Raw dot product — magnitude-sensitive.
     Dot,
     /// Euclidean distance converted to similarity via `1 / (1 + dist)`.
     /// Range (0, 1]; identical vectors score 1.0.
     Euclidean,
-}
-
-impl Default for VectorMetric {
-    fn default() -> Self {
-        VectorMetric::Cosine
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +86,7 @@ pub fn encode_f32_vec(v: &[f32]) -> Vec<u8> {
 /// Decode little-endian bytes back to `Vec<f32>`.
 /// Returns `None` if `bytes.len()` is not a multiple of 4.
 pub fn decode_f32_vec(bytes: &[u8]) -> Option<Vec<f32>> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     Some(

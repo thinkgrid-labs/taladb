@@ -155,18 +155,18 @@ fn lww_remote_newer_wins() {
     let col = db.collection("notes");
 
     // Insert a local doc with old timestamp
-    let mut local_fields = vec![
+    let local_fields = vec![
         ("content".into(), s("local version")),
         ("_changed_at".into(), i(1000)),
     ];
-    let local_id_str = col.insert(local_fields.clone()).unwrap().to_string();
+    let _local_id_str = col.insert(local_fields.clone()).unwrap().to_string();
 
     // Remote doc is newer
     let remote_doc = taladb_core::document::Document::new(vec![
         ("content".into(), s("remote version")),
         ("_changed_at".into(), i(9000)),
     ]);
-    let remote_id = remote_doc.id;
+    let _remote_id = remote_doc.id;
 
     // We need to match the _id that import_changes looks up
     // import_changes looks up by Filter::Eq("_id", Str(change.id.to_string()))
@@ -176,7 +176,7 @@ fn lww_remote_newer_wins() {
     let col2 = db2.collection("notes");
 
     // Insert a doc that has _changed_at
-    let mut fields = vec![
+    let fields = vec![
         ("content".into(), s("local version")),
         ("_changed_at".into(), i(1000)),
     ];

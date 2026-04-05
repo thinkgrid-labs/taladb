@@ -112,7 +112,7 @@ fn index_range_between() {
     assert_eq!(results.len(), 4);
     for doc in &results {
         let age = doc.get("age").unwrap().as_int().unwrap();
-        assert!(age >= 18 && age <= 65, "age {age} out of range");
+        assert!((18..=65).contains(&age), "age {age} out of range");
     }
 }
 
@@ -565,6 +565,6 @@ fn index_correct_on_large_collection() {
     assert_eq!(results.len(), 50);
     for doc in &results {
         let n = doc.get("n").unwrap().as_int().unwrap();
-        assert!(n >= 50 && n < 100);
+        assert!((50..100).contains(&n));
     }
 }

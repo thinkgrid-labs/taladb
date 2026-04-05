@@ -164,7 +164,7 @@ fn find_with_gte_lte_range() {
     assert_eq!(results.len(), 4);
     for doc in &results {
         let age = doc.get("age").unwrap().as_int().unwrap();
-        assert!(age >= 25 && age <= 65);
+        assert!((25..=65).contains(&age));
     }
 }
 
