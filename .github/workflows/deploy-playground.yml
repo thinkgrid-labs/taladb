@@ -38,3 +38,4 @@ jobs:
           vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
           vercel-args: '--prebuilt --prod'
           working-directory: examples/web-vite
+          vercel-project-name: taladb-playground

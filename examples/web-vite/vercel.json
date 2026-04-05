@@ -1,7 +1,7 @@
 {
-  "installCommand": "cd examples/web-vite && npm install",
-  "buildCommand": "cd examples/web-vite && npm run build",
-  "outputDirectory": "examples/web-vite/dist",
+  "installCommand": "npm install",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "headers": [
     {
       "source": "/(.*)",
