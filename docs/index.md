@@ -10,6 +10,9 @@ hero:
       text: Get Started
       link: /introduction
     - theme: alt
+      text: Live Demo
+      link: https://taladb-playground.vercel.app/
+    - theme: alt
       text: View on GitHub
       link: https://github.com/thinkgrid-labs/taladb
 

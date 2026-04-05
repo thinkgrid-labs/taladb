@@ -126,4 +126,4 @@ The `taladb` package lists the platform packages as `optionalDependencies`, whic
 
 TalaDB is in **alpha**. The Rust core, browser WASM, and Node.js bindings are functional and tested. The React Native JSI layer has a complete scaffold but full iOS / Android integration requires platform-specific build tooling. Core APIs are stable but may change before v1.0.
 
-Follow the [GitHub repository](https://github.com/thinkgrid-labs/taladb) for progress updates.
+Try the [live demo](https://taladb-playground.vercel.app/) to see TalaDB running in the browser with OPFS persistence and on-device semantic search. Follow the [GitHub repository](https://github.com/thinkgrid-labs/taladb) for progress updates.

@@ -10,7 +10,7 @@
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/thinkgrid-labs/taladb)
 
-**[Documentation](https://thinkgrid-labs.github.io/taladb/) · [Web Guide](https://thinkgrid-labs.github.io/taladb/guide/web) · [Node.js Guide](https://thinkgrid-labs.github.io/taladb/guide/node) · [React Native Guide](https://thinkgrid-labs.github.io/taladb/guide/react-native)**
+**[Documentation](https://thinkgrid-labs.github.io/taladb/) · [Live Demo](https://taladb-playground.vercel.app/) · [Web Guide](https://thinkgrid-labs.github.io/taladb/guide/web) · [Node.js Guide](https://thinkgrid-labs.github.io/taladb/guide/node) · [React Native Guide](https://thinkgrid-labs.github.io/taladb/guide/react-native)**
 
 </div>
 
