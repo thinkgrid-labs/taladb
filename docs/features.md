@@ -1,9 +1,87 @@
 ---
 title: Features
-description: ULID document IDs, MongoDB-like queries, secondary B-tree indexes, ACID transactions, full-text search, live queries, AES-GCM-256 encryption, OPFS persistence, and more.
+description: Vector similarity search, ULID document IDs, MongoDB-like queries, secondary B-tree indexes, ACID transactions, full-text search, live queries, AES-GCM-256 encryption, OPFS persistence, and more.
 ---
 
 # Features
+
+## Vector index and similarity search
+
+TalaDB v0.2 introduces on-device vector indexes — the first embedded JavaScript database to natively combine document queries with vector similarity search.
+
+### Creating a vector index
+
+```ts
+// Register a vector index on any numeric-array field
+await articles.createVectorIndex('embedding', { dimensions: 384 })
+
+// Choose a metric (default: cosine)
+await articles.createVectorIndex('embedding', {
+  dimensions: 1536,
+  metric: 'cosine', // | 'dot' | 'euclidean'
+})
+```
+
+Existing documents are backfilled automatically. New inserts and updates maintain the index atomically alongside the document write.
+
+### Pure vector search
+
+```ts
+const queryVec = await embed('how do I reset my password?') // your on-device model
+
+const results = await articles.findNearest('embedding', queryVec, 5)
+// [{ document: Article, score: 0.94 }, { document: Article, score: 0.91 }, ...]
+```
+
+Results are ordered by descending similarity score. Score range depends on the metric:
+- `cosine` — [-1, 1], identical vectors score 1.0
+- `dot` — unbounded, depends on vector magnitude
+- `euclidean` — (0, 1], identical vectors score 1.0
+
+### Hybrid search — metadata filter + vector ranking
+
+The killer feature. Pass a regular document filter as the fourth argument to restrict the candidate set before ranking:
+
+```ts
+// Find the 5 most semantically similar english-language support articles
+const results = await articles.findNearest('embedding', queryVec, 5, {
+  locale: 'en',
+  category: 'support',
+  published: true,
+})
+```
+
+This is the pattern cloud vector databases (Qdrant, Weaviate, Pinecone) charge for — running entirely on device, with no network latency and no data leaving the user's device.
+
+### Dropping a vector index
+
+```ts
+await articles.dropVectorIndex('embedding')
+```
+
+### Pairing with on-device AI
+
+TalaDB vector indexes are designed to work alongside client-side embedding models:
+
+```ts
+import { pipeline } from '@xenova/transformers'
+
+const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
+
+async function embed(text: string): Promise<number[]> {
+  const output = await embedder(text, { pooling: 'mean', normalize: true })
+  return Array.from(output.data)
+}
+
+// Insert a document with its embedding
+const vec = await embed(article.body)
+await articles.insert({ ...article, embedding: vec })
+
+// Search later
+const results = await articles.findNearest('embedding', await embed(query), 5)
+```
+
+No cloud API key. No rate limit. No round-trip.
 
 ## Document model with ULID IDs
 

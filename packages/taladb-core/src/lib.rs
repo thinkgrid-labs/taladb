@@ -8,6 +8,7 @@ pub mod index;
 pub mod migration;
 pub mod query;
 pub mod sync;
+pub mod vector;
 pub mod watch;
 
 pub use collection::{Collection, Update};
@@ -16,6 +17,7 @@ pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
 pub use migration::{run_migrations, Migration};
 pub use query::Filter;
+pub use vector::{VectorMetric, VectorSearchResult};
 
 use std::path::Path;
 use std::sync::Arc;

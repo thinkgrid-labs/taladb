@@ -1,7 +1,7 @@
 {
   "name": "@taladb/web",
-  "version": "0.1.2",
-  "description": "TalaDB WASM bindings for browser (wasm-bindgen + OPFS SharedWorker)",
+  "version": "0.2.0",
+  "description": "TalaDB WASM bindings — document queries and vector search in the browser",
   "main": "pkg/taladb_web.js",
   "types": "pkg/taladb_web.d.ts",
   "exports": {

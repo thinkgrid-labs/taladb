@@ -2,7 +2,7 @@
 
 <img src=".github/assets/taladb.svg" alt="TalaDB" width="200" />
 
-**Local-first document database. Zero cloud. Zero GC. Zero compromise.**
+**Local-first document + vector database. Zero cloud. Zero GC. Zero compromise.**
 
 [![Status: Active Development](https://img.shields.io/badge/Status-Active%20Development-yellow)](https://github.com/thinkgrid-labs/taladb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -19,7 +19,7 @@
 
 ---
 
-TalaDB is an open-source, **local-first document database** built in Rust. It gives React and React Native developers a MongoDB-like query API (`find`, `insert`, `update`, `delete`, `$eq`, `$gt`, `$in`, `$and`, `$or`) while running entirely on the user's device — no server, no network, no subscriptions.
+TalaDB is an open-source, **local-first document and vector database** built in Rust. It gives React and React Native developers a MongoDB-like query API alongside on-device vector similarity search — store documents, search embeddings, and combine both in a single query, all running entirely on the user's device with no server, no network, and no cloud subscription.
 
 The same Rust core powers all three runtimes:
 
@@ -33,6 +33,8 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 
 ## Highlights
 
+- **Vector search** — on-device similarity search (cosine, dot, euclidean) with optional metadata pre-filter; pairs naturally with on-device AI models (transformers.js, ONNX Web)
+- **Hybrid queries** — combine a regular document filter with vector ranking in one call: find the 5 most semantically similar *english-language support articles* without two round-trips
 - **MongoDB-like API** — familiar filter and update DSL, fully typed with TypeScript generics
 - **Secondary indexes** — type-safe B-tree indexes with automatic index selection and O(log n) range scans
 - **ACID transactions** — powered by [redb](https://github.com/cberner/redb), a pure-Rust B-tree storage engine
@@ -42,6 +44,139 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 - **Schema migrations** — versioned, atomic, run at open time
 - **Snapshot export / import** — portable binary format for backup and cross-device sync
 - **CLI dev tools** — `taladb inspect`, `export`, `import`, `count`, `drop`
+
+## Usage
+
+### Install
+
+```bash
+# Browser
+pnpm add taladb @taladb/web
+
+# Node.js
+pnpm add taladb @taladb/node
+
+# React Native
+pnpm add taladb @taladb/react-native
+```
+
+### Open a database
+
+```ts
+import { openDB } from 'taladb'
+
+const db = await openDB('myapp.db')  // OPFS in browser, file on Node.js / React Native
+```
+
+---
+
+### As a document database
+
+```ts
+interface Article {
+  _id?: string
+  title: string
+  category: string
+  locale: string
+  publishedAt: number
+}
+
+const articles = db.collection<Article>('articles')
+
+// Insert
+const id = await articles.insert({
+  title: 'How to reset your password',
+  category: 'support',
+  locale: 'en',
+  publishedAt: Date.now(),
+})
+
+// Query with filters
+const results = await articles.find({
+  category: 'support',
+  locale: 'en',
+  publishedAt: { $gte: Date.now() - 86_400_000 },
+})
+
+// Update
+await articles.updateOne({ _id: id }, { $set: { title: 'Reset your password' } })
+
+// Delete
+await articles.deleteOne({ _id: id })
+
+// Secondary index for fast lookups
+await articles.createIndex('category')
+await articles.createIndex('publishedAt')
+```
+
+---
+
+### As a vector database
+
+```ts
+import { pipeline } from '@xenova/transformers'
+
+// Any on-device embedding model works
+const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
+const embed = async (text: string) => {
+  const out = await embedder(text, { pooling: 'mean', normalize: true })
+  return Array.from(out.data) as number[]
+}
+
+// 1. Create the vector index once (backfills existing documents automatically)
+await articles.createVectorIndex('embedding', { dimensions: 384 })
+
+// 2. Insert documents with their embeddings
+await articles.insert({
+  title: 'How to reset your password',
+  category: 'support',
+  locale: 'en',
+  publishedAt: Date.now(),
+  embedding: await embed('How to reset your password'),
+})
+
+// 3. Semantic search — find the 5 most similar articles
+const query = await embed('forgot my login credentials')
+const results = await articles.findNearest('embedding', query, 5)
+
+results.forEach(({ document, score }) => {
+  console.log(score.toFixed(3), document.title)
+})
+// 0.941  How to reset your password
+// 0.887  Account recovery options
+// 0.823  Two-factor authentication setup
+```
+
+---
+
+### Hybrid search — the killer feature
+
+Filter by metadata first, then rank by vector similarity. One call, no extra round-trips.
+
+```ts
+// "Find the 5 most relevant english support articles for this query"
+const results = await articles.findNearest('embedding', query, 5, {
+  category: 'support',
+  locale: 'en',
+})
+
+// Works across all runtimes — browser, React Native, Node.js
+// Data never leaves the device
+```
+
+---
+
+### Live queries
+
+```ts
+// Subscribe to changes — callback fires after every matching write
+const unsub = articles.subscribe({ category: 'support' }, (docs) => {
+  console.log('support articles updated:', docs.length)
+})
+
+// Stop listening
+unsub()
+```
 
 ## Documentation
 
@@ -133,6 +268,6 @@ MIT © [thinkgrid-labs](https://github.com/thinkgrid-labs)
 
 <div align="center">
 
-Built with Rust 🦀 · Designed for the local-first web
+Built with Rust 🦀 · Documents and vectors, on device
 
 </div>

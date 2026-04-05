@@ -2,6 +2,29 @@
 // TalaDB — Shared TypeScript Types
 // ============================================================
 
+// --------------- Vector types ---------------
+
+/** Similarity metric used for vector search. */
+export type VectorMetric = 'cosine' | 'dot' | 'euclidean';
+
+export interface VectorIndexOptions {
+  /** Number of dimensions in each stored vector. Enforced on insert and search. */
+  dimensions: number;
+  /** Similarity metric. Defaults to `"cosine"`. */
+  metric?: VectorMetric;
+}
+
+/** A single result returned by `Collection.findNearest`. */
+export interface VectorSearchResult<T extends Document = Document> {
+  /** The matched document. */
+  document: T;
+  /**
+   * Similarity score — higher means more similar.
+   * Range depends on metric: cosine ∈ [-1,1], dot ∈ ℝ, euclidean ∈ (0,1].
+   */
+  score: number;
+}
+
 export type Value =
   | null
   | boolean
@@ -63,6 +86,44 @@ export interface Collection<T extends Document = Document> {
   count(filter?: Filter<T>): Promise<number>;
   createIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   dropIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+  /**
+   * Create a vector index on a numeric-array field.
+   *
+   * After creation, `findNearest` can search this field and new inserts/updates
+   * automatically maintain the index. Existing documents are backfilled.
+   *
+   * @example
+   * await articles.createVectorIndex('embedding', { dimensions: 384 });
+   */
+  createVectorIndex(
+    field: keyof Omit<T, '_id'> & string,
+    options: VectorIndexOptions,
+  ): Promise<void>;
+  /** Drop a vector index. */
+  dropVectorIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+  /**
+   * Find the `topK` most similar documents to `vector` using a vector index.
+   *
+   * Optionally combine with a metadata `filter` to restrict the search space
+   * before ranking — e.g. find the 5 most similar english-language articles.
+   *
+   * Results are ordered by descending similarity score (highest first).
+   *
+   * @example
+   * const results = await articles.findNearest('embedding', queryVec, 5);
+   * // results: Array<{ document: Article, score: number }>
+   *
+   * @example with pre-filter
+   * const results = await articles.findNearest('embedding', queryVec, 5, {
+   *   locale: 'en',
+   * });
+   */
+  findNearest(
+    field: keyof Omit<T, '_id'> & string,
+    vector: number[],
+    topK: number,
+    filter?: Filter<T>,
+  ): Promise<VectorSearchResult<T>[]>;
   /**
    * Subscribe to live query results. The callback receives a full snapshot of
    * matching documents immediately and again after every write that could

@@ -1,6 +1,6 @@
 ---
 title: Roadmap
-description: Planned and in-progress features for TalaDB — query engine improvements, sync, developer tooling, and new platform targets.
+description: Planned and in-progress features for TalaDB — HNSW vector index, query engine improvements, sync, developer tooling, and new platform targets.
 ---
 
 # Roadmap
@@ -8,6 +8,32 @@ description: Planned and in-progress features for TalaDB — query engine improv
 This page tracks planned and in-progress work for TalaDB. Items are grouped by theme and ordered roughly by priority within each group. The list is updated as the project evolves.
 
 Have an idea or want to help prioritise? Open a [GitHub Discussion](https://github.com/thinkgrid-labs/taladb/discussions) or a feature request issue.
+
+---
+
+## Vector search (HNSW)
+
+v0.2 ships flat (brute-force) vector search — O(n·d) per query, perfect for collections up to ~10 K documents. Next will replaces the inner loop with an HNSW (Hierarchical Navigable Small World) graph index for sub-linear approximate nearest-neighbor search.
+
+### Planned design
+
+- **Crate:** [`instant-distance`](https://github.com/instant-labs/instant-distance) — pure Rust, WASM-compatible, MIT license
+- **Persistence:** HNSW graph serialised to a dedicated `hnsw::<collection>::<field>` redb table as a single blob; loaded into memory on database open
+- **Feature flag:** `--features vector-hnsw` keeps the base WASM bundle lean; flat search remains the default and is used automatically for small collections
+- **API:** fully backward-compatible — same `createVectorIndex` / `findNearest` calls, new `indexType` option:
+
+```ts
+await col.createVectorIndex('embedding', {
+  dimensions: 384,
+  metric: 'cosine',
+  indexType: 'hnsw',       // 'flat' (default) | 'hnsw'
+  hnswM: 16,               // connectivity — higher = better recall, more memory
+  hnswEfConstruction: 200, // build-time quality
+})
+```
+
+- **Auto-upgrade:** `taladb upgrade-vector-index <file> <collection> <field>` CLI command promotes a flat index to HNSW in-place without re-inserting documents
+- **Target performance:** <5 ms `findNearest` on 100 K 384-dim vectors on a mid-range device
 
 ---
 

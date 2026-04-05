@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
-use taladb_core::{Collection, Database, Filter, Update, Value};
+use taladb_core::{Collection, Database, Filter, Update, Value, VectorMetric};
 
 pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_load_snapshot};
 
@@ -181,6 +181,67 @@ impl CollectionWasm {
     #[wasm_bindgen(js_name = dropIndex)]
     pub fn drop_index(&self, field: &str) -> Result<(), JsValue> {
         self.inner.drop_index(field).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Create a vector index on `field`.
+    ///
+    /// `dimensions` — expected vector length.
+    /// `metric`     — optional string: `"cosine"` (default), `"dot"`, or `"euclidean"`.
+    #[wasm_bindgen(js_name = createVectorIndex)]
+    pub fn create_vector_index(
+        &self,
+        field: &str,
+        dimensions: u32,
+        metric: Option<String>,
+    ) -> Result<(), JsValue> {
+        let m = parse_metric(metric)?;
+        self.inner
+            .create_vector_index(field, dimensions as usize, m)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Drop a vector index.
+    #[wasm_bindgen(js_name = dropVectorIndex)]
+    pub fn drop_vector_index(&self, field: &str) -> Result<(), JsValue> {
+        self.inner
+            .drop_vector_index(field)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Find the `top_k` nearest documents to `query` on a vector index.
+    ///
+    /// `filter` — optional pre-filter (same format as `find`). Pass `null` to
+    ///            search across all documents that have the vector field.
+    ///
+    /// Returns a JSON array of `{ document: {...}, score: number }` objects.
+    #[wasm_bindgen(js_name = findNearest)]
+    pub fn find_nearest(
+        &self,
+        field: &str,
+        query: Vec<f32>,
+        top_k: u32,
+        filter: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let pre_filter = if filter.is_null() || filter.is_undefined() {
+            None
+        } else {
+            Some(js_to_filter(filter)?)
+        };
+        let results = self
+            .inner
+            .find_nearest(field, &query, top_k as usize, pre_filter)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let json: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "document": doc_to_json(&r.document),
+                    "score": r.score,
+                })
+            })
+            .collect();
+        to_value(&json).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
 
@@ -377,6 +438,21 @@ fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
     }
 
     Err(JsValue::from_str("unsupported update operator"))
+}
+
+// ---------------------------------------------------------------------------
+// Vector helpers
+// ---------------------------------------------------------------------------
+
+fn parse_metric(metric: Option<String>) -> Result<Option<VectorMetric>, JsValue> {
+    match metric.as_deref() {
+        None | Some("cosine") => Ok(Some(VectorMetric::Cosine)),
+        Some("dot") => Ok(Some(VectorMetric::Dot)),
+        Some("euclidean") => Ok(Some(VectorMetric::Euclidean)),
+        Some(other) => Err(JsValue::from_str(&format!(
+            "unknown metric \"{other}\": expected \"cosine\", \"dot\", or \"euclidean\""
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------

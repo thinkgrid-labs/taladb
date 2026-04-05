@@ -10,7 +10,7 @@
 use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
-use taladb_core::{Database, Filter, Update, Value};
+use taladb_core::{Database, Filter, Update, Value, VectorMetric};
 use taladb_core::engine::RedbBackend;
 
 use crate::storage::opfs_backend::OpfsBackend;
@@ -192,6 +192,81 @@ impl WorkerDB {
         self.db.collection(collection)
             .drop_fts_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Create a vector index. `metric_str`: `"cosine"` | `"dot"` | `"euclidean"` (default cosine).
+    #[wasm_bindgen(js_name = createVectorIndex)]
+    pub fn create_vector_index(
+        &self,
+        collection: &str,
+        field: &str,
+        dimensions: u32,
+        metric_str: Option<String>,
+    ) -> Result<(), JsValue> {
+        let metric = parse_metric(metric_str)?;
+        self.db.collection(collection)
+            .create_vector_index(field, dimensions as usize, metric)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Drop a vector index.
+    #[wasm_bindgen(js_name = dropVectorIndex)]
+    pub fn drop_vector_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
+        self.db.collection(collection)
+            .drop_vector_index(field)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Find nearest neighbours. Returns a JSON string of `[{ document, score }]`.
+    #[wasm_bindgen(js_name = findNearest)]
+    pub fn find_nearest(
+        &self,
+        collection: &str,
+        field: &str,
+        query_json: &str,
+        top_k: u32,
+        filter_json: &str,
+    ) -> Result<String, JsValue> {
+        let query: Vec<f32> = serde_json::from_str(query_json)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let pre_filter = if filter_json == "null" {
+            None
+        } else {
+            let v: serde_json::Value = serde_json::from_str(filter_json)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Some(
+                json_to_filter_val(&v)
+                    .ok_or_else(|| JsValue::from_str("invalid filter"))?,
+            )
+        };
+
+        let results = self.db.collection(collection)
+            .find_nearest(field, &query, top_k as usize, pre_filter)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let json: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
+            .collect();
+
+        serde_json::to_string(&json)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vector helpers
+// ---------------------------------------------------------------------------
+
+fn parse_metric(metric: Option<String>) -> Result<Option<VectorMetric>, JsValue> {
+    match metric.as_deref() {
+        None | Some("cosine") => Ok(Some(VectorMetric::Cosine)),
+        Some("dot") => Ok(Some(VectorMetric::Dot)),
+        Some("euclidean") => Ok(Some(VectorMetric::Euclidean)),
+        Some(other) => Err(JsValue::from_str(&format!(
+            "unknown metric \"{other}\": expected \"cosine\", \"dot\", or \"euclidean\""
+        ))),
     }
 }
 

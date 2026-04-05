@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-05
+
+### Added
+- **Vector index (flat search)** — hybrid document + vector database support
+  - `Collection::create_vector_index(field, dimensions, metric?)` — register a vector index on any numeric-array field; backfills existing documents automatically
+  - `Collection::drop_vector_index(field)` — remove a vector index and all stored vectors
+  - `Collection::find_nearest(field, query, top_k, pre_filter?)` — flat (brute-force) cosine / dot / euclidean similarity search; optional metadata pre-filter lets you combine regular NoSQL filtering with vector ranking in one call
+  - `VectorMetric` enum: `Cosine` (default), `Dot`, `Euclidean`
+  - `VectorSearchResult { document, score }` return type
+  - Vector data stored in dedicated `vec::<collection>::<field>` redb tables (raw f32 LE bytes, keyed by ULID); kept in sync with insert / update / delete
+  - Full bindings across all three runtimes: `@taladb/web` (WASM + SharedWorker), `@taladb/node` (napi-rs), `@taladb/react-native` (JSI)
+  - TypeScript: `createVectorIndex`, `dropVectorIndex`, `findNearest` on `Collection<T>`; new exported types `VectorMetric`, `VectorIndexOptions`, `VectorSearchResult<T>`
+  - New error variants: `VectorIndexNotFound`, `VectorDimensionMismatch`
+
 ## [0.1.2] - 2026-03-30
 
 ### Fixed
@@ -41,5 +55,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
 
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/thinkgrid-labs/taladb/releases/tag/v0.1.0

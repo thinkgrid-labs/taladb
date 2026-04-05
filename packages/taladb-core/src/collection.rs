@@ -12,6 +12,10 @@ use crate::index::{
 use crate::query::executor::execute;
 use crate::query::filter::Filter;
 use crate::query::planner::plan_with_fts;
+use crate::vector::{
+    compute_similarity, decode_f32_vec, encode_f32_vec, value_to_f32_vec, vec_meta_key,
+    vec_table_name, VectorDef, VectorMetric, VectorSearchResult, META_VECTOR_TABLE,
+};
 
 const META_FTS_TABLE: &str = "meta::fts_indexes";
 
@@ -152,6 +156,186 @@ impl Collection {
         Ok(())
     }
 
+    // ------------------------------------------------------------------
+    // Vector index management
+    // ------------------------------------------------------------------
+
+    /// Create a vector index on `field`.
+    ///
+    /// - `dimensions`: expected length of every stored vector.
+    /// - `metric`: similarity metric used by `find_nearest` (default: Cosine).
+    ///
+    /// Backfills any existing documents that already have a numeric array in
+    /// `field`. Silently skips documents where `field` is absent or not a
+    /// numeric array.
+    pub fn create_vector_index(
+        &self,
+        field: &str,
+        dimensions: usize,
+        metric: Option<VectorMetric>,
+    ) -> Result<(), TalaDbError> {
+        let meta_key = vec_meta_key(&self.name, field);
+        let mut wtxn = self.backend.begin_write()?;
+
+        if wtxn.get(META_VECTOR_TABLE, meta_key.as_bytes())?.is_some() {
+            return Err(TalaDbError::IndexExists(format!("vec:{}", meta_key)));
+        }
+
+        let def = VectorDef {
+            collection: self.name.clone(),
+            field: field.to_string(),
+            dimensions,
+            metric: metric.unwrap_or_default(),
+        };
+        let bytes = postcard::to_allocvec(&def)?;
+        wtxn.put(META_VECTOR_TABLE, meta_key.as_bytes(), &bytes)?;
+
+        // Backfill existing documents
+        let docs_table = docs_table_name(&self.name);
+        let existing =
+            wtxn.range(&docs_table, std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)?;
+        let vtable = vec_table_name(&self.name, field);
+        for (_, doc_bytes) in existing {
+            let doc: Document = postcard::from_bytes(&doc_bytes)?;
+            if let Some(val) = doc.get(field) {
+                if let Some(vec) = value_to_f32_vec(val) {
+                    if vec.len() == dimensions {
+                        wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
+                    }
+                }
+            }
+        }
+
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Drop a vector index and remove all stored vectors for that field.
+    pub fn drop_vector_index(&self, field: &str) -> Result<(), TalaDbError> {
+        let meta_key = vec_meta_key(&self.name, field);
+        let mut wtxn = self.backend.begin_write()?;
+
+        if wtxn.get(META_VECTOR_TABLE, meta_key.as_bytes())?.is_none() {
+            return Err(TalaDbError::VectorIndexNotFound(format!(
+                "{}::{}",
+                self.name, field
+            )));
+        }
+
+        let vtable = vec_table_name(&self.name, field);
+        let all = wtxn.range(&vtable, std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)?;
+        for (k, _) in all {
+            wtxn.delete(&vtable, &k)?;
+        }
+        wtxn.delete(META_VECTOR_TABLE, meta_key.as_bytes())?;
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Search for the `top_k` most similar documents to `query` using the
+    /// named vector index.
+    ///
+    /// If `pre_filter` is `Some`, only documents matching that filter are
+    /// considered. This lets you combine metadata filtering with vector
+    /// similarity in one call.
+    ///
+    /// Results are ordered by descending similarity score (highest first).
+    pub fn find_nearest(
+        &self,
+        field: &str,
+        query: &[f32],
+        top_k: usize,
+        pre_filter: Option<Filter>,
+    ) -> Result<Vec<VectorSearchResult>, TalaDbError> {
+        // 1. Load the vector index definition
+        let defs = self.load_vector_indexes()?;
+        let def = defs
+            .iter()
+            .find(|d| d.field == field)
+            .ok_or_else(|| {
+                TalaDbError::VectorIndexNotFound(format!("{}::{}", self.name, field))
+            })?;
+
+        // 2. Validate query dimensions
+        if query.len() != def.dimensions {
+            return Err(TalaDbError::VectorDimensionMismatch {
+                expected: def.dimensions,
+                got: query.len(),
+            });
+        }
+
+        // 3. Load all stored vectors
+        let vtable = vec_table_name(&self.name, field);
+        let rtxn = self.backend.begin_read()?;
+        let all_entries = rtxn.scan_all(&vtable)?;
+        drop(rtxn);
+
+        let mut vec_map: Vec<(ulid::Ulid, Vec<f32>)> = Vec::with_capacity(all_entries.len());
+        for (key_bytes, val_bytes) in &all_entries {
+            if key_bytes.len() == 16 {
+                let arr: [u8; 16] = key_bytes.as_slice().try_into().unwrap();
+                let id = ulid::Ulid::from_bytes(arr);
+                if let Some(v) = decode_f32_vec(val_bytes) {
+                    vec_map.push((id, v));
+                }
+            }
+        }
+
+        // 4. Apply pre-filter if provided (restrict to matching doc IDs)
+        let candidates: Vec<(ulid::Ulid, Vec<f32>)> = if let Some(filter) = pre_filter {
+            let filtered_docs = self.find(filter)?;
+            let id_set: std::collections::HashSet<ulid::Ulid> =
+                filtered_docs.iter().map(|d| d.id).collect();
+            vec_map
+                .into_iter()
+                .filter(|(id, _)| id_set.contains(id))
+                .collect()
+        } else {
+            vec_map
+        };
+
+        // 5. Score all candidates
+        let metric = &def.metric;
+        let mut scored: Vec<(ulid::Ulid, f32)> = candidates
+            .iter()
+            .map(|(id, v)| (*id, compute_similarity(metric, query, v)))
+            .collect();
+
+        // 6. Sort descending, keep top_k
+        scored.sort_unstable_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.truncate(top_k);
+
+        // 7. Load full documents for top_k results
+        let docs_table = docs_table_name(&self.name);
+        let rtxn = self.backend.begin_read()?;
+        let mut results = Vec::with_capacity(scored.len());
+        for (id, score) in scored {
+            if let Some(bytes) = rtxn.get(&docs_table, &id.to_bytes())? {
+                let document: Document = postcard::from_bytes(&bytes)?;
+                results.push(VectorSearchResult { document, score });
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn load_vector_indexes(&self) -> Result<Vec<VectorDef>, TalaDbError> {
+        let rtxn = self.backend.begin_read()?;
+        let prefix = format!("{}::", self.name);
+        let all = rtxn.scan_all(META_VECTOR_TABLE).unwrap_or_default();
+        let mut defs = Vec::new();
+        for (k, v) in all {
+            let key_str = String::from_utf8_lossy(&k);
+            if key_str.starts_with(&prefix) {
+                let def: VectorDef = postcard::from_bytes(&v)?;
+                defs.push(def);
+            }
+        }
+        Ok(defs)
+    }
+
     fn load_fts_indexes(&self) -> Result<Vec<FtsDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
         let prefix = format!("{}::", self.name);
@@ -193,6 +377,7 @@ impl Collection {
         old_doc: Option<&Document>,
         indexes: &[IndexDef],
         fts_indexes: &[FtsDef],
+        vec_indexes: &[VectorDef],
         wtxn: &mut dyn crate::engine::WriteTxn,
     ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
@@ -237,6 +422,23 @@ impl Collection {
             }
         }
 
+        // Vector indexes
+        for vdef in vec_indexes {
+            let vtable = vec_table_name(&self.name, &vdef.field);
+            // Remove old vector entry if updating
+            if old_doc.is_some() {
+                wtxn.delete(&vtable, &doc.id.to_bytes())?;
+            }
+            // Write new vector if field is present and is a valid numeric array
+            if let Some(val) = doc.get(&vdef.field) {
+                if let Some(vec) = value_to_f32_vec(val) {
+                    if vec.len() == vdef.dimensions {
+                        wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -248,8 +450,9 @@ impl Collection {
         let doc = Document::new(fields);
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
+        let vecs = self.load_vector_indexes()?;
         let mut wtxn = self.backend.begin_write()?;
-        self.write_doc_and_indexes(&doc, None, &indexes, &fts, wtxn.as_mut())?;
+        self.write_doc_and_indexes(&doc, None, &indexes, &fts, &vecs, wtxn.as_mut())?;
         let id = doc.id;
         wtxn.commit()?;
         Ok(id)
@@ -259,10 +462,11 @@ impl Collection {
         let docs: Vec<Document> = items.into_iter().map(Document::new).collect();
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
+        let vecs = self.load_vector_indexes()?;
         let mut wtxn = self.backend.begin_write()?;
         let mut ids = Vec::with_capacity(docs.len());
         for doc in &docs {
-            self.write_doc_and_indexes(doc, None, &indexes, &fts, wtxn.as_mut())?;
+            self.write_doc_and_indexes(doc, None, &indexes, &fts, &vecs, wtxn.as_mut())?;
             ids.push(doc.id);
         }
         wtxn.commit()?;
@@ -284,6 +488,7 @@ impl Collection {
     pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
+        let vecs = self.load_vector_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
         let rtxn = self.backend.begin_read()?;
         let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
@@ -293,7 +498,14 @@ impl Collection {
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, &update)?;
             let mut wtxn = self.backend.begin_write()?;
-            self.write_doc_and_indexes(&new_doc, Some(&old_doc), &indexes, &fts, wtxn.as_mut())?;
+            self.write_doc_and_indexes(
+                &new_doc,
+                Some(&old_doc),
+                &indexes,
+                &fts,
+                &vecs,
+                wtxn.as_mut(),
+            )?;
             wtxn.commit()?;
             return Ok(true);
         }
@@ -303,6 +515,7 @@ impl Collection {
     pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
+        let vecs = self.load_vector_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
         let rtxn = self.backend.begin_read()?;
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
@@ -313,7 +526,14 @@ impl Collection {
         for old_doc in &candidates {
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, &update)?;
-            self.write_doc_and_indexes(&new_doc, Some(old_doc), &indexes, &fts, wtxn.as_mut())?;
+            self.write_doc_and_indexes(
+                &new_doc,
+                Some(old_doc),
+                &indexes,
+                &fts,
+                &vecs,
+                wtxn.as_mut(),
+            )?;
             count += 1;
         }
         wtxn.commit()?;
@@ -323,6 +543,7 @@ impl Collection {
     pub fn delete_one(&self, filter: Filter) -> Result<bool, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
+        let vecs = self.load_vector_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
         let rtxn = self.backend.begin_read()?;
         let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
@@ -330,7 +551,7 @@ impl Collection {
 
         if let Some(doc) = candidates.drain(..).next() {
             let mut wtxn = self.backend.begin_write()?;
-            self.delete_doc_and_indexes(&doc, &indexes, &fts, wtxn.as_mut())?;
+            self.delete_doc_and_indexes(&doc, &indexes, &fts, &vecs, wtxn.as_mut())?;
             wtxn.commit()?;
             return Ok(true);
         }
@@ -340,6 +561,7 @@ impl Collection {
     pub fn delete_many(&self, filter: Filter) -> Result<u64, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
+        let vecs = self.load_vector_indexes()?;
         let qplan = plan_with_fts(&filter, &indexes, &fts);
         let rtxn = self.backend.begin_read()?;
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
@@ -348,7 +570,7 @@ impl Collection {
         let mut count = 0u64;
         let mut wtxn = self.backend.begin_write()?;
         for doc in &candidates {
-            self.delete_doc_and_indexes(doc, &indexes, &fts, wtxn.as_mut())?;
+            self.delete_doc_and_indexes(doc, &indexes, &fts, &vecs, wtxn.as_mut())?;
             count += 1;
         }
         wtxn.commit()?;
@@ -364,6 +586,7 @@ impl Collection {
         doc: &Document,
         indexes: &[IndexDef],
         fts_indexes: &[FtsDef],
+        vec_indexes: &[VectorDef],
         wtxn: &mut dyn crate::engine::WriteTxn,
     ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
@@ -387,6 +610,12 @@ impl Collection {
                 }
             }
         }
+
+        for vdef in vec_indexes {
+            let vtable = vec_table_name(&self.name, &vdef.field);
+            wtxn.delete(&vtable, &doc.id.to_bytes())?;
+        }
+
         Ok(())
     }
 }

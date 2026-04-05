@@ -1,6 +1,6 @@
 use napi_derive::napi;
 use serde_json::Value as JsonValue;
-use taladb_core::{Collection, Database, Filter, Update, Value};
+use taladb_core::{Collection, Database, Filter, Update, Value, VectorMetric};
 
 // ---------------------------------------------------------------------------
 // Helpers: JSON ↔ taladb_core::Value
@@ -181,6 +181,21 @@ fn json_to_update(json: JsonValue) -> napi::Result<Update> {
 }
 
 // ---------------------------------------------------------------------------
+// Vector helpers
+// ---------------------------------------------------------------------------
+
+fn parse_metric(metric: Option<String>) -> napi::Result<Option<VectorMetric>> {
+    match metric.as_deref() {
+        None | Some("cosine") => Ok(Some(VectorMetric::Cosine)),
+        Some("dot") => Ok(Some(VectorMetric::Dot)),
+        Some("euclidean") => Ok(Some(VectorMetric::Euclidean)),
+        Some(other) => Err(napi::Error::from_reason(format!(
+            "unknown metric \"{other}\": expected \"cosine\", \"dot\", or \"euclidean\""
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // napi bindings
 // ---------------------------------------------------------------------------
 
@@ -316,5 +331,59 @@ impl CollectionNode {
     pub fn drop_index(&self, field: String) -> napi::Result<()> {
         self.inner.drop_index(&field)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Create a vector index on `field`.
+    ///
+    /// `metric` — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
+    #[napi(js_name = "createVectorIndex")]
+    pub fn create_vector_index(
+        &self,
+        field: String,
+        dimensions: u32,
+        metric: Option<String>,
+    ) -> napi::Result<()> {
+        let m = parse_metric(metric)?;
+        self.inner
+            .create_vector_index(&field, dimensions as usize, m)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Drop a vector index.
+    #[napi(js_name = "dropVectorIndex")]
+    pub fn drop_vector_index(&self, field: String) -> napi::Result<()> {
+        self.inner
+            .drop_vector_index(&field)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Find the `top_k` nearest documents to `query`.
+    ///
+    /// `filter` — optional pre-filter in the same JSON object format as `find`.
+    ///
+    /// Returns an array of `{ document: {...}, score: number }` objects.
+    #[napi(js_name = "findNearest")]
+    pub fn find_nearest(
+        &self,
+        field: String,
+        query: Vec<f64>,
+        top_k: u32,
+        filter: Option<JsonValue>,
+    ) -> napi::Result<Vec<JsonValue>> {
+        let query_f32: Vec<f32> = query.iter().map(|&f| f as f32).collect();
+
+        let pre_filter = match filter {
+            Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
+            _ => None,
+        };
+
+        let results = self.inner
+            .find_nearest(&field, &query_f32, top_k as usize, pre_filter)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        Ok(results
+            .iter()
+            .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
+            .collect())
     }
 }
