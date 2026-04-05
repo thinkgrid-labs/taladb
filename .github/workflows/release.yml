@@ -422,9 +422,13 @@ jobs:
           pnpm exec tsup
           ls dist/index.mjs dist/index.js dist/index.d.ts
 
+      - name: Inspect pack contents
+        working-directory: packages/taladb
+        run: npm pack --dry-run
+
       - name: Publish taladb
         working-directory: packages/taladb
-        run: pnpm publish --no-git-checks --access public || echo "Already published, skipping."
+        run: npm publish --access public || echo "Already published, skipping."
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
