@@ -6,6 +6,11 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['@taladb/web', '@xenova/transformers'],
   },
+  build: {
+    rollupOptions: {
+      external: ['@taladb/node', '@taladb/react-native'],
+    },
+  },
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
