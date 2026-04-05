@@ -43,12 +43,16 @@ function detectPlatform(): Platform {
  * WASM + redb instance. Multiple tabs share the same worker instance so
  * there is always exactly one writer.
  */
+// WorkerProxy works with both MessagePort (SharedWorker) and Worker.
+// Worker does not have a .start() method; MessagePort requires it.
+type WorkerLike = Pick<Worker, 'postMessage'> & { onmessage: ((e: MessageEvent) => void) | null; start?: () => void };
+
 class WorkerProxy {
-  private readonly port: MessagePort;
+  private readonly port: WorkerLike;
   private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private nextId = 1;
 
-  constructor(port: MessagePort) {
+  constructor(port: WorkerLike) {
     this.port = port;
     this.port.onmessage = (e) => {
       const { id, result, error } = e.data;
@@ -59,7 +63,8 @@ class WorkerProxy {
         else p.reject(new Error(error));
       }
     };
-    this.port.start();
+    // MessagePort requires .start(); Worker does not have it.
+    this.port.start?.();
   }
 
   send<T = unknown>(op: string, args: Record<string, unknown> = {}): Promise<T> {
@@ -130,16 +135,12 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
 }
 
 async function createBrowserDB(dbName: string): Promise<TalaDB> {
-  // SharedWorker is not available in Safari on iOS or in some older browsers.
-  // Fall back to an in-memory WASM instance in those environments.
-  if (typeof SharedWorker === 'undefined') {
-    return createInMemoryBrowserDB(dbName);
-  }
-
-  // Resolve the worker URL — bundlers (Vite, Webpack) handle new URL() correctly
+  // createSyncAccessHandle (required for OPFS persistence) is only available
+  // in Dedicated Workers per the WHATWG spec — not SharedWorkers. We use a
+  // DedicatedWorker so each tab gets its own isolated worker + file handle.
   const workerUrl = new URL('@taladb/web/worker/taladb.worker.js', import.meta.url);
-  const worker = new SharedWorker(workerUrl, { type: 'module', name: 'taladb' });
-  const proxy = new WorkerProxy(worker.port);
+  const worker = new Worker(workerUrl, { type: 'module', name: 'taladb' });
+  const proxy = new WorkerProxy(worker);
 
   // Initialize the worker (opens OPFS file or falls back to in-memory)
   await proxy.send('init', { dbName });
@@ -244,7 +245,10 @@ async function createBrowserDB(dbName: string): Promise<TalaDB> {
 
   return {
     collection: <T extends Document>(name: string) => wrapCollection<T>(name),
-    close: () => proxy.send<void>('close'),
+    close: async () => {
+      await proxy.send<void>('close');
+      worker.terminate();
+    },
   };
 }
 

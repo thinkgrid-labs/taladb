@@ -244,8 +244,9 @@ impl Collection {
         let meta_key = vec_meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
+        // Idempotent: no-op if already exists
         if wtxn.get(META_VECTOR_TABLE, meta_key.as_bytes())?.is_some() {
-            return Err(TalaDbError::IndexExists(format!("vec:{}", meta_key)));
+            return Ok(());
         }
 
         let def = VectorDef {

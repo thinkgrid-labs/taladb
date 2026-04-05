@@ -42,9 +42,19 @@ impl Filter {
         match self {
             Filter::All => true,
 
-            Filter::Eq(field, val) => doc.get(field).is_some_and(|v| v == val),
+            Filter::Eq(field, val) => {
+                if field == "_id" {
+                    return matches!(val, Value::Str(s) if s == &doc.id.to_string());
+                }
+                doc.get(field).is_some_and(|v| v == val)
+            }
 
-            Filter::Ne(field, val) => doc.get(field).is_none_or(|v| v != val),
+            Filter::Ne(field, val) => {
+                if field == "_id" {
+                    return !matches!(val, Value::Str(s) if s == &doc.id.to_string());
+                }
+                doc.get(field).is_none_or(|v| v != val)
+            }
 
             Filter::Gt(field, val) => doc
                 .get(field)
@@ -66,11 +76,32 @@ impl Filter {
                 .and_then(|v| v.partial_cmp_numeric(val))
                 .is_some_and(|ord| ord != std::cmp::Ordering::Greater),
 
-            Filter::In(field, vals) => doc.get(field).is_some_and(|v| vals.contains(v)),
+            Filter::In(field, vals) => {
+                if field == "_id" {
+                    let id_str = doc.id.to_string();
+                    return vals
+                        .iter()
+                        .any(|v| matches!(v, Value::Str(s) if *s == id_str));
+                }
+                doc.get(field).is_some_and(|v| vals.contains(v))
+            }
 
-            Filter::Nin(field, vals) => doc.get(field).is_none_or(|v| !vals.contains(v)),
+            Filter::Nin(field, vals) => {
+                if field == "_id" {
+                    let id_str = doc.id.to_string();
+                    return !vals
+                        .iter()
+                        .any(|v| matches!(v, Value::Str(s) if *s == id_str));
+                }
+                doc.get(field).is_none_or(|v| !vals.contains(v))
+            }
 
-            Filter::Exists(field, should_exist) => doc.contains_key(field) == *should_exist,
+            Filter::Exists(field, should_exist) => {
+                if field == "_id" {
+                    return *should_exist;
+                }
+                doc.contains_key(field) == *should_exist
+            }
 
             Filter::And(filters) => filters.iter().all(|f| f.matches(doc)),
 

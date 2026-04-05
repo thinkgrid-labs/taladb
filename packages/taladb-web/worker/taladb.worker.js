@@ -1,24 +1,31 @@
 /**
- * TalaDB SharedWorker
+ * TalaDB Worker
  *
- * Owns the OPFS file handle and the WASM + redb database instance.
- * The main thread connects via SharedWorker and communicates through
- * a typed message protocol.
+ * Runs as a Dedicated Worker. Each tab spawns its own worker instance.
+ * Multi-tab write safety is provided by the Web Locks API — only one worker
+ * holds the exclusive lock on the OPFS file at a time. Other workers queue up
+ * and acquire the lock automatically when the current holder closes.
  *
- * Why SharedWorker (not DedicatedWorker)?
+ * Why DedicatedWorker (not SharedWorker)?
  * ----------------------------------------
- * A SharedWorker persists as long as any tab/page from the same origin
- * has it open. This means multiple tabs share the same database instance —
- * no write conflicts, no duplicate open files.
+ * createSyncAccessHandle() — required for synchronous OPFS I/O — is only
+ * available in DedicatedWorkerGlobalScope per the WHATWG File System spec.
+ * SharedWorker cannot call it; Chrome throws "is not a function".
+ *
+ * Why Web Locks?
+ * --------------
+ * Without coordination, two tabs opening the same OPFS file would race.
+ * navigator.locks.request() gives us an exclusive named lock. The first tab
+ * acquires it immediately; subsequent tabs block until the holder's worker is
+ * terminated (tab closed / navigated) or db.close() is called explicitly.
+ * If Web Locks is unavailable the worker opens the file directly and logs a
+ * warning (safe for single-tab use).
  *
  * Message protocol
  * ----------------
  * Request  → { id: number, op: string, ...args }
  * Response → { id: number, result: unknown }
  *          | { id: number, error: string }
- *
- * The `id` field lets the main thread match async responses to pending
- * Promise resolvers even when operations complete out of order.
  *
  * Supported ops
  * -------------
@@ -50,10 +57,7 @@
 let db = null;
 
 /**
- * Maps dbName → Promise<void> so that:
- * - Concurrent init calls for the same dbName share one promise (deduplicated).
- * - Init calls for different dbNames are rejected after the first succeeds,
- *   because a SharedWorker instance owns exactly one database file.
+ * Deduplicates concurrent init calls for the same dbName within one worker.
  * @type {Map<string, Promise<void>>}
  */
 const initPromises = new Map();
@@ -61,24 +65,29 @@ const initPromises = new Map();
 /** The dbName that was successfully initialised (or is being initialised). */
 let activeDbName = null;
 
+const isDev = typeof location !== 'undefined' && (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+const log = isDev ? console.log.bind(console, '[TalaDB Worker]') : () => {};
+const warn = isDev ? console.warn.bind(console, '[TalaDB Worker]') : () => {};
+
+/**
+ * Resolving this releases the Web Lock and closes the sync handle.
+ * Set inside doInit; called by the 'close' op or when the worker terminates.
+ * @type {(() => void) | null}
+ */
+let releaseLock = null;
+
 // ---------------------------------------------------------------------------
-// SharedWorker connect handler
+// Dedicated Worker message handler
 // ---------------------------------------------------------------------------
 
-self.onconnect = (connectEvent) => {
-  const port = connectEvent.ports[0];
-
-  port.onmessage = async (e) => {
-    const { id, op, ...args } = e.data;
-    try {
-      const result = await dispatch(op, args);
-      port.postMessage({ id, result: result ?? null });
-    } catch (err) {
-      port.postMessage({ id, error: String(err?.message ?? err) });
-    }
-  };
-
-  port.start();
+self.onmessage = async (e) => {
+  const { id, op, ...args } = e.data;
+  try {
+    const result = await dispatch(op, args);
+    self.postMessage({ id, result: result ?? null });
+  } catch (err) {
+    self.postMessage({ id, error: String(err?.message ?? err) });
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -89,16 +98,13 @@ async function dispatch(op, args) {
   if (op === 'init') {
     const { dbName } = args;
 
-    // Reject if a different database was already opened in this worker instance.
-    // A SharedWorker owns exactly one OPFS file handle.
     if (activeDbName !== null && activeDbName !== dbName) {
       throw new Error(
         `TalaDB worker already initialised for "${activeDbName}". ` +
-        `Cannot open "${dbName}" in the same SharedWorker instance.`
+        `Cannot open "${dbName}" in the same worker instance.`
       );
     }
 
-    // Deduplicate concurrent init calls for the same dbName.
     if (!initPromises.has(dbName)) {
       activeDbName = dbName;
       initPromises.set(dbName, doInit(dbName));
@@ -171,6 +177,8 @@ async function dispatch(op, args) {
       );
 
     case 'close':
+      // Release the Web Lock and close the sync handle gracefully.
+      if (releaseLock) { releaseLock(); releaseLock = null; }
       db = null;
       return null;
 
@@ -180,41 +188,77 @@ async function dispatch(op, args) {
 }
 
 // ---------------------------------------------------------------------------
-// Initialisation — load WASM, open OPFS file, create WorkerDB
+// Initialisation — load WASM, acquire lock, open OPFS file
 // ---------------------------------------------------------------------------
 
 async function doInit(dbName) {
-  // Dynamic import of the WASM module (wasm-pack --target web output)
-  // The bundler (Vite/Webpack) will resolve this path correctly.
   const wasm = await import('../pkg/taladb_web.js');
-  await wasm.default(); // run wasm-bindgen init (sets up memory, panic hook, etc.)
+  await wasm.default();
 
   const { WorkerDB } = wasm;
 
   const opfsAvailable = await checkOpfs();
   if (!opfsAvailable) {
-    console.warn('[TalaDB Worker] OPFS unavailable — falling back to in-memory');
+    warn('OPFS unavailable — falling back to in-memory');
     db = WorkerDB.openInMemory();
     return;
   }
 
-  // Get the OPFS root directory
   const root = await navigator.storage.getDirectory();
-
-  // Open (or create) the database file
   const fileName = `taladb_${dbName.replaceAll(/[/\\:]/g, '_')}.redb`;
   const fileHandle = await root.getFileHandle(fileName, { create: true });
 
-  // createSyncAccessHandle — available in workers only
-  const syncHandle = await fileHandle.createSyncAccessHandle();
+  if (!('locks' in navigator)) {
+    // Web Locks not available — open directly (single-tab safe only).
+    warn('Web Locks unavailable — multi-tab write safety disabled');
+    const syncHandle = await fileHandle.createSyncAccessHandle();
+    db = WorkerDB.openWithOpfs(syncHandle);
+    log(`Opened "${fileName}" via OPFS`);
+    return;
+  }
 
-  db = WorkerDB.openWithOpfs(syncHandle);
-  console.log(`[TalaDB Worker] Opened "${fileName}" via OPFS`);
+  // Acquire an exclusive lock on the database file.
+  // If another tab's worker already holds it, this call blocks until that
+  // worker calls close() or the tab is terminated (lock auto-released).
+  const lockName = `taladb:${fileName}`;
+  await new Promise((resolve, reject) => {
+    navigator.locks.request(lockName, async () => {
+      try {
+        const syncHandle = await fileHandle.createSyncAccessHandle();
+        db = WorkerDB.openWithOpfs(syncHandle);
+        log(`Opened "${fileName}" via OPFS (Web Locks)`);
+        resolve(); // signal doInit complete — caller can proceed
+
+        // Hold the lock by keeping this async callback alive.
+        // Resolved by the 'close' op or when the worker is terminated.
+        await new Promise(res => { releaseLock = res; });
+
+        syncHandle.close();
+        db = null;
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
 }
+
+// ---------------------------------------------------------------------------
+// OPFS capability probe
+// ---------------------------------------------------------------------------
 
 async function checkOpfs() {
   try {
-    await navigator.storage.getDirectory();
+    const root = await navigator.storage.getDirectory();
+    // Probe createSyncAccessHandle — only available in Dedicated Workers.
+    // getDirectory() succeeding alone is not sufficient.
+    // Use a unique filename so concurrent workers don't collide on the same
+    // probe file (each createSyncAccessHandle is exclusive).
+    const probeName = `_taladb_probe_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const probe = await root.getFileHandle(probeName, { create: true });
+    if (typeof probe.createSyncAccessHandle !== 'function') return false;
+    const handle = await probe.createSyncAccessHandle();
+    handle.close();
+    await root.removeEntry(probeName);
     return true;
   } catch {
     return false;
