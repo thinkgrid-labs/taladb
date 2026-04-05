@@ -1,6 +1,6 @@
 {
   "name": "@taladb/react-native",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "TalaDB React Native module — document and vector database via JSI HostObject",
   "main": "src/index",
   "types": "src/index.d.ts",
@@ -20,7 +20,13 @@
   "peerDependencies": {
     "react-native": ">=0.73.0"
   },
-  "keywords": ["database", "local-first", "react-native", "jsi", "offline"],
+  "keywords": [
+    "database",
+    "local-first",
+    "react-native",
+    "jsi",
+    "offline"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/thinkgrid-labs/taladb.git",
