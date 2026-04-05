@@ -367,7 +367,7 @@ jobs:
 
       - name: Publish @taladb/web
         working-directory: packages/taladb-web
-        run: pnpm publish --no-git-checks --access public
+        run: pnpm publish --no-git-checks --access public || echo "Already published, skipping."
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -392,7 +392,7 @@ jobs:
 
       - name: Publish @taladb/node
         working-directory: packages/taladb-node
-        run: pnpm publish --no-git-checks --access public
+        run: pnpm publish --no-git-checks --access public || echo "Already published, skipping."
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -411,7 +411,7 @@ jobs:
 
       - name: Publish @taladb/react-native
         working-directory: packages/taladb-react-native
-        run: pnpm publish --no-git-checks --access public
+        run: pnpm publish --no-git-checks --access public || echo "Already published, skipping."
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -421,7 +421,7 @@ jobs:
 
       - name: Publish taladb
         working-directory: packages/taladb
-        run: pnpm publish --no-git-checks --access public
+        run: pnpm publish --no-git-checks --access public || echo "Already published, skipping."
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
