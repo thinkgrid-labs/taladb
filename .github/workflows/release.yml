@@ -417,7 +417,10 @@ jobs:
 
       # -- taladb (TS wrapper) -------------------------------------------------
       - name: Build taladb TS package
-        run: pnpm --filter taladb build
+        working-directory: packages/taladb
+        run: |
+          pnpm exec tsup
+          ls dist/index.mjs dist/index.js dist/index.d.ts
 
       - name: Publish taladb
         working-directory: packages/taladb
