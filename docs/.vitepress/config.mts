@@ -78,7 +78,7 @@ export default defineConfig({
       { text: "API Reference", link: "/api/collection" },
       { text: "Roadmap", link: "/roadmap" },
       {
-        text: "v0.2.1",
+        text: "v0.2.10",
         items: [
           {
             text: "Changelog",

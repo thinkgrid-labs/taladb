@@ -42,3 +42,23 @@ for (const pkg of packages) {
   writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2) + "\n");
   console.log(`✓ ${pkg} → ${version}`);
 }
+
+// Sync Cargo.toml workspace version
+const cargoPath = resolve(root, "Cargo.toml");
+let cargo = readFileSync(cargoPath, "utf8");
+cargo = cargo.replace(
+  /^(version\s*=\s*)"[^"]*"/m,
+  `$1"${version}"`
+);
+writeFileSync(cargoPath, cargo);
+console.log(`✓ Cargo.toml → ${version}`);
+
+// Sync VitePress nav version badge
+const vpConfigPath = resolve(root, "docs/.vitepress/config.mts");
+let vpConfig = readFileSync(vpConfigPath, "utf8");
+vpConfig = vpConfig.replace(
+  /(text:\s*"v)\d+\.\d+\.\d+(")/,
+  `$1${version}$2`
+);
+writeFileSync(vpConfigPath, vpConfig);
+console.log(`✓ docs/.vitepress/config.mts → v${version}`);
