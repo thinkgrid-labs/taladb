@@ -397,6 +397,10 @@ jobs:
         run: |
           mkdir -p packages/taladb-web/pkg
           tar -xzf /tmp/wasm-artifact/*.tar.gz -C packages/taladb-web/pkg
+          # wasm-pack generates pkg/.gitignore with "*.wasm" which causes npm to
+          # silently exclude the binary during publish. Remove it so the files
+          # field in package.json is the only include/exclude authority.
+          rm -f packages/taladb-web/pkg/.gitignore
 
       - name: Publish @taladb/web
         working-directory: packages/taladb-web
