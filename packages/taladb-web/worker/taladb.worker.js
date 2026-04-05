@@ -46,7 +46,7 @@
 // State
 // ---------------------------------------------------------------------------
 
-/** @type {import('../pkg/taladb_wasm').WorkerDB | null} */
+/** @type {import('../pkg/taladb_web').WorkerDB | null} */
 let db = null;
 
 /**
@@ -186,7 +186,7 @@ async function dispatch(op, args) {
 async function doInit(dbName) {
   // Dynamic import of the WASM module (wasm-pack --target web output)
   // The bundler (Vite/Webpack) will resolve this path correctly.
-  const wasm = await import('../pkg/taladb_wasm.js');
+  const wasm = await import('../pkg/taladb_web.js');
   await wasm.default(); // run wasm-bindgen init (sets up memory, panic hook, etc.)
 
   const { WorkerDB } = wasm;

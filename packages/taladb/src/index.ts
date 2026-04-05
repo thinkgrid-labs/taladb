@@ -76,7 +76,7 @@ class WorkerProxy {
  * Data is not persisted across page reloads; all writes live in WASM memory only.
  */
 async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
-  const wasmUrl = new URL('@taladb/web/pkg/taladb_wasm.js', import.meta.url);
+  const wasmUrl = new URL('@taladb/web/pkg/taladb_web.js', import.meta.url);
   const wasm = await import(/* @vite-ignore */ wasmUrl.href);
   await wasm.default();
   const db = wasm.TalaDBWasm.openInMemory();
