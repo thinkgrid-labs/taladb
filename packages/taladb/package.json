@@ -55,7 +55,7 @@
     "vitest": "^3.2.0"
   },
   "optionalDependencies": {
-    "@taladb/web": "^0.2.4",
-    "@taladb/node": "^0.2.4"
+    "@taladb/web": "workspace:*",
+    "@taladb/node": "workspace:*"
   }
 }

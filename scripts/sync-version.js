@@ -22,11 +22,11 @@ for (const pkg of packages) {
   const pkgJson = JSON.parse(readFileSync(pkgPath, 'utf8'))
   pkgJson.version = version
 
-  // Also sync taladb / @taladb/* dependency references
+  // Sync taladb / @taladb/* dependency references, but leave workspace:* untouched
   for (const depField of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
     if (!pkgJson[depField]) continue
     for (const dep of Object.keys(pkgJson[depField])) {
-      if (dep === 'taladb' || dep.startsWith('@taladb/')) {
+      if ((dep === 'taladb' || dep.startsWith('@taladb/')) && pkgJson[depField][dep] !== 'workspace:*') {
         pkgJson[depField][dep] = `^${version}`
       }
     }
