@@ -1,6 +1,6 @@
 ---
 title: CLI Dev Tools
-description: Inspect, export, import, and manage TalaDB database files from the terminal using the taladb CLI.
+description: Inspect, export, import, and manage TalaDB database files from the terminal using the taladb CLI. Includes vector index inspection and embedding-aware export/import workflows.
 ---
 
 # CLI Dev Tools
@@ -40,7 +40,7 @@ taladb --version
 
 ### `inspect` — database overview
 
-Print all collections and their document counts.
+Print all collections, their document counts, and any vector indexes defined on them.
 
 ```sh
 taladb inspect ./myapp.db
@@ -52,10 +52,15 @@ TalaDB Inspector
 File: myapp.db
 
 Collections (3):
-  products  (142 documents)
+  articles  (1 247 documents)
+    Indexes:     category, locale, publishedAt
+    Vector indexes:  embedding (384-dim, cosine)
   sessions  (8 documents)
   users     (56 documents)
+    Indexes:     email, age
 ```
+
+Vector indexes are shown under the collection they belong to, with their configured dimensions and similarity metric.
 
 ---
 
@@ -103,6 +108,18 @@ taladb export ./myapp.db users --fmt csv --out users.csv
 | `--fmt` | `-f` | `json` | Output format: `json`, `ndjson`, `csv` |
 | `--out` | `-o` | stdout | Output file path |
 
+**Embedding fields** are exported as regular JSON arrays of numbers — no special handling needed. A document with an `embedding` field exports exactly as stored:
+
+```json
+{
+  "_id": "01HWZZQ0000000000000000000",
+  "title": "How to reset your password",
+  "embedding": [0.023, -0.141, 0.887, "...383 more values..."]
+}
+```
+
+This means export + import round-trips preserve embedding data faithfully. The **vector index itself is not exported** — only the raw field values are. After importing into a new database, call `createVectorIndex` in your application startup to rebuild the index from the stored embedding fields.
+
 ---
 
 ### `import` — bulk insert from JSON / NDJSON
@@ -118,6 +135,15 @@ taladb import ./myapp.db users users.ndjson
 ```
 
 The database file is created if it does not exist.
+
+**Importing documents with embeddings:** If your exported documents contain numeric array fields (e.g. `embedding`), those values are inserted as-is. The vector index is **not** automatically created — call `createVectorIndex` in your application after import to make the field searchable:
+
+```ts
+// After taladb import ./dev.db articles articles.ndjson
+const db = await openDB('./dev.db')
+await db.collection('articles').createVectorIndex('embedding', { dimensions: 384 })
+// Backfill runs automatically — all imported docs with a valid 'embedding' field are indexed
+```
 
 ---
 
@@ -155,3 +181,47 @@ if [ "$COUNT" -lt 1 ]; then
   exit 1
 fi
 ```
+
+**Seed a vector collection from an exported dataset:**
+
+Export from one database, import into another, then rebuild the vector index at app startup:
+
+```sh
+# 1. Export from production (embeddings included as plain JSON arrays)
+taladb export ./prod.db articles --fmt ndjson --out articles.ndjson
+
+# 2. Import into local dev database
+taladb import ./dev.db articles articles.ndjson
+
+# 3. In your app startup — createVectorIndex backfills all imported docs automatically
+```
+
+```ts
+const db = await openDB('./dev.db')
+const articles = db.collection('articles')
+await articles.createVectorIndex('embedding', { dimensions: 384 })
+```
+
+**Verify vector data is present after import:**
+
+```sh
+# Count should match what was exported
+taladb count ./dev.db articles
+
+# Inspect to confirm the vector index was created by the app
+taladb inspect ./dev.db
+# articles  (1247 documents)
+#   Vector indexes:  embedding (384-dim, cosine)
+```
+
+## Vector CLI commands (roadmap)
+
+The following commands are planned for a future release and are not yet available:
+
+| Command | Description |
+|---|---|
+| `taladb vector-indexes ./myapp.db` | List all vector indexes across all collections |
+| `taladb find-nearest ./myapp.db <collection> <field> <vector-json> --top 5` | Run a similarity query from the terminal |
+| `taladb drop-vector-index ./myapp.db <collection> <field>` | Remove a vector index |
+
+Track progress on the [GitHub issues page](https://github.com/thinkgrid-labs/taladb/issues).

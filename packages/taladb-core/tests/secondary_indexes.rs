@@ -1,9 +1,17 @@
 use taladb_core::{Database, Filter, Update, Value};
 
-fn i(n: i64) -> Value { Value::Int(n) }
-fn s(v: &str) -> Value { Value::Str(v.to_string()) }
-fn b(x: bool) -> Value { Value::Bool(x) }
-fn f(x: f64) -> Value { Value::Float(x) }
+fn i(n: i64) -> Value {
+    Value::Int(n)
+}
+fn s(v: &str) -> Value {
+    Value::Str(v.to_string())
+}
+fn b(x: bool) -> Value {
+    Value::Bool(x)
+}
+fn f(x: f64) -> Value {
+    Value::Float(x)
+}
 
 // ---------------------------------------------------------------------------
 // Basic index lookups
@@ -14,11 +22,21 @@ fn index_eq_lookup() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    col.insert(vec![("email".into(), s("alice@example.com")), ("age".into(), i(30))]).unwrap();
-    col.insert(vec![("email".into(), s("bob@example.com")),   ("age".into(), i(25))]).unwrap();
+    col.insert(vec![
+        ("email".into(), s("alice@example.com")),
+        ("age".into(), i(30)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("email".into(), s("bob@example.com")),
+        ("age".into(), i(25)),
+    ])
+    .unwrap();
     col.create_index("email").unwrap();
 
-    let results = col.find(Filter::Eq("email".into(), s("alice@example.com"))).unwrap();
+    let results = col
+        .find(Filter::Eq("email".into(), s("alice@example.com")))
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("email"), Some(&s("alice@example.com")));
 }
@@ -84,10 +102,12 @@ fn index_range_between() {
     }
     col.create_index("age").unwrap();
 
-    let results = col.find(Filter::And(vec![
-        Filter::Gte("age".into(), i(18)),
-        Filter::Lte("age".into(), i(65)),
-    ])).unwrap();
+    let results = col
+        .find(Filter::And(vec![
+            Filter::Gte("age".into(), i(18)),
+            Filter::Lte("age".into(), i(65)),
+        ]))
+        .unwrap();
 
     assert_eq!(results.len(), 4);
     for doc in &results {
@@ -106,10 +126,9 @@ fn index_in_lookup() {
     }
     col.create_index("status").unwrap();
 
-    let results = col.find(Filter::In(
-        "status".into(),
-        vec![s("active"), s("pending")],
-    )).unwrap();
+    let results = col
+        .find(Filter::In("status".into(), vec![s("active"), s("pending")]))
+        .unwrap();
     assert_eq!(results.len(), 2);
 }
 
@@ -134,7 +153,9 @@ fn index_in_no_match_returns_empty() {
     col.insert(vec![("tag".into(), s("rust"))]).unwrap();
     col.create_index("tag").unwrap();
 
-    let results = col.find(Filter::In("tag".into(), vec![s("java"), s("python")])).unwrap();
+    let results = col
+        .find(Filter::In("tag".into(), vec![s("java"), s("python")]))
+        .unwrap();
     assert!(results.is_empty());
 }
 
@@ -152,10 +173,12 @@ fn string_index_sorts_lexicographically() {
     }
     col.create_index("name").unwrap();
 
-    let results = col.find(Filter::And(vec![
-        Filter::Gte("name".into(), s("alice")),
-        Filter::Lte("name".into(), s("charlie")),
-    ])).unwrap();
+    let results = col
+        .find(Filter::And(vec![
+            Filter::Gte("name".into(), s("alice")),
+            Filter::Lte("name".into(), s("charlie")),
+        ]))
+        .unwrap();
 
     assert_eq!(results.len(), 3); // alice, bob, charlie
 }
@@ -188,15 +211,21 @@ fn index_maintained_on_update() {
     let col = db.collection("users");
 
     col.create_index("email").unwrap();
-    col.insert(vec![("email".into(), s("old@example.com"))]).unwrap();
+    col.insert(vec![("email".into(), s("old@example.com"))])
+        .unwrap();
 
     col.update_one(
         Filter::Eq("email".into(), s("old@example.com")),
         Update::Set(vec![("email".into(), s("new@example.com"))]),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let old = col.find(Filter::Eq("email".into(), s("old@example.com"))).unwrap();
-    let new = col.find(Filter::Eq("email".into(), s("new@example.com"))).unwrap();
+    let old = col
+        .find(Filter::Eq("email".into(), s("old@example.com")))
+        .unwrap();
+    let new = col
+        .find(Filter::Eq("email".into(), s("new@example.com")))
+        .unwrap();
 
     assert_eq!(old.len(), 0, "old index entry must be removed");
     assert_eq!(new.len(), 1, "new index entry must exist");
@@ -215,10 +244,21 @@ fn index_maintained_on_update_many() {
     col.update_many(
         Filter::Eq("role".into(), s("trial")),
         Update::Set(vec![("role".into(), s("user"))]),
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert_eq!(col.find(Filter::Eq("role".into(), s("trial"))).unwrap().len(), 0);
-    assert_eq!(col.find(Filter::Eq("role".into(), s("user"))).unwrap().len(), 3);
+    assert_eq!(
+        col.find(Filter::Eq("role".into(), s("trial")))
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        col.find(Filter::Eq("role".into(), s("user")))
+            .unwrap()
+            .len(),
+        3
+    );
 }
 
 #[test]
@@ -227,11 +267,19 @@ fn index_maintained_on_delete() {
     let col = db.collection("users");
 
     col.create_index("email").unwrap();
-    col.insert(vec![("email".into(), s("alice@example.com"))]).unwrap();
-    col.delete_one(Filter::Eq("email".into(), s("alice@example.com"))).unwrap();
+    col.insert(vec![("email".into(), s("alice@example.com"))])
+        .unwrap();
+    col.delete_one(Filter::Eq("email".into(), s("alice@example.com")))
+        .unwrap();
 
-    let results = col.find(Filter::Eq("email".into(), s("alice@example.com"))).unwrap();
-    assert_eq!(results.len(), 0, "stale index entry must be removed on delete");
+    let results = col
+        .find(Filter::Eq("email".into(), s("alice@example.com")))
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        0,
+        "stale index entry must be removed on delete"
+    );
 }
 
 #[test]
@@ -244,7 +292,8 @@ fn index_maintained_on_delete_many() {
     col.insert(vec![("active".into(), b(true))]).unwrap();
     col.insert(vec![("active".into(), b(false))]).unwrap();
 
-    col.delete_many(Filter::Eq("active".into(), b(true))).unwrap();
+    col.delete_many(Filter::Eq("active".into(), b(true)))
+        .unwrap();
 
     // Index must not return deleted docs
     let results = col.find(Filter::Eq("active".into(), b(true))).unwrap();
@@ -315,16 +364,28 @@ fn multiple_indexes_on_same_collection() {
         ("email".into(), s("alice@example.com")),
         ("age".into(), i(30)),
         ("role".into(), s("admin")),
-    ]).unwrap();
+    ])
+    .unwrap();
     col.insert(vec![
         ("email".into(), s("bob@example.com")),
         ("age".into(), i(25)),
         ("role".into(), s("user")),
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    assert_eq!(col.find(Filter::Eq("email".into(), s("alice@example.com"))).unwrap().len(), 1);
+    assert_eq!(
+        col.find(Filter::Eq("email".into(), s("alice@example.com")))
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(col.find(Filter::Lt("age".into(), i(28))).unwrap().len(), 1);
-    assert_eq!(col.find(Filter::Eq("role".into(), s("admin"))).unwrap().len(), 1);
+    assert_eq!(
+        col.find(Filter::Eq("role".into(), s("admin")))
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -333,9 +394,17 @@ fn index_on_field_absent_in_some_docs() {
     let col = db.collection("users");
 
     col.create_index("premium").unwrap();
-    col.insert(vec![("name".into(), s("Alice")), ("premium".into(), b(true))]).unwrap();
+    col.insert(vec![
+        ("name".into(), s("Alice")),
+        ("premium".into(), b(true)),
+    ])
+    .unwrap();
     col.insert(vec![("name".into(), s("Bob"))]).unwrap(); // no premium field
-    col.insert(vec![("name".into(), s("Carol")), ("premium".into(), b(false))]).unwrap();
+    col.insert(vec![
+        ("name".into(), s("Carol")),
+        ("premium".into(), b(false)),
+    ])
+    .unwrap();
 
     let results = col.find(Filter::Eq("premium".into(), b(true))).unwrap();
     assert_eq!(results.len(), 1);
@@ -356,10 +425,12 @@ fn or_across_same_indexed_field() {
         col.insert(vec![("role".into(), s(role))]).unwrap();
     }
 
-    let results = col.find(Filter::Or(vec![
-        Filter::Eq("role".into(), s("admin")),
-        Filter::Eq("role".into(), s("editor")),
-    ])).unwrap();
+    let results = col
+        .find(Filter::Or(vec![
+            Filter::Eq("role".into(), s("admin")),
+            Filter::Eq("role".into(), s("editor")),
+        ]))
+        .unwrap();
 
     assert_eq!(results.len(), 2);
 }
@@ -376,24 +447,53 @@ fn or_across_different_indexed_fields() {
     col.create_index("status").unwrap();
     col.create_index("priority").unwrap();
 
-    col.insert(vec![("status".into(), s("pinned")),  ("priority".into(), i(0))]).unwrap();
-    col.insert(vec![("status".into(), s("normal")),  ("priority".into(), i(1))]).unwrap();
-    col.insert(vec![("status".into(), s("normal")),  ("priority".into(), i(0))]).unwrap();
-    col.insert(vec![("status".into(), s("archived")), ("priority".into(), i(0))]).unwrap();
+    col.insert(vec![
+        ("status".into(), s("pinned")),
+        ("priority".into(), i(0)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("status".into(), s("normal")),
+        ("priority".into(), i(1)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("status".into(), s("normal")),
+        ("priority".into(), i(0)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("status".into(), s("archived")),
+        ("priority".into(), i(0)),
+    ])
+    .unwrap();
 
     // status = 'pinned' OR priority = 1 — crosses two different indexed fields
-    let results = col.find(Filter::Or(vec![
-        Filter::Eq("status".into(), s("pinned")),
-        Filter::Eq("priority".into(), i(1)),
-    ])).unwrap();
+    let results = col
+        .find(Filter::Or(vec![
+            Filter::Eq("status".into(), s("pinned")),
+            Filter::Eq("priority".into(), i(1)),
+        ]))
+        .unwrap();
 
-    assert_eq!(results.len(), 2, "$or across different indexed fields must return 2 docs");
+    assert_eq!(
+        results.len(),
+        2,
+        "$or across different indexed fields must return 2 docs"
+    );
 
-    let statuses: Vec<&str> = results.iter()
+    let statuses: Vec<&str> = results
+        .iter()
         .map(|d| d.get("status").and_then(|v| v.as_str()).unwrap())
         .collect();
-    assert!(statuses.contains(&"pinned"), "pinned doc must be in results");
-    assert!(statuses.contains(&"normal"), "priority=1 doc must be in results");
+    assert!(
+        statuses.contains(&"pinned"),
+        "pinned doc must be in results"
+    );
+    assert!(
+        statuses.contains(&"normal"),
+        "priority=1 doc must be in results"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -411,10 +511,12 @@ fn nin_with_index_excludes_values() {
     }
 
     // $nin on a field with an index should fall back to full-scan post-filter
-    let results = col.find(Filter::Nin(
-        "status".into(),
-        vec![s("deleted"), s("archived")],
-    )).unwrap();
+    let results = col
+        .find(Filter::Nin(
+            "status".into(),
+            vec![s("deleted"), s("archived")],
+        ))
+        .unwrap();
 
     assert_eq!(results.len(), 2);
     for doc in &results {
@@ -453,10 +555,12 @@ fn index_correct_on_large_collection() {
         col.insert(vec![("n".into(), i(n))]).unwrap();
     }
 
-    let results = col.find(Filter::And(vec![
-        Filter::Gte("n".into(), i(50)),
-        Filter::Lt("n".into(), i(100)),
-    ])).unwrap();
+    let results = col
+        .find(Filter::And(vec![
+            Filter::Gte("n".into(), i(50)),
+            Filter::Lt("n".into(), i(100)),
+        ]))
+        .unwrap();
 
     assert_eq!(results.len(), 50);
     for doc in &results {

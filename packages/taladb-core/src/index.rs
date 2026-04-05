@@ -58,7 +58,11 @@ fn encode_value_prefix(value: &Value, buf: &mut Vec<u8>) -> Option<()> {
             buf.push(0x30);
             let bits = f.to_bits();
             // IEEE 754 sort: if sign bit set, flip all bits; else flip just sign bit
-            let sortable = if bits >> 63 == 1 { !bits } else { bits ^ 0x8000_0000_0000_0000 };
+            let sortable = if bits >> 63 == 1 {
+                !bits
+            } else {
+                bits ^ 0x8000_0000_0000_0000
+            };
             buf.extend_from_slice(&sortable.to_be_bytes());
         }
         Value::Str(s) => {
@@ -165,9 +169,16 @@ mod tests {
 
     #[test]
     fn int_sort_order() {
-        let values = [Value::Int(-100), Value::Int(-1), Value::Int(0), Value::Int(1), Value::Int(100)];
+        let values = [
+            Value::Int(-100),
+            Value::Int(-1),
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(100),
+        ];
         let id = Ulid::nil();
-        let keys: Vec<Vec<u8>> = values.iter()
+        let keys: Vec<Vec<u8>> = values
+            .iter()
             .map(|v| encode_index_key(v, id).unwrap())
             .collect();
         let mut sorted = keys.clone();
@@ -177,9 +188,15 @@ mod tests {
 
     #[test]
     fn float_sort_order() {
-        let values = [Value::Float(-1.0), Value::Float(0.0), Value::Float(0.5), Value::Float(1.0)];
+        let values = [
+            Value::Float(-1.0),
+            Value::Float(0.0),
+            Value::Float(0.5),
+            Value::Float(1.0),
+        ];
         let id = Ulid::nil();
-        let keys: Vec<Vec<u8>> = values.iter()
+        let keys: Vec<Vec<u8>> = values
+            .iter()
             .map(|v| encode_index_key(v, id).unwrap())
             .collect();
         let mut sorted = keys.clone();
@@ -189,14 +206,22 @@ mod tests {
 
     #[test]
     fn string_sort_order() {
-        let values = [Value::Str("alpha".into()), Value::Str("beta".into()), Value::Str("gamma".into())];
+        let values = [
+            Value::Str("alpha".into()),
+            Value::Str("beta".into()),
+            Value::Str("gamma".into()),
+        ];
         let id = Ulid::nil();
-        let keys: Vec<Vec<u8>> = values.iter()
+        let keys: Vec<Vec<u8>> = values
+            .iter()
             .map(|v| encode_index_key(v, id).unwrap())
             .collect();
         let mut sorted = keys.clone();
         sorted.sort();
-        assert_eq!(keys, sorted, "string index keys must sort lexicographically");
+        assert_eq!(
+            keys, sorted,
+            "string index keys must sort lexicographically"
+        );
     }
 
     #[test]

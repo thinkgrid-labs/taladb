@@ -8,9 +8,7 @@ thread_local! {
 }
 
 fn new_ulid() -> Ulid {
-    ULID_GEN.with(|gen| {
-        gen.borrow_mut().generate().unwrap_or_else(|_| Ulid::new())
-    })
+    ULID_GEN.with(|gen| gen.borrow_mut().generate().unwrap_or_else(|_| Ulid::new()))
 }
 
 /// A dynamically-typed value that maps to JSON conceptually but serializes via postcard.
@@ -42,19 +40,35 @@ impl Value {
     }
 
     pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = self { Some(*b) } else { None }
+        if let Value::Bool(b) = self {
+            Some(*b)
+        } else {
+            None
+        }
     }
 
     pub fn as_int(&self) -> Option<i64> {
-        if let Value::Int(n) = self { Some(*n) } else { None }
+        if let Value::Int(n) = self {
+            Some(*n)
+        } else {
+            None
+        }
     }
 
     pub fn as_float(&self) -> Option<f64> {
-        if let Value::Float(f) = self { Some(*f) } else { None }
+        if let Value::Float(f) = self {
+            Some(*f)
+        } else {
+            None
+        }
     }
 
     pub fn as_str(&self) -> Option<&str> {
-        if let Value::Str(s) = self { Some(s.as_str()) } else { None }
+        if let Value::Str(s) = self {
+            Some(s.as_str())
+        } else {
+            None
+        }
     }
 
     /// Compare two Values for ordering (used by query engine range ops).
@@ -81,7 +95,10 @@ pub struct Document {
 
 impl Document {
     pub fn new(fields: Vec<(String, Value)>) -> Self {
-        Document { id: new_ulid(), fields }
+        Document {
+            id: new_ulid(),
+            fields,
+        }
     }
 
     pub fn with_id(id: Ulid, fields: Vec<(String, Value)>) -> Self {
@@ -125,7 +142,10 @@ mod tests {
             ("age".into(), Value::Int(30)),
             ("active".into(), Value::Bool(true)),
             ("score".into(), Value::Float(9.5)),
-            ("tags".into(), Value::Array(vec![Value::Str("rust".into()), Value::Str("db".into())])),
+            (
+                "tags".into(),
+                Value::Array(vec![Value::Str("rust".into()), Value::Str("db".into())]),
+            ),
         ]);
 
         let bytes = postcard::to_allocvec(&doc).unwrap();

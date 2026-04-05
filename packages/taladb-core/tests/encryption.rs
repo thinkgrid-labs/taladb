@@ -6,13 +6,17 @@
 
 use std::sync::Arc;
 
-use taladb_core::crypto::{derive_key, encrypt, decrypt, EncryptedBackend};
+use taladb_core::crypto::{decrypt, derive_key, encrypt, EncryptedBackend};
+use taladb_core::document::Value;
 use taladb_core::engine::RedbBackend;
 use taladb_core::{Database, Filter};
-use taladb_core::document::Value;
 
-fn s(v: &str) -> Value { Value::Str(v.to_string()) }
-fn i(n: i64) -> Value { Value::Int(n) }
+fn s(v: &str) -> Value {
+    Value::Str(v.to_string())
+}
+fn i(n: i64) -> Value {
+    Value::Int(n)
+}
 
 // ---------------------------------------------------------------------------
 // Low-level encrypt / decrypt
@@ -23,7 +27,11 @@ fn encrypt_decrypt_round_trip() {
     let key = [0u8; 32];
     let plaintext = b"Hello, TalaDB encryption!";
     let ciphertext = encrypt(&key, plaintext).unwrap();
-    assert_ne!(ciphertext.as_slice(), plaintext, "ciphertext must differ from plaintext");
+    assert_ne!(
+        ciphertext.as_slice(),
+        plaintext,
+        "ciphertext must differ from plaintext"
+    );
     let recovered = decrypt(&key, &ciphertext).unwrap();
     assert_eq!(recovered.as_slice(), plaintext);
 }
@@ -51,7 +59,10 @@ fn encrypt_is_nondeterministic() {
     let plaintext = b"same message";
     let c1 = encrypt(&key, plaintext).unwrap();
     let c2 = encrypt(&key, plaintext).unwrap();
-    assert_ne!(c1, c2, "two encryptions of the same plaintext must differ (random nonces)");
+    assert_ne!(
+        c1, c2,
+        "two encryptions of the same plaintext must differ (random nonces)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -95,9 +106,12 @@ fn encrypted_backend_insert_and_find() {
     let db = encrypted_db(key);
     let col = db.collection("secrets");
 
-    col.insert(vec![("secret".into(), s("my password"))]).unwrap();
+    col.insert(vec![("secret".into(), s("my password"))])
+        .unwrap();
 
-    let results = col.find(Filter::Eq("secret".into(), s("my password"))).unwrap();
+    let results = col
+        .find(Filter::Eq("secret".into(), s("my password")))
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("secret"), Some(&s("my password")));
 }
@@ -110,10 +124,12 @@ fn encrypted_backend_update_and_delete() {
 
     col.insert(vec![("value".into(), i(1))]).unwrap();
 
-    let updated = col.update_one(
-        Filter::Eq("value".into(), i(1)),
-        taladb_core::Update::Set(vec![("value".into(), i(2))]),
-    ).unwrap();
+    let updated = col
+        .update_one(
+            Filter::Eq("value".into(), i(1)),
+            taladb_core::Update::Set(vec![("value".into(), i(2))]),
+        )
+        .unwrap();
     assert!(updated);
 
     let results = col.find(Filter::Eq("value".into(), i(2))).unwrap();
@@ -130,7 +146,8 @@ fn encrypted_backend_snapshot_round_trip() {
     let db = encrypted_db(key);
     let col = db.collection("notes");
 
-    col.insert(vec![("body".into(), s("encrypted note"))]).unwrap();
+    col.insert(vec![("body".into(), s("encrypted note"))])
+        .unwrap();
 
     let snapshot = db.export_snapshot().unwrap();
 
@@ -154,10 +171,20 @@ fn encrypted_backend_index_works() {
     let col = db.collection("users");
 
     col.create_index("email").unwrap();
-    col.insert(vec![("email".into(), s("alice@example.com")), ("age".into(), i(30))]).unwrap();
-    col.insert(vec![("email".into(), s("bob@example.com")), ("age".into(), i(25))]).unwrap();
+    col.insert(vec![
+        ("email".into(), s("alice@example.com")),
+        ("age".into(), i(30)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("email".into(), s("bob@example.com")),
+        ("age".into(), i(25)),
+    ])
+    .unwrap();
 
-    let results = col.find(Filter::Eq("email".into(), s("alice@example.com"))).unwrap();
+    let results = col
+        .find(Filter::Eq("email".into(), s("alice@example.com")))
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("age"), Some(&i(30)));
 }

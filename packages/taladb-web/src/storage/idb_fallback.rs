@@ -8,9 +8,8 @@
 //! This module exposes JS-callable async helpers for the flush/load cycle.
 //! The wasm-bindgen surface in lib.rs orchestrates when to call them.
 
-use wasm_bindgen::prelude::*;
 use js_sys::{ArrayBuffer, Uint8Array};
-
+use wasm_bindgen::prelude::*;
 
 /// Load a previous database snapshot from IndexedDB.
 /// Returns None if no snapshot exists yet.
@@ -69,12 +68,28 @@ fn base64_naive_encode(data: &[u8]) -> String {
     let mut out = String::new();
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
-        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        let b1 = if chunk.len() > 1 {
+            chunk[1] as usize
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            chunk[2] as usize
+        } else {
+            0
+        };
         out.push(CHARS[b0 >> 2] as char);
         out.push(CHARS[((b0 & 0x3) << 4) | (b1 >> 4)] as char);
-        out.push(if chunk.len() > 1 { CHARS[((b1 & 0xf) << 2) | (b2 >> 6)] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[b2 & 0x3f] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            CHARS[((b1 & 0xf) << 2) | (b2 >> 6)] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            CHARS[b2 & 0x3f] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -83,9 +98,7 @@ fn base64_naive_decode(s: &str) -> Option<Vec<u8>> {
     let s: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
     let mut out = Vec::new();
     for chunk in s.chunks(4) {
-        let decode = |c: u8| -> Option<usize> {
-            CHARS.iter().position(|&b| b == c)
-        };
+        let decode = |c: u8| -> Option<usize> { CHARS.iter().position(|&b| b == c) };
         let c0 = decode(chunk[0])?;
         let c1 = decode(chunk[1])?;
         out.push(((c0 << 2) | (c1 >> 4)) as u8);

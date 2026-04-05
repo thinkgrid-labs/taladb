@@ -41,7 +41,10 @@ pub struct Collection {
 
 impl Collection {
     pub fn new(name: impl Into<String>, backend: Arc<dyn StorageBackend>) -> Self {
-        Collection { name: name.into(), backend }
+        Collection {
+            name: name.into(),
+            backend,
+        }
     }
 
     // ------------------------------------------------------------------
@@ -58,13 +61,20 @@ impl Collection {
         }
 
         // Write index metadata
-        let def = IndexDef { collection: self.name.clone(), field: field.to_string() };
+        let def = IndexDef {
+            collection: self.name.clone(),
+            field: field.to_string(),
+        };
         let bytes = postcard::to_allocvec(&def)?;
         wtxn.put(META_INDEXES_TABLE, meta_key.as_bytes(), &bytes)?;
 
         // Backfill existing documents into the new index
         let docs_table = docs_table_name(&self.name);
-        let existing = wtxn.range(&docs_table, std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)?;
+        let existing = wtxn.range(
+            &docs_table,
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Unbounded,
+        )?;
         let idx_table = index_table_name(&self.name, field);
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
@@ -89,7 +99,11 @@ impl Collection {
 
         // Remove all index entries (range scan on the index table)
         let idx_table = index_table_name(&self.name, field);
-        let all_entries = wtxn.range(&idx_table, std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)?;
+        let all_entries = wtxn.range(
+            &idx_table,
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Unbounded,
+        )?;
         for (k, _) in all_entries {
             wtxn.delete(&idx_table, &k)?;
         }
@@ -114,13 +128,20 @@ impl Collection {
             return Err(TalaDbError::IndexExists(format!("fts:{}", meta_key)));
         }
 
-        let def = FtsDef { collection: self.name.clone(), field: field.to_string() };
+        let def = FtsDef {
+            collection: self.name.clone(),
+            field: field.to_string(),
+        };
         let bytes = postcard::to_allocvec(&def)?;
         wtxn.put(META_FTS_TABLE, meta_key.as_bytes(), &bytes)?;
 
         // Backfill existing documents
         let docs_table = docs_table_name(&self.name);
-        let existing = wtxn.range(&docs_table, std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)?;
+        let existing = wtxn.range(
+            &docs_table,
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Unbounded,
+        )?;
         let fts_table = fts_table_name(&self.name, field);
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
@@ -147,7 +168,11 @@ impl Collection {
 
         // Clear all FTS entries for this field
         let fts_table = fts_table_name(&self.name, field);
-        let all = wtxn.range(&fts_table, std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)?;
+        let all = wtxn.range(
+            &fts_table,
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Unbounded,
+        )?;
         for (k, _) in all {
             wtxn.delete(&fts_table, &k)?;
         }
@@ -192,8 +217,11 @@ impl Collection {
 
         // Backfill existing documents
         let docs_table = docs_table_name(&self.name);
-        let existing =
-            wtxn.range(&docs_table, std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)?;
+        let existing = wtxn.range(
+            &docs_table,
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Unbounded,
+        )?;
         let vtable = vec_table_name(&self.name, field);
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
@@ -223,7 +251,11 @@ impl Collection {
         }
 
         let vtable = vec_table_name(&self.name, field);
-        let all = wtxn.range(&vtable, std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)?;
+        let all = wtxn.range(
+            &vtable,
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Unbounded,
+        )?;
         for (k, _) in all {
             wtxn.delete(&vtable, &k)?;
         }
@@ -252,9 +284,7 @@ impl Collection {
         let def = defs
             .iter()
             .find(|d| d.field == field)
-            .ok_or_else(|| {
-                TalaDbError::VectorIndexNotFound(format!("{}::{}", self.name, field))
-            })?;
+            .ok_or_else(|| TalaDbError::VectorIndexNotFound(format!("{}::{}", self.name, field)))?;
 
         // 2. Validate query dimensions
         if query.len() != def.dimensions {
@@ -302,9 +332,7 @@ impl Collection {
             .collect();
 
         // 6. Sort descending, keep top_k
-        scored.sort_unstable_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(top_k);
 
         // 7. Load full documents for top_k results
@@ -639,29 +667,31 @@ fn apply_update(doc: &mut Document, update: &Update) -> Result<(), TalaDbError> 
                     (Some(Value::Float(n)), Value::Float(d)) => Value::Float(n + d),
                     (Some(Value::Int(n)), Value::Float(d)) => Value::Float(*n as f64 + d),
                     (None, _) => delta.clone(),
-                    (Some(existing), _) => return Err(TalaDbError::TypeError {
-                        expected: "numeric".into(),
-                        got: existing.type_name().into(),
-                    }),
+                    (Some(existing), _) => {
+                        return Err(TalaDbError::TypeError {
+                            expected: "numeric".into(),
+                            got: existing.type_name().into(),
+                        })
+                    }
                 };
                 doc.set(k.clone(), new_val);
             }
         }
-        Update::Push(key, val) => {
-            match doc.get(key).cloned() {
-                Some(Value::Array(mut arr)) => {
-                    arr.push(val.clone());
-                    doc.set(key.clone(), Value::Array(arr));
-                }
-                None => {
-                    doc.set(key.clone(), Value::Array(vec![val.clone()]));
-                }
-                Some(existing) => return Err(TalaDbError::TypeError {
+        Update::Push(key, val) => match doc.get(key).cloned() {
+            Some(Value::Array(mut arr)) => {
+                arr.push(val.clone());
+                doc.set(key.clone(), Value::Array(arr));
+            }
+            None => {
+                doc.set(key.clone(), Value::Array(vec![val.clone()]));
+            }
+            Some(existing) => {
+                return Err(TalaDbError::TypeError {
                     expected: "array".into(),
                     got: existing.type_name().into(),
-                }),
+                })
             }
-        }
+        },
         Update::Pull(key, val) => {
             if let Some(Value::Array(arr)) = doc.get(key).cloned() {
                 let filtered: Vec<Value> = arr.into_iter().filter(|v| v != val).collect();

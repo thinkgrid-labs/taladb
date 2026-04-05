@@ -66,17 +66,11 @@ impl Filter {
                 .and_then(|v| v.partial_cmp_numeric(val))
                 .is_some_and(|ord| ord != std::cmp::Ordering::Greater),
 
-            Filter::In(field, vals) => doc
-                .get(field)
-                .is_some_and(|v| vals.contains(v)),
+            Filter::In(field, vals) => doc.get(field).is_some_and(|v| vals.contains(v)),
 
-            Filter::Nin(field, vals) => doc
-                .get(field)
-                .is_none_or(|v| !vals.contains(v)),
+            Filter::Nin(field, vals) => doc.get(field).is_none_or(|v| !vals.contains(v)),
 
-            Filter::Exists(field, should_exist) => {
-                doc.contains_key(field) == *should_exist
-            }
+            Filter::Exists(field, should_exist) => doc.contains_key(field) == *should_exist,
 
             Filter::And(filters) => filters.iter().all(|f| f.matches(doc)),
 
@@ -93,7 +87,9 @@ impl Filter {
                 }
                 if let Some(Value::Str(text)) = doc.get(field) {
                     let doc_tokens = tokenize(text);
-                    query_tokens.iter().all(|qt| doc_tokens.iter().any(|dt| dt == qt))
+                    query_tokens
+                        .iter()
+                        .all(|qt| doc_tokens.iter().any(|dt| dt == qt))
                 } else {
                     false
                 }
@@ -128,7 +124,10 @@ mod tests {
     fn doc(fields: Vec<(&str, Value)>) -> Document {
         Document::with_id(
             Ulid::nil(),
-            fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            fields
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
         )
     }
 

@@ -2,13 +2,17 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use taladb_core::Database;
 use taladb_core::document::Value;
 use taladb_core::query::filter::Filter;
 use taladb_core::watch::{create_watch, new_registry, notify};
+use taladb_core::Database;
 
-fn s(v: &str) -> Value { Value::Str(v.to_string()) }
-fn i(n: i64) -> Value { Value::Int(n) }
+fn s(v: &str) -> Value {
+    Value::Str(v.to_string())
+}
+fn i(n: i64) -> Value {
+    Value::Int(n)
+}
 
 // ---------------------------------------------------------------------------
 // try_next — non-blocking, no event
@@ -49,7 +53,9 @@ fn next_returns_snapshot_after_write() {
     assert!(snapshot.is_empty());
 
     // Insert and notify
-    db.collection("items").insert(vec![("x".into(), i(1))]).unwrap();
+    db.collection("items")
+        .insert(vec![("x".into(), i(1))])
+        .unwrap();
     notify(&registry);
     let snapshot = handle.next().unwrap();
     assert_eq!(snapshot.len(), 1);
@@ -69,7 +75,9 @@ fn try_next_returns_snapshot_after_notify() {
         db_clone.collection("data").find(filter.clone())
     });
 
-    db.collection("data").insert(vec![("v".into(), i(42))]).unwrap();
+    db.collection("data")
+        .insert(vec![("v".into(), i(42))])
+        .unwrap();
     notify(&registry);
 
     let result = handle.try_next().unwrap();
@@ -101,11 +109,18 @@ fn rapid_writes_coalesce() {
     // next() should drain all queued events and return a single snapshot
     let snapshot = handle.next().unwrap();
     // The snapshot reflects the current state (5 docs)
-    assert_eq!(snapshot.len(), 5, "coalesced snapshot should see all 5 docs");
+    assert_eq!(
+        snapshot.len(),
+        5,
+        "coalesced snapshot should see all 5 docs"
+    );
 
     // No further events pending
     let pending = handle.try_next().unwrap();
-    assert!(pending.is_none(), "no more events should be pending after drain");
+    assert!(
+        pending.is_none(),
+        "no more events should be pending after drain"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -125,9 +140,7 @@ fn watch_filter_applied_to_snapshots() {
     let handle = create_watch(
         &registry,
         Filter::Eq("status".into(), s("active")),
-        move |filter| {
-            db_clone.collection("items").find(filter.clone())
-        },
+        move |filter| db_clone.collection("items").find(filter.clone()),
     );
 
     notify(&registry);
@@ -156,7 +169,9 @@ fn multiple_subscribers_all_receive_event() {
         db2.collection("col").find(f.clone())
     });
 
-    db.collection("col").insert(vec![("x".into(), i(1))]).unwrap();
+    db.collection("col")
+        .insert(vec![("x".into(), i(1))])
+        .unwrap();
     notify(&registry);
 
     let s1 = h1.next().unwrap();

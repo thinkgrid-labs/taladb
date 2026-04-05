@@ -1,9 +1,17 @@
 use taladb_core::{Database, Filter, Update, Value};
 
-fn v(s: &str) -> Value { Value::Str(s.to_string()) }
-fn i(n: i64) -> Value { Value::Int(n) }
-fn b(x: bool) -> Value { Value::Bool(x) }
-fn f(x: f64) -> Value { Value::Float(x) }
+fn v(s: &str) -> Value {
+    Value::Str(s.to_string())
+}
+fn i(n: i64) -> Value {
+    Value::Int(n)
+}
+fn b(x: bool) -> Value {
+    Value::Bool(x)
+}
+fn f(x: f64) -> Value {
+    Value::Float(x)
+}
 
 // ---------------------------------------------------------------------------
 // Insert & find
@@ -14,10 +22,9 @@ fn insert_and_find() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    let id = col.insert(vec![
-        ("name".into(), v("Alice")),
-        ("age".into(), i(30)),
-    ]).unwrap();
+    let id = col
+        .insert(vec![("name".into(), v("Alice")), ("age".into(), i(30))])
+        .unwrap();
 
     let docs = col.find(Filter::All).unwrap();
     assert_eq!(docs.len(), 1);
@@ -30,11 +37,13 @@ fn insert_many_and_count() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("items");
 
-    let ids = col.insert_many(vec![
-        vec![("x".into(), i(1))],
-        vec![("x".into(), i(2))],
-        vec![("x".into(), i(3))],
-    ]).unwrap();
+    let ids = col
+        .insert_many(vec![
+            vec![("x".into(), i(1))],
+            vec![("x".into(), i(2))],
+            vec![("x".into(), i(3))],
+        ])
+        .unwrap();
 
     assert_eq!(ids.len(), 3);
     assert_eq!(col.count(Filter::All).unwrap(), 3);
@@ -97,8 +106,10 @@ fn find_with_eq_filter() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    col.insert(vec![("name".into(), v("Alice")), ("age".into(), i(30))]).unwrap();
-    col.insert(vec![("name".into(), v("Bob")),   ("age".into(), i(25))]).unwrap();
+    col.insert(vec![("name".into(), v("Alice")), ("age".into(), i(30))])
+        .unwrap();
+    col.insert(vec![("name".into(), v("Bob")), ("age".into(), i(25))])
+        .unwrap();
 
     let results = col.find(Filter::Eq("name".into(), v("Alice"))).unwrap();
     assert_eq!(results.len(), 1);
@@ -143,10 +154,12 @@ fn find_with_gte_lte_range() {
         col.insert(vec![("age".into(), i(n))]).unwrap();
     }
 
-    let results = col.find(Filter::And(vec![
-        Filter::Gte("age".into(), i(25)),
-        Filter::Lte("age".into(), i(65)),
-    ])).unwrap();
+    let results = col
+        .find(Filter::And(vec![
+            Filter::Gte("age".into(), i(25)),
+            Filter::Lte("age".into(), i(65)),
+        ]))
+        .unwrap();
 
     assert_eq!(results.len(), 4);
     for doc in &results {
@@ -164,10 +177,9 @@ fn find_with_in_filter() {
         col.insert(vec![("role".into(), v(role))]).unwrap();
     }
 
-    let results = col.find(Filter::In(
-        "role".into(),
-        vec![v("admin"), v("editor")],
-    )).unwrap();
+    let results = col
+        .find(Filter::In("role".into(), vec![v("admin"), v("editor")]))
+        .unwrap();
 
     assert_eq!(results.len(), 2);
 }
@@ -181,10 +193,9 @@ fn find_with_nin_filter() {
         col.insert(vec![("tag".into(), v(tag))]).unwrap();
     }
 
-    let results = col.find(Filter::Nin(
-        "tag".into(),
-        vec![v("spam"), v("low-quality")],
-    )).unwrap();
+    let results = col
+        .find(Filter::Nin("tag".into(), vec![v("spam"), v("low-quality")]))
+        .unwrap();
 
     assert_eq!(results.len(), 2);
 }
@@ -194,9 +205,17 @@ fn find_with_exists_true_and_false() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("profiles");
 
-    col.insert(vec![("name".into(), v("Alice")), ("bio".into(), v("Rustacean"))]).unwrap();
+    col.insert(vec![
+        ("name".into(), v("Alice")),
+        ("bio".into(), v("Rustacean")),
+    ])
+    .unwrap();
     col.insert(vec![("name".into(), v("Bob"))]).unwrap();
-    col.insert(vec![("name".into(), v("Carol")), ("bio".into(), v("Engineer"))]).unwrap();
+    col.insert(vec![
+        ("name".into(), v("Carol")),
+        ("bio".into(), v("Engineer")),
+    ])
+    .unwrap();
 
     let with_bio = col.find(Filter::Exists("bio".into(), true)).unwrap();
     assert_eq!(with_bio.len(), 2);
@@ -211,14 +230,25 @@ fn find_with_and_filter() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    col.insert(vec![("role".into(), v("admin")), ("active".into(), b(true))]).unwrap();
-    col.insert(vec![("role".into(), v("admin")), ("active".into(), b(false))]).unwrap();
-    col.insert(vec![("role".into(), v("user")),  ("active".into(), b(true))]).unwrap();
+    col.insert(vec![
+        ("role".into(), v("admin")),
+        ("active".into(), b(true)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("role".into(), v("admin")),
+        ("active".into(), b(false)),
+    ])
+    .unwrap();
+    col.insert(vec![("role".into(), v("user")), ("active".into(), b(true))])
+        .unwrap();
 
-    let results = col.find(Filter::And(vec![
-        Filter::Eq("role".into(), v("admin")),
-        Filter::Eq("active".into(), b(true)),
-    ])).unwrap();
+    let results = col
+        .find(Filter::And(vec![
+            Filter::Eq("role".into(), v("admin")),
+            Filter::Eq("active".into(), b(true)),
+        ]))
+        .unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("role"), Some(&v("admin")));
@@ -234,10 +264,12 @@ fn find_with_or_filter() {
         col.insert(vec![("type".into(), v(t))]).unwrap();
     }
 
-    let results = col.find(Filter::Or(vec![
-        Filter::Eq("type".into(), v("click")),
-        Filter::Eq("type".into(), v("submit")),
-    ])).unwrap();
+    let results = col
+        .find(Filter::Or(vec![
+            Filter::Eq("type".into(), v("click")),
+            Filter::Eq("type".into(), v("submit")),
+        ]))
+        .unwrap();
 
     assert_eq!(results.len(), 2);
 }
@@ -251,9 +283,9 @@ fn find_with_not_filter() {
     col.insert(vec![("expired".into(), b(true))]).unwrap();
     col.insert(vec![("expired".into(), b(false))]).unwrap();
 
-    let results = col.find(Filter::Not(Box::new(
-        Filter::Eq("expired".into(), b(true)),
-    ))).unwrap();
+    let results = col
+        .find(Filter::Not(Box::new(Filter::Eq("expired".into(), b(true)))))
+        .unwrap();
 
     assert_eq!(results.len(), 2);
 }
@@ -279,8 +311,14 @@ fn find_with_bool_field() {
     col.insert(vec![("verified".into(), b(true))]).unwrap();
     col.insert(vec![("verified".into(), b(false))]).unwrap();
 
-    assert_eq!(col.count(Filter::Eq("verified".into(), b(true))).unwrap(), 1);
-    assert_eq!(col.count(Filter::Eq("verified".into(), b(false))).unwrap(), 1);
+    assert_eq!(
+        col.count(Filter::Eq("verified".into(), b(true))).unwrap(),
+        1
+    );
+    assert_eq!(
+        col.count(Filter::Eq("verified".into(), b(false))).unwrap(),
+        1
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -292,15 +330,21 @@ fn update_one_set() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    col.insert(vec![("name".into(), v("Alice")), ("age".into(), i(30))]).unwrap();
+    col.insert(vec![("name".into(), v("Alice")), ("age".into(), i(30))])
+        .unwrap();
 
-    let updated = col.update_one(
-        Filter::Eq("name".into(), v("Alice")),
-        Update::Set(vec![("age".into(), i(31))]),
-    ).unwrap();
+    let updated = col
+        .update_one(
+            Filter::Eq("name".into(), v("Alice")),
+            Update::Set(vec![("age".into(), i(31))]),
+        )
+        .unwrap();
     assert!(updated);
 
-    let doc = col.find_one(Filter::Eq("name".into(), v("Alice"))).unwrap().unwrap();
+    let doc = col
+        .find_one(Filter::Eq("name".into(), v("Alice")))
+        .unwrap()
+        .unwrap();
     assert_eq!(doc.get("age"), Some(&i(31)));
 }
 
@@ -309,14 +353,23 @@ fn update_one_set_multiple_fields() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    col.insert(vec![("name".into(), v("Alice")), ("age".into(), i(30)), ("role".into(), v("user"))]).unwrap();
+    col.insert(vec![
+        ("name".into(), v("Alice")),
+        ("age".into(), i(30)),
+        ("role".into(), v("user")),
+    ])
+    .unwrap();
 
     col.update_one(
         Filter::Eq("name".into(), v("Alice")),
         Update::Set(vec![("age".into(), i(31)), ("role".into(), v("admin"))]),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let doc = col.find_one(Filter::Eq("name".into(), v("Alice"))).unwrap().unwrap();
+    let doc = col
+        .find_one(Filter::Eq("name".into(), v("Alice")))
+        .unwrap()
+        .unwrap();
     assert_eq!(doc.get("age"), Some(&i(31)));
     assert_eq!(doc.get("role"), Some(&v("admin")));
 }
@@ -331,9 +384,13 @@ fn update_one_set_adds_new_field() {
     col.update_one(
         Filter::Eq("name".into(), v("Alice")),
         Update::Set(vec![("verified".into(), b(true))]),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let doc = col.find_one(Filter::Eq("name".into(), v("Alice"))).unwrap().unwrap();
+    let doc = col
+        .find_one(Filter::Eq("name".into(), v("Alice")))
+        .unwrap()
+        .unwrap();
     assert_eq!(doc.get("verified"), Some(&b(true)));
 }
 
@@ -342,10 +399,12 @@ fn update_one_returns_false_when_no_match() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    let updated = col.update_one(
-        Filter::Eq("name".into(), v("Nobody")),
-        Update::Set(vec![("age".into(), i(99))]),
-    ).unwrap();
+    let updated = col
+        .update_one(
+            Filter::Eq("name".into(), v("Nobody")),
+            Update::Set(vec![("age".into(), i(99))]),
+        )
+        .unwrap();
 
     assert!(!updated);
 }
@@ -356,7 +415,8 @@ fn update_one_inc() {
     let col = db.collection("counters");
 
     col.insert(vec![("count".into(), i(5))]).unwrap();
-    col.update_one(Filter::All, Update::Inc(vec![("count".into(), i(3))])).unwrap();
+    col.update_one(Filter::All, Update::Inc(vec![("count".into(), i(3))]))
+        .unwrap();
 
     let doc = col.find_one(Filter::All).unwrap().unwrap();
     assert_eq!(doc.get("count"), Some(&i(8)));
@@ -368,7 +428,8 @@ fn update_one_inc_negative_decrements() {
     let col = db.collection("counters");
 
     col.insert(vec![("stock".into(), i(10))]).unwrap();
-    col.update_one(Filter::All, Update::Inc(vec![("stock".into(), i(-3))])).unwrap();
+    col.update_one(Filter::All, Update::Inc(vec![("stock".into(), i(-3))]))
+        .unwrap();
 
     let doc = col.find_one(Filter::All).unwrap().unwrap();
     assert_eq!(doc.get("stock"), Some(&i(7)));
@@ -379,14 +440,22 @@ fn update_one_unset_removes_field() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    col.insert(vec![("name".into(), v("Alice")), ("temp_token".into(), v("abc123"))]).unwrap();
+    col.insert(vec![
+        ("name".into(), v("Alice")),
+        ("temp_token".into(), v("abc123")),
+    ])
+    .unwrap();
 
     col.update_one(
         Filter::Eq("name".into(), v("Alice")),
         Update::Unset(vec!["temp_token".into()]),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let doc = col.find_one(Filter::Eq("name".into(), v("Alice"))).unwrap().unwrap();
+    let doc = col
+        .find_one(Filter::Eq("name".into(), v("Alice")))
+        .unwrap()
+        .unwrap();
     assert!(doc.get("temp_token").is_none());
     assert_eq!(doc.get("name"), Some(&v("Alice"))); // other fields intact
 }
@@ -399,14 +468,19 @@ fn update_one_push_appends_to_array() {
     col.insert(vec![
         ("title".into(), v("Hello")),
         ("tags".into(), Value::Array(vec![v("rust")])),
-    ]).unwrap();
+    ])
+    .unwrap();
 
     col.update_one(
         Filter::Eq("title".into(), v("Hello")),
         Update::Push("tags".into(), v("wasm")),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let doc = col.find_one(Filter::Eq("title".into(), v("Hello"))).unwrap().unwrap();
+    let doc = col
+        .find_one(Filter::Eq("title".into(), v("Hello")))
+        .unwrap()
+        .unwrap();
     let tags = match doc.get("tags").unwrap() {
         Value::Array(arr) => arr.clone(),
         _ => panic!("expected array"),
@@ -422,15 +496,23 @@ fn update_one_pull_removes_from_array() {
 
     col.insert(vec![
         ("title".into(), v("Hello")),
-        ("tags".into(), Value::Array(vec![v("rust"), v("spam"), v("wasm")])),
-    ]).unwrap();
+        (
+            "tags".into(),
+            Value::Array(vec![v("rust"), v("spam"), v("wasm")]),
+        ),
+    ])
+    .unwrap();
 
     col.update_one(
         Filter::Eq("title".into(), v("Hello")),
         Update::Pull("tags".into(), v("spam")),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let doc = col.find_one(Filter::Eq("title".into(), v("Hello"))).unwrap().unwrap();
+    let doc = col
+        .find_one(Filter::Eq("title".into(), v("Hello")))
+        .unwrap()
+        .unwrap();
     let tags = match doc.get("tags").unwrap() {
         Value::Array(arr) => arr.clone(),
         _ => panic!("expected array"),
@@ -449,10 +531,12 @@ fn update_many_updates_all_matching() {
     }
     col.insert(vec![("role".into(), v("admin"))]).unwrap();
 
-    let count = col.update_many(
-        Filter::Eq("role".into(), v("trial")),
-        Update::Set(vec![("role".into(), v("user"))]),
-    ).unwrap();
+    let count = col
+        .update_many(
+            Filter::Eq("role".into(), v("trial")),
+            Update::Set(vec![("role".into(), v("user"))]),
+        )
+        .unwrap();
 
     assert_eq!(count, 3);
     assert_eq!(col.count(Filter::Eq("role".into(), v("trial"))).unwrap(), 0);
@@ -472,7 +556,9 @@ fn delete_one() {
     col.insert(vec![("name".into(), v("Alice"))]).unwrap();
     col.insert(vec![("name".into(), v("Bob"))]).unwrap();
 
-    let deleted = col.delete_one(Filter::Eq("name".into(), v("Alice"))).unwrap();
+    let deleted = col
+        .delete_one(Filter::Eq("name".into(), v("Alice")))
+        .unwrap();
     assert!(deleted);
     assert_eq!(col.count(Filter::All).unwrap(), 1);
 
@@ -487,7 +573,9 @@ fn delete_one_returns_false_when_no_match() {
 
     col.insert(vec![("name".into(), v("Alice"))]).unwrap();
 
-    let deleted = col.delete_one(Filter::Eq("name".into(), v("Nobody"))).unwrap();
+    let deleted = col
+        .delete_one(Filter::Eq("name".into(), v("Nobody")))
+        .unwrap();
     assert!(!deleted);
     assert_eq!(col.count(Filter::All).unwrap(), 1);
 }
@@ -501,9 +589,12 @@ fn delete_many() {
         vec![("active".into(), b(true))],
         vec![("active".into(), b(true))],
         vec![("active".into(), b(false))],
-    ]).unwrap();
+    ])
+    .unwrap();
 
-    let count = col.delete_many(Filter::Eq("active".into(), b(true))).unwrap();
+    let count = col
+        .delete_many(Filter::Eq("active".into(), b(true)))
+        .unwrap();
     assert_eq!(count, 2);
     assert_eq!(col.count(Filter::All).unwrap(), 1);
 }
@@ -517,7 +608,8 @@ fn delete_many_all_deletes_entire_collection() {
         vec![("msg".into(), v("a"))],
         vec![("msg".into(), v("b"))],
         vec![("msg".into(), v("c"))],
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let count = col.delete_many(Filter::All).unwrap();
     assert_eq!(count, 3);
@@ -548,7 +640,9 @@ fn collections_are_isolated() {
     let posts = db.collection("posts");
 
     users.insert(vec![("name".into(), v("Alice"))]).unwrap();
-    posts.insert(vec![("title".into(), v("Hello World"))]).unwrap();
+    posts
+        .insert(vec![("title".into(), v("Hello World"))])
+        .unwrap();
 
     assert_eq!(users.count(Filter::All).unwrap(), 1);
     assert_eq!(posts.count(Filter::All).unwrap(), 1);

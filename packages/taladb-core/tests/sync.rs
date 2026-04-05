@@ -1,11 +1,15 @@
-use taladb_core::Database;
 use taladb_core::document::Value;
 use taladb_core::query::filter::Filter;
-use taladb_core::sync::{Change, ChangeOp, Changeset, LastWriteWins, SyncAdapter, stamp};
+use taladb_core::sync::{stamp, Change, ChangeOp, Changeset, LastWriteWins, SyncAdapter};
+use taladb_core::Database;
 use ulid::Ulid;
 
-fn s(v: &str) -> Value { Value::Str(v.to_string()) }
-fn i(n: i64) -> Value { Value::Int(n) }
+fn s(v: &str) -> Value {
+    Value::Str(v.to_string())
+}
+fn i(n: i64) -> Value {
+    Value::Int(n)
+}
 
 // ---------------------------------------------------------------------------
 // stamp() helper
@@ -21,20 +25,27 @@ fn stamp_adds_changed_at() {
 
 #[test]
 fn stamp_replaces_existing_changed_at() {
-    let mut fields = vec![
-        ("name".into(), s("Alice")),
-        ("_changed_at".into(), i(1000)),
-    ];
+    let mut fields = vec![("name".into(), s("Alice")), ("_changed_at".into(), i(1000))];
     stamp(&mut fields);
 
     // Must have exactly one _changed_at
     let count = fields.iter().filter(|(k, _)| k == "_changed_at").count();
-    assert_eq!(count, 1, "stamp() must replace existing _changed_at, not duplicate it");
+    assert_eq!(
+        count, 1,
+        "stamp() must replace existing _changed_at, not duplicate it"
+    );
 
     // New value must be >= 1000
-    let ts = fields.iter()
+    let ts = fields
+        .iter()
         .find(|(k, _)| k == "_changed_at")
-        .and_then(|(_, v)| if let Value::Int(n) = v { Some(*n) } else { None })
+        .and_then(|(_, v)| {
+            if let Value::Int(n) = v {
+                Some(*n)
+            } else {
+                None
+            }
+        })
         .unwrap();
     assert!(ts >= 1000, "_changed_at should be >= old value");
 }
@@ -66,7 +77,11 @@ fn export_changes_returns_docs_after_since_ms() {
     col.insert(new_fields).unwrap();
 
     let changes = adapter.export_changes(&db, &["tasks"], 5000).unwrap();
-    assert_eq!(changes.len(), 1, "only doc with _changed_at > since_ms should be exported");
+    assert_eq!(
+        changes.len(),
+        1,
+        "only doc with _changed_at > since_ms should be exported"
+    );
     assert_eq!(
         changes[0].op.upsert_title(),
         Some("new task"),
@@ -233,13 +248,16 @@ fn lww_local_newer_is_not_overwritten() {
         changed_at: 1000,
     }];
     let applied = adapter.import_changes(&db, remote_changeset).unwrap();
-    assert_eq!(applied, 0, "older remote change should not overwrite newer local");
+    assert_eq!(
+        applied, 0,
+        "older remote change should not overwrite newer local"
+    );
 
     let results = col.find(Filter::All).unwrap();
     // The content should remain from the local (newer) version
-    let found_local = results.iter().any(|d| {
-        d.get("content") == Some(&s("local is newer"))
-    });
+    let found_local = results
+        .iter()
+        .any(|d| d.get("content") == Some(&s("local is newer")));
     assert!(found_local, "local newer content must not be overwritten");
 }
 
@@ -295,7 +313,10 @@ fn import_delete_nonexistent_returns_zero() {
         changed_at: 1000,
     }];
     let applied = adapter.import_changes(&db, changeset).unwrap();
-    assert_eq!(applied, 0, "deleting a non-existent doc should return 0 applied");
+    assert_eq!(
+        applied, 0,
+        "deleting a non-existent doc should return 0 applied"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -106,8 +106,17 @@ fn main() -> Result<()> {
         Command::Inspect { file } => cmd_inspect(&file),
         Command::Collections { file } => cmd_collections(&file),
         Command::Count { file, collection } => cmd_count(&file, &collection),
-        Command::Export { file, collection, fmt, out } => cmd_export(&file, &collection, fmt, out.as_deref()),
-        Command::Import { file, collection, data } => cmd_import(&file, &collection, &data),
+        Command::Export {
+            file,
+            collection,
+            fmt,
+            out,
+        } => cmd_export(&file, &collection, fmt, out.as_deref()),
+        Command::Import {
+            file,
+            collection,
+            data,
+        } => cmd_import(&file, &collection, &data),
         Command::Drop { file, collection } => cmd_drop(&file, &collection),
     }
 }
@@ -210,11 +219,7 @@ fn cmd_export(
                     if let serde_json::Value::Object(m) = doc {
                         let row: Vec<String> = headers
                             .iter()
-                            .map(|h| {
-                                m.get(h)
-                                    .map(csv_escape)
-                                    .unwrap_or_default()
-                            })
+                            .map(|h| m.get(h).map(csv_escape).unwrap_or_default())
                             .collect();
                         rows.push(row.join(","));
                     }
@@ -225,7 +230,9 @@ fn cmd_export(
     };
 
     match out {
-        Some(path) => std::fs::write(path, &output).with_context(|| format!("writing {:?}", path))?,
+        Some(path) => {
+            std::fs::write(path, &output).with_context(|| format!("writing {:?}", path))?
+        }
         None => println!("{}", output),
     }
 
@@ -240,8 +247,7 @@ fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
     let col = db.collection(collection);
 
-    let content = std::fs::read_to_string(data)
-        .with_context(|| format!("reading {:?}", data))?;
+    let content = std::fs::read_to_string(data).with_context(|| format!("reading {:?}", data))?;
 
     // Detect format: NDJSON (one JSON object per line) vs JSON array
     let docs: Vec<serde_json::Value> = if content.trim_start().starts_with('[') {
@@ -302,7 +308,9 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Bytes(b) => serde_json::Value::String(format!("<bytes:{}>", b.len())),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
         Value::Object(obj) => serde_json::Value::Object(
-            obj.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+            obj.iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect(),
         ),
     }
 }
@@ -312,14 +320,19 @@ fn json_to_value(j: serde_json::Value) -> Value {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(b),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { Value::Int(i) }
-            else { Value::Float(n.as_f64().unwrap_or(0.0)) }
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Float(n.as_f64().unwrap_or(0.0))
+            }
         }
         serde_json::Value::String(s) => Value::Str(s),
         serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(json_to_value).collect()),
-        serde_json::Value::Object(map) => {
-            Value::Object(map.into_iter().map(|(k, v)| (k, json_to_value(v))).collect())
-        }
+        serde_json::Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 

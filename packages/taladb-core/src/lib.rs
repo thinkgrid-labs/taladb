@@ -35,22 +35,31 @@ impl Database {
     /// Open a file-backed database at the given path.
     pub fn open(path: &Path) -> Result<Self, TalaDbError> {
         let backend = RedbBackend::open(path)?;
-        Ok(Database { backend: Arc::new(backend) })
+        Ok(Database {
+            backend: Arc::new(backend),
+        })
     }
 
     /// Open a database with a custom storage backend (e.g. OPFS in WASM).
     pub fn open_with_backend(backend: Box<dyn StorageBackend>) -> Result<Self, TalaDbError> {
-        Ok(Database { backend: Arc::from(backend) })
+        Ok(Database {
+            backend: Arc::from(backend),
+        })
     }
 
     /// Open an in-memory database (useful for tests).
     pub fn open_in_memory() -> Result<Self, TalaDbError> {
         let backend = RedbBackend::open_in_memory()?;
-        Ok(Database { backend: Arc::new(backend) })
+        Ok(Database {
+            backend: Arc::new(backend),
+        })
     }
 
     /// Open a database and run any pending migrations before returning.
-    pub fn open_with_migrations(path: &Path, migrations: &[Migration]) -> Result<Self, TalaDbError> {
+    pub fn open_with_migrations(
+        path: &Path,
+        migrations: &[Migration],
+    ) -> Result<Self, TalaDbError> {
         let backend = Arc::new(RedbBackend::open(path)?);
         run_migrations(backend.as_ref(), migrations)?;
         Ok(Database { backend })
@@ -128,7 +137,9 @@ impl Database {
             return Err(TalaDbError::InvalidSnapshot);
         }
         let version = u32::from_le_bytes(
-            data[4..8].try_into().map_err(|_| TalaDbError::InvalidSnapshot)?,
+            data[4..8]
+                .try_into()
+                .map_err(|_| TalaDbError::InvalidSnapshot)?,
         );
         if version != SNAPSHOT_VERSION {
             return Err(TalaDbError::InvalidSnapshot);
@@ -187,7 +198,9 @@ fn read_u64(data: &[u8], cursor: &mut usize) -> Result<u64, TalaDbError> {
 }
 
 fn read_slice<'a>(data: &'a [u8], cursor: &mut usize, len: usize) -> Result<&'a [u8], TalaDbError> {
-    let end = cursor.checked_add(len).ok_or(TalaDbError::InvalidSnapshot)?;
+    let end = cursor
+        .checked_add(len)
+        .ok_or(TalaDbError::InvalidSnapshot)?;
     if end > data.len() {
         return Err(TalaDbError::InvalidSnapshot);
     }

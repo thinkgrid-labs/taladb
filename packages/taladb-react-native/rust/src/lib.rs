@@ -120,7 +120,8 @@ pub unsafe extern "C" fn taladb_insert_many(
         Ok(v) => v,
         Err(_) => return std::ptr::null_mut(),
     };
-    let items: Vec<Vec<(String, Value)>> = arr.iter()
+    let items: Vec<Vec<(String, Value)>> = arr
+        .iter()
         .filter_map(|v| json_to_fields(&v.to_string()))
         .collect();
     match db.collection(&col_name).insert_many(items) {
@@ -315,9 +316,11 @@ pub unsafe extern "C" fn taladb_create_index(
     collection: *const c_char,
     field: *const c_char,
 ) {
-    if let (Some(h), Some(col), Some(f)) =
-        (ptr_to_ref(handle), cstr_to_string(collection), cstr_to_string(field))
-    {
+    if let (Some(h), Some(col), Some(f)) = (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(field),
+    ) {
         let _ = h.db.collection(&col).create_index(&f);
     }
 }
@@ -329,9 +332,11 @@ pub unsafe extern "C" fn taladb_drop_index(
     collection: *const c_char,
     field: *const c_char,
 ) {
-    if let (Some(h), Some(col), Some(f)) =
-        (ptr_to_ref(handle), cstr_to_string(collection), cstr_to_string(field))
-    {
+    if let (Some(h), Some(col), Some(f)) = (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(field),
+    ) {
         let _ = h.db.collection(&col).drop_index(&f);
     }
 }
@@ -343,9 +348,11 @@ pub unsafe extern "C" fn taladb_create_fts_index(
     collection: *const c_char,
     field: *const c_char,
 ) {
-    if let (Some(h), Some(col), Some(f)) =
-        (ptr_to_ref(handle), cstr_to_string(collection), cstr_to_string(field))
-    {
+    if let (Some(h), Some(col), Some(f)) = (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(field),
+    ) {
         let _ = h.db.collection(&col).create_fts_index(&f);
     }
 }
@@ -357,9 +364,11 @@ pub unsafe extern "C" fn taladb_drop_fts_index(
     collection: *const c_char,
     field: *const c_char,
 ) {
-    if let (Some(h), Some(col), Some(f)) =
-        (ptr_to_ref(handle), cstr_to_string(collection), cstr_to_string(field))
-    {
+    if let (Some(h), Some(col), Some(f)) = (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(field),
+    ) {
         let _ = h.db.collection(&col).drop_fts_index(&f);
     }
 }
@@ -369,14 +378,21 @@ pub unsafe extern "C" fn taladb_drop_fts_index(
 // ---------------------------------------------------------------------------
 
 fn ptr_to_ref<'a>(handle: *mut TalaDbHandle) -> Option<&'a TalaDbHandle> {
-    if handle.is_null() { None } else { Some(unsafe { &*handle }) }
+    if handle.is_null() {
+        None
+    } else {
+        Some(unsafe { &*handle })
+    }
 }
 
 fn cstr_to_string(s: *const c_char) -> Option<String> {
     if s.is_null() {
         return None;
     }
-    unsafe { CStr::from_ptr(s) }.to_str().ok().map(str::to_owned)
+    unsafe { CStr::from_ptr(s) }
+        .to_str()
+        .ok()
+        .map(str::to_owned)
 }
 
 fn to_cstring(s: String) -> *mut c_char {
@@ -393,7 +409,11 @@ fn parse_args<'a>(
     collection: *const c_char,
     extra: *const c_char,
 ) -> Option<(&'a taladb_core::Database, String, String)> {
-    Some((&ptr_to_ref(handle)?.db, cstr_to_string(collection)?, cstr_to_string(extra)?))
+    Some((
+        &ptr_to_ref(handle)?.db,
+        cstr_to_string(collection)?,
+        cstr_to_string(extra)?,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -405,13 +425,18 @@ fn json_to_value(j: &serde_json::Value) -> Value {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(*b),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { Value::Int(i) }
-            else { Value::Float(n.as_f64().unwrap_or(0.0)) }
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Float(n.as_f64().unwrap_or(0.0))
+            }
         }
         serde_json::Value::String(s) => Value::Str(s.clone()),
         serde_json::Value::Array(arr) => Value::Array(arr.iter().map(json_to_value).collect()),
         serde_json::Value::Object(map) => Value::Object(
-            map.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect(),
+            map.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect(),
         ),
     }
 }
@@ -428,14 +453,19 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Bytes(b) => serde_json::Value::String(format!("<bytes:{}>", b.len())),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
         Value::Object(obj) => serde_json::Value::Object(
-            obj.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+            obj.iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect(),
         ),
     }
 }
 
 fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
     let mut map = serde_json::Map::new();
-    map.insert("_id".to_string(), serde_json::Value::String(doc.id.to_string()));
+    map.insert(
+        "_id".to_string(),
+        serde_json::Value::String(doc.id.to_string()),
+    );
     for (k, v) in &doc.fields {
         map.insert(k.clone(), value_to_json(v));
     }
@@ -484,18 +514,18 @@ fn json_to_filter(v: &serde_json::Value) -> Option<Filter> {
         for (op, val) in ops {
             let v = json_to_value(val);
             let f = match op.as_str() {
-                "$eq"     => Filter::Eq(field.clone(), v),
-                "$ne"     => Filter::Ne(field.clone(), v),
-                "$gt"     => Filter::Gt(field.clone(), v),
-                "$gte"    => Filter::Gte(field.clone(), v),
-                "$lt"     => Filter::Lt(field.clone(), v),
-                "$lte"    => Filter::Lte(field.clone(), v),
+                "$eq" => Filter::Eq(field.clone(), v),
+                "$ne" => Filter::Ne(field.clone(), v),
+                "$gt" => Filter::Gt(field.clone(), v),
+                "$gte" => Filter::Gte(field.clone(), v),
+                "$lt" => Filter::Lt(field.clone(), v),
+                "$lte" => Filter::Lte(field.clone(), v),
                 "$exists" => Filter::Exists(field.clone(), val.as_bool().unwrap_or(true)),
-                "$in"     => Filter::In(
+                "$in" => Filter::In(
                     field.clone(),
                     val.as_array()?.iter().map(json_to_value).collect(),
                 ),
-                "$nin"    => Filter::Nin(
+                "$nin" => Filter::Nin(
                     field.clone(),
                     val.as_array()?.iter().map(json_to_value).collect(),
                 ),
@@ -515,8 +545,11 @@ fn parse_update(json: &str) -> Option<Update> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let obj = v.as_object()?;
     if let Some(set) = obj.get("$set") {
-        let pairs = set.as_object()?.iter()
-            .map(|(k, v)| (k.clone(), json_to_value(v))).collect();
+        let pairs = set
+            .as_object()?
+            .iter()
+            .map(|(k, v)| (k.clone(), json_to_value(v)))
+            .collect();
         return Some(Update::Set(pairs));
     }
     if let Some(unset) = obj.get("$unset") {
@@ -524,8 +557,11 @@ fn parse_update(json: &str) -> Option<Update> {
         return Some(Update::Unset(keys));
     }
     if let Some(inc) = obj.get("$inc") {
-        let pairs = inc.as_object()?.iter()
-            .map(|(k, v)| (k.clone(), json_to_value(v))).collect();
+        let pairs = inc
+            .as_object()?
+            .iter()
+            .map(|(k, v)| (k.clone(), json_to_value(v)))
+            .collect();
         return Some(Update::Inc(pairs));
     }
     if let Some(push) = obj.get("$push") {

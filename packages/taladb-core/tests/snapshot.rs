@@ -22,8 +22,12 @@ fn list_collection_names_empty() {
 fn list_collection_names_after_insert() {
     let db = Database::open_in_memory().unwrap();
 
-    db.collection("users").insert(vec![("name".into(), s("Alice"))]).unwrap();
-    db.collection("posts").insert(vec![("title".into(), s("Hello"))]).unwrap();
+    db.collection("users")
+        .insert(vec![("name".into(), s("Alice"))])
+        .unwrap();
+    db.collection("posts")
+        .insert(vec![("title".into(), s("Hello"))])
+        .unwrap();
 
     let mut names = db.list_collection_names().unwrap();
     names.sort();
@@ -70,9 +74,15 @@ fn snapshot_round_trip_preserves_documents() {
 #[test]
 fn snapshot_round_trip_preserves_multiple_collections() {
     let db = Database::open_in_memory().unwrap();
-    db.collection("users").insert(vec![("name".into(), s("Alice"))]).unwrap();
-    db.collection("posts").insert(vec![("title".into(), s("Hello"))]).unwrap();
-    db.collection("posts").insert(vec![("title".into(), s("World"))]).unwrap();
+    db.collection("users")
+        .insert(vec![("name".into(), s("Alice"))])
+        .unwrap();
+    db.collection("posts")
+        .insert(vec![("title".into(), s("Hello"))])
+        .unwrap();
+    db.collection("posts")
+        .insert(vec![("title".into(), s("World"))])
+        .unwrap();
 
     let bytes = db.export_snapshot().unwrap();
     let db2 = Database::restore_from_snapshot(&bytes).unwrap();

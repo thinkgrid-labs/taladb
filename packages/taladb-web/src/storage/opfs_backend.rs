@@ -67,7 +67,9 @@ impl OpfsBackend {
             .call2(handle_js, &buf, &opts)
             .map_err(|e| io_err(&format!("opfs read: {:?}", e)))?;
 
-        let n = result.as_f64().ok_or_else(|| io_err("opfs read: non-numeric return"))? as usize;
+        let n = result
+            .as_f64()
+            .ok_or_else(|| io_err("opfs read: non-numeric return"))? as usize;
         let mut out = vec![0u8; n];
         buf.copy_to(&mut out[..n]);
         Ok(out)
@@ -143,8 +145,8 @@ pub async fn opfs_open_backend(db_name: &str) -> Result<JsValue, JsValue> {
     let global = js_sys::global();
     let navigator = js_sys::Reflect::get(&global, &"navigator".into())?;
     let storage = js_sys::Reflect::get(&navigator, &"storage".into())?;
-    let get_dir: js_sys::Function = js_sys::Reflect::get(&storage, &"getDirectory".into())?
-        .dyn_into()?;
+    let get_dir: js_sys::Function =
+        js_sys::Reflect::get(&storage, &"getDirectory".into())?.dyn_into()?;
 
     let dir: web_sys::FileSystemDirectoryHandle = wasm_bindgen_futures::JsFuture::from(
         get_dir.call0(&storage)?.dyn_into::<js_sys::Promise>()?,
@@ -169,7 +171,9 @@ pub async fn opfs_open_backend(db_name: &str) -> Result<JsValue, JsValue> {
         js_sys::Reflect::get(&file_handle, &"createSyncAccessHandle".into())?.dyn_into()?;
 
     let sync_handle: FileSystemSyncAccessHandle = wasm_bindgen_futures::JsFuture::from(
-        create_sync.call0(&file_handle)?.dyn_into::<js_sys::Promise>()?,
+        create_sync
+            .call0(&file_handle)?
+            .dyn_into::<js_sys::Promise>()?,
     )
     .await?
     .dyn_into()?;

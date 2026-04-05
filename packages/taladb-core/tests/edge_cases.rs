@@ -1,8 +1,12 @@
 //! Edge cases, boundary conditions, and regression guards.
 use taladb_core::{Database, Filter, Update, Value};
 
-fn s(v: &str) -> Value { Value::Str(v.to_string()) }
-fn i(n: i64) -> Value { Value::Int(n) }
+fn s(v: &str) -> Value {
+    Value::Str(v.to_string())
+}
+fn i(n: i64) -> Value {
+    Value::Int(n)
+}
 
 // ---------------------------------------------------------------------------
 // Empty / zero values
@@ -14,7 +18,10 @@ fn empty_string_is_valid_field_value() {
     let col = db.collection("docs");
 
     col.insert(vec![("bio".into(), s(""))]).unwrap();
-    let doc = col.find_one(Filter::Eq("bio".into(), s(""))).unwrap().unwrap();
+    let doc = col
+        .find_one(Filter::Eq("bio".into(), s("")))
+        .unwrap()
+        .unwrap();
     assert_eq!(doc.get("bio"), Some(&s("")));
 }
 
@@ -63,10 +70,12 @@ fn i64_min_and_max_round_trip() {
     assert_eq!(all.len(), 2);
 
     // Range scan must include both
-    let results = col.find(Filter::And(vec![
-        Filter::Gte("n".into(), i(i64::MIN)),
-        Filter::Lte("n".into(), i(i64::MAX)),
-    ])).unwrap();
+    let results = col
+        .find(Filter::And(vec![
+            Filter::Gte("n".into(), i(i64::MIN)),
+            Filter::Lte("n".into(), i(i64::MAX)),
+        ]))
+        .unwrap();
     assert_eq!(results.len(), 2);
 }
 
@@ -79,9 +88,7 @@ fn document_with_many_fields_round_trips() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("wide");
 
-    let fields: Vec<(String, Value)> = (0..100)
-        .map(|n| (format!("field_{n}"), i(n)))
-        .collect();
+    let fields: Vec<(String, Value)> = (0..100).map(|n| (format!("field_{n}"), i(n))).collect();
 
     col.insert(fields.clone()).unwrap();
 
@@ -97,7 +104,8 @@ fn large_string_value_round_trips() {
     let col = db.collection("blobs");
 
     let big = "x".repeat(64 * 1024); // 64 KB string
-    col.insert(vec![("data".into(), Value::Str(big.clone()))]).unwrap();
+    col.insert(vec![("data".into(), Value::Str(big.clone()))])
+        .unwrap();
 
     let doc = col.find_one(Filter::All).unwrap().unwrap();
     assert_eq!(doc.get("data"), Some(&Value::Str(big)));
@@ -109,9 +117,7 @@ fn insert_and_delete_1000_documents() {
     let col = db.collection("bulk");
 
     col.create_index("n").unwrap();
-    let items: Vec<Vec<(String, Value)>> = (0i64..1000)
-        .map(|n| vec![("n".into(), i(n))])
-        .collect();
+    let items: Vec<Vec<(String, Value)>> = (0i64..1000).map(|n| vec![("n".into(), i(n))]).collect();
     col.insert_many(items).unwrap();
 
     assert_eq!(col.count(Filter::All).unwrap(), 1000);
@@ -138,17 +144,22 @@ fn update_set_preserves_other_fields() {
         ("name".into(), s("Alice")),
         ("email".into(), s("alice@example.com")),
         ("age".into(), i(30)),
-    ]).unwrap();
+    ])
+    .unwrap();
 
     col.update_one(
         Filter::Eq("name".into(), s("Alice")),
         Update::Set(vec![("age".into(), i(31))]),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let doc = col.find_one(Filter::Eq("name".into(), s("Alice"))).unwrap().unwrap();
-    assert_eq!(doc.get("name"),  Some(&s("Alice")));
+    let doc = col
+        .find_one(Filter::Eq("name".into(), s("Alice")))
+        .unwrap()
+        .unwrap();
+    assert_eq!(doc.get("name"), Some(&s("Alice")));
     assert_eq!(doc.get("email"), Some(&s("alice@example.com")));
-    assert_eq!(doc.get("age"),   Some(&i(31)));
+    assert_eq!(doc.get("age"), Some(&i(31)));
 }
 
 #[test]
@@ -156,12 +167,11 @@ fn update_inc_does_not_affect_other_numeric_fields() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("stats");
 
-    col.insert(vec![
-        ("views".into(), i(100)),
-        ("likes".into(), i(50)),
-    ]).unwrap();
+    col.insert(vec![("views".into(), i(100)), ("likes".into(), i(50))])
+        .unwrap();
 
-    col.update_one(Filter::All, Update::Inc(vec![("views".into(), i(1))])).unwrap();
+    col.update_one(Filter::All, Update::Inc(vec![("views".into(), i(1))]))
+        .unwrap();
 
     let doc = col.find_one(Filter::All).unwrap().unwrap();
     assert_eq!(doc.get("views"), Some(&i(101)));
@@ -177,8 +187,10 @@ fn delete_by_unique_field_removes_only_target_document() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    col.insert(vec![("name".into(), s("Alice")), ("uid".into(), i(1))]).unwrap();
-    col.insert(vec![("name".into(), s("Bob")),   ("uid".into(), i(2))]).unwrap();
+    col.insert(vec![("name".into(), s("Alice")), ("uid".into(), i(1))])
+        .unwrap();
+    col.insert(vec![("name".into(), s("Bob")), ("uid".into(), i(2))])
+        .unwrap();
 
     col.delete_one(Filter::Eq("uid".into(), i(1))).unwrap();
 
@@ -196,11 +208,17 @@ fn find_one_returns_earliest_insertion() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("events");
 
-    col.insert(vec![("seq".into(), i(1)), ("type".into(), s("click"))]).unwrap();
-    col.insert(vec![("seq".into(), i(2)), ("type".into(), s("click"))]).unwrap();
-    col.insert(vec![("seq".into(), i(3)), ("type".into(), s("click"))]).unwrap();
+    col.insert(vec![("seq".into(), i(1)), ("type".into(), s("click"))])
+        .unwrap();
+    col.insert(vec![("seq".into(), i(2)), ("type".into(), s("click"))])
+        .unwrap();
+    col.insert(vec![("seq".into(), i(3)), ("type".into(), s("click"))])
+        .unwrap();
 
-    let first = col.find_one(Filter::Eq("type".into(), s("click"))).unwrap().unwrap();
+    let first = col
+        .find_one(Filter::Eq("type".into(), s("click")))
+        .unwrap()
+        .unwrap();
     assert_eq!(first.get("seq"), Some(&i(1)));
 }
 
@@ -228,22 +246,40 @@ fn nested_and_or_filter() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users");
 
-    col.insert(vec![("role".into(), s("admin")),  ("active".into(), Value::Bool(true))]).unwrap();
-    col.insert(vec![("role".into(), s("admin")),  ("active".into(), Value::Bool(false))]).unwrap();
-    col.insert(vec![("role".into(), s("editor")), ("active".into(), Value::Bool(true))]).unwrap();
-    col.insert(vec![("role".into(), s("viewer")), ("active".into(), Value::Bool(true))]).unwrap();
+    col.insert(vec![
+        ("role".into(), s("admin")),
+        ("active".into(), Value::Bool(true)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("role".into(), s("admin")),
+        ("active".into(), Value::Bool(false)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("role".into(), s("editor")),
+        ("active".into(), Value::Bool(true)),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("role".into(), s("viewer")),
+        ("active".into(), Value::Bool(true)),
+    ])
+    .unwrap();
 
     // (role = admin AND active = true) OR (role = editor AND active = true)
-    let results = col.find(Filter::Or(vec![
-        Filter::And(vec![
-            Filter::Eq("role".into(), s("admin")),
-            Filter::Eq("active".into(), Value::Bool(true)),
-        ]),
-        Filter::And(vec![
-            Filter::Eq("role".into(), s("editor")),
-            Filter::Eq("active".into(), Value::Bool(true)),
-        ]),
-    ])).unwrap();
+    let results = col
+        .find(Filter::Or(vec![
+            Filter::And(vec![
+                Filter::Eq("role".into(), s("admin")),
+                Filter::Eq("active".into(), Value::Bool(true)),
+            ]),
+            Filter::And(vec![
+                Filter::Eq("role".into(), s("editor")),
+                Filter::Eq("active".into(), Value::Bool(true)),
+            ]),
+        ]))
+        .unwrap();
 
     assert_eq!(results.len(), 2);
     for doc in &results {
@@ -265,10 +301,15 @@ fn update_inc_creates_field_on_missing() {
     col.update_one(
         Filter::Eq("name".into(), s("Alice")),
         Update::Inc(vec![("visits".into(), i(1))]),
-    ).unwrap();
+    )
+    .unwrap();
 
     let doc = col.find_one(Filter::All).unwrap().unwrap();
-    assert_eq!(doc.get("visits"), Some(&i(1)), "$inc on missing field must create it");
+    assert_eq!(
+        doc.get("visits"),
+        Some(&i(1)),
+        "$inc on missing field must create it"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +326,8 @@ fn update_push_on_nonexistent_creates_array() {
     col.update_one(
         Filter::Eq("name".into(), s("Bob")),
         Update::Push("tags".into(), s("rust")),
-    ).unwrap();
+    )
+    .unwrap();
 
     let doc = col.find_one(Filter::All).unwrap().unwrap();
     assert_eq!(
@@ -306,15 +348,23 @@ fn update_pull_on_missing_field_is_noop() {
 
     col.insert(vec![("name".into(), s("Carol"))]).unwrap();
 
-    let updated = col.update_one(
-        Filter::Eq("name".into(), s("Carol")),
-        Update::Pull("tags".into(), s("rust")),
-    ).unwrap();
+    let updated = col
+        .update_one(
+            Filter::Eq("name".into(), s("Carol")),
+            Update::Pull("tags".into(), s("rust")),
+        )
+        .unwrap();
 
-    assert!(updated, "$pull on missing field should still return true (doc found)");
+    assert!(
+        updated,
+        "$pull on missing field should still return true (doc found)"
+    );
     let doc = col.find_one(Filter::All).unwrap().unwrap();
     // Field should still not exist after noop pull
-    assert!(doc.get("tags").is_none(), "missing field must remain absent after $pull noop");
+    assert!(
+        doc.get("tags").is_none(),
+        "missing field must remain absent after $pull noop"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +383,10 @@ fn update_inc_on_string_returns_type_error() {
         Update::Inc(vec![("label".into(), i(1))]),
     );
 
-    assert!(result.is_err(), "$inc on a string field must return an error");
+    assert!(
+        result.is_err(),
+        "$inc on a string field must return an error"
+    );
     let err = result.unwrap_err();
     assert!(
         format!("{err}").contains("type"),
@@ -357,7 +410,10 @@ fn update_push_on_non_array_returns_type_error() {
         Update::Push("count".into(), i(1)),
     );
 
-    assert!(result.is_err(), "$push on a non-array field must return an error");
+    assert!(
+        result.is_err(),
+        "$push on a non-array field must return an error"
+    );
     let err = result.unwrap_err();
     assert!(
         format!("{err}").contains("type"),
@@ -383,6 +439,9 @@ fn snapshot_captures_state_at_export_time() {
     col.insert(vec![("v".into(), i(3))]).unwrap();
 
     let db2 = Database::restore_from_snapshot(&snapshot).unwrap();
-    assert_eq!(db2.collection("items").count(Filter::All).unwrap(), 2,
-        "snapshot must not include post-export writes");
+    assert_eq!(
+        db2.collection("items").count(Filter::All).unwrap(),
+        2,
+        "snapshot must not include post-export writes"
+    );
 }

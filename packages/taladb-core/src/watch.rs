@@ -128,15 +128,14 @@ pub fn new_registry() -> SharedRegistry {
 }
 
 /// Create a `WatchHandle` that re-runs `query_fn` after every write.
-pub fn create_watch<F>(
-    registry: &SharedRegistry,
-    filter: Filter,
-    query_fn: F,
-) -> WatchHandle
+pub fn create_watch<F>(registry: &SharedRegistry, filter: Filter, query_fn: F) -> WatchHandle
 where
     F: Fn(&Filter) -> Result<Vec<Document>, TalaDbError> + Send + 'static,
 {
-    let rx = registry.lock().unwrap_or_else(|p| p.into_inner()).subscribe();
+    let rx = registry
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .subscribe();
     WatchHandle {
         rx,
         filter,
@@ -167,14 +166,10 @@ mod tests {
         let registry = new_registry();
 
         let db_clone = Arc::clone(&db);
-        let handle = create_watch(
-            &registry,
-            Filter::All,
-            move |filter| {
-                let col = db_clone.collection("users");
-                col.find(filter.clone())
-            },
-        );
+        let handle = create_watch(&registry, Filter::All, move |filter| {
+            let col = db_clone.collection("users");
+            col.find(filter.clone())
+        });
 
         // Simulate a write notification
         notify(&registry);

@@ -59,8 +59,7 @@ impl RedbBackend {
     }
 
     pub fn open_in_memory() -> Result<Self, TalaDbError> {
-        let db = Database::builder()
-            .create_with_backend(redb::backends::InMemoryBackend::new())?;
+        let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
         Ok(RedbBackend { db: Arc::new(db) })
     }
 
