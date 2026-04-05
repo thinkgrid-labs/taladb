@@ -34,6 +34,12 @@ pub enum TalaDbError {
 
     #[error("invalid or corrupt snapshot data")]
     InvalidSnapshot,
+
+    #[error("vector index not found: {0}")]
+    VectorIndexNotFound(String),
+
+    #[error("vector dimension mismatch: index expects {expected}, got {got}")]
+    VectorDimensionMismatch { expected: usize, got: usize },
 }
 
 impl From<redb::DatabaseError> for TalaDbError {

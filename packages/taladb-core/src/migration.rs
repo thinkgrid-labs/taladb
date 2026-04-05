@@ -36,8 +36,7 @@ pub fn run_migrations(
         if pair[0].to_version != pair[1].from_version {
             return Err(TalaDbError::Migration(format!(
                 "migration gap: {} -> {} then {} -> {}",
-                pair[0].from_version, pair[0].to_version,
-                pair[1].from_version, pair[1].to_version,
+                pair[0].from_version, pair[0].to_version, pair[1].from_version, pair[1].to_version,
             )));
         }
     }

@@ -55,15 +55,24 @@ pub async fn opfs_load_snapshot(db_name: &str) -> Option<Vec<u8>> {
     // getFileHandle with create:false — returns an error if not found
     let opts = js_sys::Object::new();
     js_sys::Reflect::set(&opts, &"create".into(), &JsValue::FALSE).ok()?;
-    let file_handle: web_sys::FileSystemFileHandle = JsFuture::from(
-        dir.get_file_handle_with_options(&file_name, &opts.unchecked_into())
-    ).await.ok()?.dyn_into().ok()?;
+    let file_handle: web_sys::FileSystemFileHandle =
+        JsFuture::from(dir.get_file_handle_with_options(&file_name, &opts.unchecked_into()))
+            .await
+            .ok()?
+            .dyn_into()
+            .ok()?;
 
     let file: web_sys::File = JsFuture::from(file_handle.get_file())
-        .await.ok()?.dyn_into().ok()?;
+        .await
+        .ok()?
+        .dyn_into()
+        .ok()?;
 
     let array_buffer: ArrayBuffer = JsFuture::from(file.array_buffer())
-        .await.ok()?.dyn_into().ok()?;
+        .await
+        .ok()?
+        .dyn_into()
+        .ok()?;
 
     let uint8 = Uint8Array::new(&array_buffer);
     Some(uint8.to_vec())
@@ -81,7 +90,9 @@ pub async fn opfs_flush_snapshot(db_name: &str, data: &[u8]) -> bool {
 }
 
 async fn opfs_flush_inner(db_name: &str, data: &[u8]) -> Result<(), JsValue> {
-    let dir = opfs_root().await.ok_or(JsValue::from_str("opfs unavailable"))?;
+    let dir = opfs_root()
+        .await
+        .ok_or(JsValue::from_str("opfs unavailable"))?;
     let file_name = opfs_file_name(db_name);
 
     // getFileHandle with create:true — creates if missing
@@ -105,8 +116,11 @@ async fn opfs_flush_inner(db_name: &str, data: &[u8]) -> Result<(), JsValue> {
         .dyn_into()
         .map_err(|_| JsValue::from_str("writable.write is not a function"))?;
     JsFuture::from(
-        write_fn.call1(writable_js, &uint8)?.dyn_into::<js_sys::Promise>()?
-    ).await?;
+        write_fn
+            .call1(writable_js, &uint8)?
+            .dyn_into::<js_sys::Promise>()?,
+    )
+    .await?;
 
     // Close flushes and commits atomically
     JsFuture::from(writable.close()).await?;

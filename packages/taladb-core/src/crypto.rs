@@ -48,8 +48,8 @@ pub fn encrypt(key: &EncryptionKey, plaintext: &[u8]) -> Result<Vec<u8>, TalaDbE
         use aes_gcm::{Aes256Gcm, Nonce};
         use rand::RngCore;
 
-        let cipher = Aes256Gcm::new_from_slice(key)
-            .map_err(|e| TalaDbError::Encryption(e.to_string()))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|e| TalaDbError::Encryption(e.to_string()))?;
 
         let mut nonce_bytes = [0u8; 12];
         OsRng.fill_bytes(&mut nonce_bytes);
@@ -88,8 +88,8 @@ pub fn decrypt(key: &EncryptionKey, data: &[u8]) -> Result<Vec<u8>, TalaDbError>
             return Err(TalaDbError::Encryption("ciphertext too short".into()));
         }
         let (nonce_bytes, ciphertext) = data.split_at(12);
-        let cipher = Aes256Gcm::new_from_slice(key)
-            .map_err(|e| TalaDbError::Encryption(e.to_string()))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|e| TalaDbError::Encryption(e.to_string()))?;
         let nonce = Nonce::from_slice(nonce_bytes);
 
         cipher
@@ -129,12 +129,18 @@ impl EncryptedBackend {
 impl StorageBackend for EncryptedBackend {
     fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, TalaDbError> {
         let inner_txn = self.inner.begin_write()?;
-        Ok(Box::new(EncryptedWriteTxn { inner: inner_txn, key: self.key }))
+        Ok(Box::new(EncryptedWriteTxn {
+            inner: inner_txn,
+            key: self.key,
+        }))
     }
 
     fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, TalaDbError> {
         let inner_txn = self.inner.begin_read()?;
-        Ok(Box::new(EncryptedReadTxn { inner: inner_txn, key: self.key }))
+        Ok(Box::new(EncryptedReadTxn {
+            inner: inner_txn,
+            key: self.key,
+        }))
     }
 }
 

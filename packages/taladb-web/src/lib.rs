@@ -6,8 +6,8 @@ pub use worker_db::WorkerDB;
 use std::sync::Arc;
 
 use serde_wasm_bindgen::{from_value, to_value};
+use taladb_core::{Collection, Database, Filter, Update, Value, VectorMetric};
 use wasm_bindgen::prelude::*;
-use taladb_core::{Collection, Database, Filter, Update, Value};
 
 pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_load_snapshot};
 
@@ -32,7 +32,9 @@ impl TalaDBWasm {
     #[wasm_bindgen(js_name = openInMemory)]
     pub fn open_in_memory() -> Result<TalaDBWasm, JsValue> {
         let db = Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(TalaDBWasm { inner: Arc::new(db) })
+        Ok(TalaDBWasm {
+            inner: Arc::new(db),
+        })
     }
 
     /// Open a database, restoring from a previously exported snapshot if provided.
@@ -50,14 +52,13 @@ impl TalaDBWasm {
     #[wasm_bindgen(js_name = openWithSnapshot)]
     pub fn open_with_snapshot(snapshot: Option<Vec<u8>>) -> Result<TalaDBWasm, JsValue> {
         let db = match snapshot {
-            Some(ref data) if !data.is_empty() => {
-                Database::restore_from_snapshot(data)
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?
-            }
-            _ => Database::open_in_memory()
+            Some(ref data) if !data.is_empty() => Database::restore_from_snapshot(data)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?,
+            _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
         };
-        Ok(TalaDBWasm { inner: Arc::new(db) })
+        Ok(TalaDBWasm {
+            inner: Arc::new(db),
+        })
     }
 
     /// Serialize the entire in-memory database to bytes.
@@ -93,7 +94,10 @@ impl CollectionWasm {
     /// Insert a document. Accepts a plain JS object, returns the ULID string id.
     pub fn insert(&self, doc: JsValue) -> Result<String, JsValue> {
         let fields = js_object_to_fields(doc)?;
-        let id = self.inner.insert(fields).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let id = self
+            .inner
+            .insert(fields)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(id.to_string())
     }
 
@@ -114,7 +118,10 @@ impl CollectionWasm {
     /// Find documents matching the filter. Returns a JS array of plain objects.
     pub fn find(&self, filter: JsValue) -> Result<JsValue, JsValue> {
         let f = js_to_filter(filter)?;
-        let docs = self.inner.find(f).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let docs = self
+            .inner
+            .find(f)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let result: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
         to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -123,7 +130,11 @@ impl CollectionWasm {
     #[wasm_bindgen(js_name = findOne)]
     pub fn find_one(&self, filter: JsValue) -> Result<JsValue, JsValue> {
         let f = js_to_filter(filter)?;
-        match self.inner.find_one(f).map_err(|e| JsValue::from_str(&e.to_string()))? {
+        match self
+            .inner
+            .find_one(f)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+        {
             Some(doc) => {
                 let json = doc_to_json(&doc);
                 to_value(&json).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -137,7 +148,9 @@ impl CollectionWasm {
     pub fn update_one(&self, filter: JsValue, update: JsValue) -> Result<bool, JsValue> {
         let f = js_to_filter(filter)?;
         let u = js_to_update(update)?;
-        self.inner.update_one(f, u).map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner
+            .update_one(f, u)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Update all matching documents. Returns the count updated.
@@ -145,7 +158,10 @@ impl CollectionWasm {
     pub fn update_many(&self, filter: JsValue, update: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
         let u = js_to_update(update)?;
-        let n = self.inner.update_many(f, u).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let n = self
+            .inner
+            .update_many(f, u)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(n as u32)
     }
 
@@ -153,34 +169,107 @@ impl CollectionWasm {
     #[wasm_bindgen(js_name = deleteOne)]
     pub fn delete_one(&self, filter: JsValue) -> Result<bool, JsValue> {
         let f = js_to_filter(filter)?;
-        self.inner.delete_one(f).map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner
+            .delete_one(f)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Delete all matching documents. Returns the count deleted.
     #[wasm_bindgen(js_name = deleteMany)]
     pub fn delete_many(&self, filter: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
-        let n = self.inner.delete_many(f).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let n = self
+            .inner
+            .delete_many(f)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(n as u32)
     }
 
     /// Count documents matching the filter.
     pub fn count(&self, filter: JsValue) -> Result<u32, JsValue> {
         let f = js_to_filter(filter)?;
-        let n = self.inner.count(f).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let n = self
+            .inner
+            .count(f)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(n as u32)
     }
 
     /// Create a secondary index on a field.
     #[wasm_bindgen(js_name = createIndex)]
     pub fn create_index(&self, field: &str) -> Result<(), JsValue> {
-        self.inner.create_index(field).map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner
+            .create_index(field)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Drop a secondary index.
     #[wasm_bindgen(js_name = dropIndex)]
     pub fn drop_index(&self, field: &str) -> Result<(), JsValue> {
-        self.inner.drop_index(field).map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner
+            .drop_index(field)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Create a vector index on `field`.
+    ///
+    /// `dimensions` — expected vector length.
+    /// `metric`     — optional string: `"cosine"` (default), `"dot"`, or `"euclidean"`.
+    #[wasm_bindgen(js_name = createVectorIndex)]
+    pub fn create_vector_index(
+        &self,
+        field: &str,
+        dimensions: u32,
+        metric: Option<String>,
+    ) -> Result<(), JsValue> {
+        let m = parse_metric(metric)?;
+        self.inner
+            .create_vector_index(field, dimensions as usize, m)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Drop a vector index.
+    #[wasm_bindgen(js_name = dropVectorIndex)]
+    pub fn drop_vector_index(&self, field: &str) -> Result<(), JsValue> {
+        self.inner
+            .drop_vector_index(field)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Find the `top_k` nearest documents to `query` on a vector index.
+    ///
+    /// `filter` — optional pre-filter (same format as `find`). Pass `null` to
+    ///            search across all documents that have the vector field.
+    ///
+    /// Returns a JSON array of `{ document: {...}, score: number }` objects.
+    #[wasm_bindgen(js_name = findNearest)]
+    pub fn find_nearest(
+        &self,
+        field: &str,
+        query: Vec<f32>,
+        top_k: u32,
+        filter: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let pre_filter = if filter.is_null() || filter.is_undefined() {
+            None
+        } else {
+            Some(js_to_filter(filter)?)
+        };
+        let results = self
+            .inner
+            .find_nearest(field, &query, top_k as usize, pre_filter)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let json: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "document": doc_to_json(&r.document),
+                    "score": r.score,
+                })
+            })
+            .collect();
+        to_value(&json).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
 
@@ -190,12 +279,12 @@ impl CollectionWasm {
 
 /// Convert a JS object like { name: "Alice", age: 30 } to Vec<(String, Value)>.
 fn js_object_to_fields(val: JsValue) -> Result<Vec<(String, Value)>, JsValue> {
-    let json: serde_json::Value =
-        from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
     match json {
-        serde_json::Value::Object(map) => {
-            Ok(map.into_iter().map(|(k, v)| (k, json_to_value(v))).collect())
-        }
+        serde_json::Value::Object(map) => Ok(map
+            .into_iter()
+            .map(|(k, v)| (k, json_to_value(v)))
+            .collect()),
         _ => Err(JsValue::from_str("document must be a plain object")),
     }
 }
@@ -213,9 +302,11 @@ fn json_to_value(j: serde_json::Value) -> Value {
         }
         serde_json::Value::String(s) => Value::Str(s),
         serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(json_to_value).collect()),
-        serde_json::Value::Object(map) => {
-            Value::Object(map.into_iter().map(|(k, v)| (k, json_to_value(v))).collect())
-        }
+        serde_json::Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -231,7 +322,9 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Bytes(b) => serde_json::Value::String(format!("<bytes:{}>", b.len())),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
         Value::Object(obj) => serde_json::Value::Object(
-            obj.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+            obj.iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect(),
         ),
     }
 }
@@ -253,10 +346,8 @@ fn js_to_filter(val: JsValue) -> Result<Filter, JsValue> {
     if val.is_null() || val.is_undefined() {
         return Ok(Filter::All);
     }
-    let json: serde_json::Value =
-        from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    json_to_filter(&json)
-        .ok_or_else(|| JsValue::from_str("invalid filter"))
+    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    json_to_filter(&json).ok_or_else(|| JsValue::from_str("invalid filter"))
 }
 
 fn json_to_filter(json: &serde_json::Value) -> Option<Filter> {
@@ -302,18 +393,26 @@ fn parse_field_filter(field: &str, expr: &serde_json::Value) -> Option<Filter> {
     for (op, val) in ops {
         let v = json_to_value(val.clone());
         let f = match op.as_str() {
-            "$eq"  => Filter::Eq(field.to_string(), v),
-            "$ne"  => Filter::Ne(field.to_string(), v),
-            "$gt"  => Filter::Gt(field.to_string(), v),
+            "$eq" => Filter::Eq(field.to_string(), v),
+            "$ne" => Filter::Ne(field.to_string(), v),
+            "$gt" => Filter::Gt(field.to_string(), v),
             "$gte" => Filter::Gte(field.to_string(), v),
-            "$lt"  => Filter::Lt(field.to_string(), v),
+            "$lt" => Filter::Lt(field.to_string(), v),
             "$lte" => Filter::Lte(field.to_string(), v),
-            "$in"  => {
-                let arr = val.as_array()?.iter().map(|v| json_to_value(v.clone())).collect();
+            "$in" => {
+                let arr = val
+                    .as_array()?
+                    .iter()
+                    .map(|v| json_to_value(v.clone()))
+                    .collect();
                 Filter::In(field.to_string(), arr)
             }
             "$nin" => {
-                let arr = val.as_array()?.iter().map(|v| json_to_value(v.clone())).collect();
+                let arr = val
+                    .as_array()?
+                    .iter()
+                    .map(|v| json_to_value(v.clone()))
+                    .collect();
                 Filter::Nin(field.to_string(), arr)
             }
             "$exists" => Filter::Exists(field.to_string(), val.as_bool().unwrap_or(true)),
@@ -333,12 +432,14 @@ fn parse_field_filter(field: &str, expr: &serde_json::Value) -> Option<Filter> {
 /// Supports: { $set: {...} }, { $unset: {...} }, { $inc: {...} },
 ///           { $push: { field: val } }, { $pull: { field: val } }
 fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
-    let json: serde_json::Value =
-        from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let obj = json.as_object().ok_or_else(|| JsValue::from_str("update must be an object"))?;
+    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let obj = json
+        .as_object()
+        .ok_or_else(|| JsValue::from_str("update must be an object"))?;
 
     if let Some(set_obj) = obj.get("$set") {
-        let pairs = set_obj.as_object()
+        let pairs = set_obj
+            .as_object()
             .ok_or_else(|| JsValue::from_str("$set must be an object"))?
             .iter()
             .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
@@ -346,7 +447,8 @@ fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
         return Ok(Update::Set(pairs));
     }
     if let Some(unset_obj) = obj.get("$unset") {
-        let keys = unset_obj.as_object()
+        let keys = unset_obj
+            .as_object()
             .ok_or_else(|| JsValue::from_str("$unset must be an object"))?
             .keys()
             .cloned()
@@ -354,7 +456,8 @@ fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
         return Ok(Update::Unset(keys));
     }
     if let Some(inc_obj) = obj.get("$inc") {
-        let pairs = inc_obj.as_object()
+        let pairs = inc_obj
+            .as_object()
             .ok_or_else(|| JsValue::from_str("$inc must be an object"))?
             .iter()
             .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
@@ -362,16 +465,22 @@ fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
         return Ok(Update::Inc(pairs));
     }
     if let Some(push_obj) = obj.get("$push") {
-        let map = push_obj.as_object()
+        let map = push_obj
+            .as_object()
             .ok_or_else(|| JsValue::from_str("$push must be an object"))?;
-        let (k, v) = map.iter().next()
+        let (k, v) = map
+            .iter()
+            .next()
             .ok_or_else(|| JsValue::from_str("$push needs one field"))?;
         return Ok(Update::Push(k.clone(), json_to_value(v.clone())));
     }
     if let Some(pull_obj) = obj.get("$pull") {
-        let map = pull_obj.as_object()
+        let map = pull_obj
+            .as_object()
             .ok_or_else(|| JsValue::from_str("$pull must be an object"))?;
-        let (k, v) = map.iter().next()
+        let (k, v) = map
+            .iter()
+            .next()
             .ok_or_else(|| JsValue::from_str("$pull needs one field"))?;
         return Ok(Update::Pull(k.clone(), json_to_value(v.clone())));
     }
@@ -380,13 +489,28 @@ fn js_to_update(val: JsValue) -> Result<Update, JsValue> {
 }
 
 // ---------------------------------------------------------------------------
+// Vector helpers
+// ---------------------------------------------------------------------------
+
+fn parse_metric(metric: Option<String>) -> Result<Option<VectorMetric>, JsValue> {
+    match metric.as_deref() {
+        None | Some("cosine") => Ok(Some(VectorMetric::Cosine)),
+        Some("dot") => Ok(Some(VectorMetric::Dot)),
+        Some("euclidean") => Ok(Some(VectorMetric::Euclidean)),
+        Some(other) => Err(JsValue::from_str(&format!(
+            "unknown metric \"{other}\": expected \"cosine\", \"dot\", or \"euclidean\""
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WASM tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    use wasm_bindgen_test::*;
     use super::*;
+    use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
 

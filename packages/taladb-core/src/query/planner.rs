@@ -32,9 +32,7 @@ pub enum QueryPlan {
 
     /// Union the results of multiple index-backed sub-plans ($or when all
     /// branches are index-accelerated).
-    IndexOr {
-        plans: Vec<QueryPlan>,
-    },
+    IndexOr { plans: Vec<QueryPlan> },
 
     /// Full-text search via the inverted token index.
     FtsSearch {
@@ -64,52 +62,72 @@ pub fn plan_with_fts(filter: &Filter, indexes: &[IndexDef], fts_indexes: &[FtsDe
 }
 
 fn plan_inner(filter: &Filter, indexed_fields: &[&str], fts_fields: &[&str]) -> QueryPlan {
-
     match filter {
         Filter::All => QueryPlan::FullScan,
 
         Filter::Eq(field, value) if indexed_fields.contains(&field.as_str()) => {
             if let Some((start, end)) = index_range_eq(value) {
-                return QueryPlan::IndexEq { field: field.clone(), start, end };
+                return QueryPlan::IndexEq {
+                    field: field.clone(),
+                    start,
+                    end,
+                };
             }
             QueryPlan::FullScan
         }
 
         Filter::Gt(field, value) if indexed_fields.contains(&field.as_str()) => {
             if let Some((start, end)) = index_range_cmp(Some((value, false)), None) {
-                return QueryPlan::IndexRange { field: field.clone(), start, end };
+                return QueryPlan::IndexRange {
+                    field: field.clone(),
+                    start,
+                    end,
+                };
             }
             QueryPlan::FullScan
         }
 
         Filter::Gte(field, value) if indexed_fields.contains(&field.as_str()) => {
             if let Some((start, end)) = index_range_cmp(Some((value, true)), None) {
-                return QueryPlan::IndexRange { field: field.clone(), start, end };
+                return QueryPlan::IndexRange {
+                    field: field.clone(),
+                    start,
+                    end,
+                };
             }
             QueryPlan::FullScan
         }
 
         Filter::Lt(field, value) if indexed_fields.contains(&field.as_str()) => {
             if let Some((start, end)) = index_range_cmp(None, Some((value, false))) {
-                return QueryPlan::IndexRange { field: field.clone(), start, end };
+                return QueryPlan::IndexRange {
+                    field: field.clone(),
+                    start,
+                    end,
+                };
             }
             QueryPlan::FullScan
         }
 
         Filter::Lte(field, value) if indexed_fields.contains(&field.as_str()) => {
             if let Some((start, end)) = index_range_cmp(None, Some((value, true))) {
-                return QueryPlan::IndexRange { field: field.clone(), start, end };
+                return QueryPlan::IndexRange {
+                    field: field.clone(),
+                    start,
+                    end,
+                };
             }
             QueryPlan::FullScan
         }
 
         Filter::In(field, values) if indexed_fields.contains(&field.as_str()) => {
-            let ranges: Vec<(Vec<u8>, Vec<u8>)> = values
-                .iter()
-                .filter_map(index_range_eq)
-                .collect();
+            let ranges: Vec<(Vec<u8>, Vec<u8>)> =
+                values.iter().filter_map(index_range_eq).collect();
             if !ranges.is_empty() {
-                return QueryPlan::IndexIn { field: field.clone(), ranges };
+                return QueryPlan::IndexIn {
+                    field: field.clone(),
+                    ranges,
+                };
             }
             QueryPlan::FullScan
         }
@@ -121,7 +139,10 @@ fn plan_inner(filter: &Filter, indexed_fields: &[&str], fts_fields: &[&str]) -> 
             if tokens.is_empty() {
                 return QueryPlan::FullScan;
             }
-            QueryPlan::FtsSearch { field: field.clone(), tokens }
+            QueryPlan::FtsSearch {
+                field: field.clone(),
+                tokens,
+            }
         }
 
         // For And: try each sub-filter for an index, use first hit
@@ -137,7 +158,8 @@ fn plan_inner(filter: &Filter, indexed_fields: &[&str], fts_fields: &[&str]) -> 
 
         // Or: use IndexOr only when every branch is index-backed
         Filter::Or(filters) => {
-            let sub_plans: Vec<QueryPlan> = filters.iter()
+            let sub_plans: Vec<QueryPlan> = filters
+                .iter()
                 .map(|f| plan_inner(f, indexed_fields, fts_fields))
                 .collect();
             if sub_plans.iter().all(|p| !matches!(p, QueryPlan::FullScan)) {
@@ -157,10 +179,13 @@ mod tests {
     use crate::document::Value;
 
     fn indexes(fields: &[&str]) -> Vec<IndexDef> {
-        fields.iter().map(|f| IndexDef {
-            collection: "col".into(),
-            field: f.to_string(),
-        }).collect()
+        fields
+            .iter()
+            .map(|f| IndexDef {
+                collection: "col".into(),
+                field: f.to_string(),
+            })
+            .collect()
     }
 
     #[test]
@@ -186,7 +211,10 @@ mod tests {
 
     #[test]
     fn in_with_index() {
-        let f = Filter::In("status".into(), vec![Value::Str("active".into()), Value::Str("pending".into())]);
+        let f = Filter::In(
+            "status".into(),
+            vec![Value::Str("active".into()), Value::Str("pending".into())],
+        );
         let plan = plan(&f, &indexes(&["status"]));
         assert!(matches!(plan, QueryPlan::IndexIn { .. }));
     }

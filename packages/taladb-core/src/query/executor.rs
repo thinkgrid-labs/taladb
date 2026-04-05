@@ -23,7 +23,13 @@ pub fn execute(
         QueryPlan::FullScan => full_scan(txn, collection)?,
 
         QueryPlan::IndexEq { field, start, end } => {
-            let ulids = index_range_scan(txn, collection, field, Bound::Included(start.as_slice()), Bound::Included(end.as_slice()))?;
+            let ulids = index_range_scan(
+                txn,
+                collection,
+                field,
+                Bound::Included(start.as_slice()),
+                Bound::Included(end.as_slice()),
+            )?;
             fetch_by_ulids(txn, collection, ulids)?
         }
 
@@ -38,7 +44,9 @@ pub fn execute(
             let mut ulids: Vec<Ulid> = Vec::new();
             for (start, end) in ranges {
                 let mut batch = index_range_scan(
-                    txn, collection, field,
+                    txn,
+                    collection,
+                    field,
                     Bound::Included(start.as_slice()),
                     Bound::Included(end.as_slice()),
                 )?;
@@ -58,7 +66,11 @@ pub fn execute(
             for token in tokens {
                 let (start, end) = fts_token_range(token);
                 let table = fts_table_name(collection, field);
-                let entries = txn.range(&table, Bound::Included(start.as_slice()), Bound::Included(end.as_slice()))?;
+                let entries = txn.range(
+                    &table,
+                    Bound::Included(start.as_slice()),
+                    Bound::Included(end.as_slice()),
+                )?;
                 let set: HashSet<[u8; 16]> = entries
                     .into_iter()
                     .filter_map(|(k, _)| ulid_from_fts_key(&k).map(|u| u.to_bytes()))
@@ -66,9 +78,10 @@ pub fn execute(
                 ulid_sets.push(set);
             }
             // Intersect all sets — documents must contain every token
-            let intersection = ulid_sets.into_iter().reduce(|a, b| {
-                a.into_iter().filter(|u| b.contains(u)).collect()
-            }).unwrap_or_default();
+            let intersection = ulid_sets
+                .into_iter()
+                .reduce(|a, b| a.into_iter().filter(|u| b.contains(u)).collect())
+                .unwrap_or_default();
             let ulids: Vec<Ulid> = intersection.into_iter().map(Ulid::from_bytes).collect();
             fetch_by_ulids(txn, collection, ulids)?
         }
@@ -90,7 +103,10 @@ pub fn execute(
         }
     };
 
-    Ok(candidates.into_iter().filter(|d| filter.matches(d)).collect())
+    Ok(candidates
+        .into_iter()
+        .filter(|d| filter.matches(d))
+        .collect())
 }
 
 fn bound_as_ref(b: &Bound<Vec<u8>>) -> Bound<&[u8]> {

@@ -1,7 +1,17 @@
 import type { Collection, Document, TalaDB } from './types';
 
 // Re-export all public types for consumers (export…from satisfies S7763)
-export type { Collection, Document, Filter, Update, Value, TalaDB } from './types';
+export type {
+  Collection,
+  Document,
+  Filter,
+  Update,
+  Value,
+  TalaDB,
+  VectorMetric,
+  VectorIndexOptions,
+  VectorSearchResult,
+} from './types';
 
 // ============================================================
 // Platform detection + dynamic import
@@ -85,6 +95,13 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
       count: async (filter?) => col.count(filter ?? null),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createVectorIndex: async (field, options) =>
+        col.createVectorIndex(field, options.dimensions, options.metric ?? null),
+      dropVectorIndex: async (field) => col.dropVectorIndex(field),
+      findNearest: async (field, vector, topK, filter?) => {
+        const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
+        return raw;
+      },
       subscribe: (filter, callback) => {
         let active = true;
         let lastJson = '';
@@ -181,6 +198,28 @@ async function createBrowserDB(dbName: string): Promise<TalaDB> {
       dropIndex: (field) =>
         proxy.send<void>('dropIndex', { collection: name, field }),
 
+      createVectorIndex: (field, options) =>
+        proxy.send<void>('createVectorIndex', {
+          collection: name,
+          field,
+          dimensions: options.dimensions,
+          metric: options.metric,
+        }),
+
+      dropVectorIndex: (field) =>
+        proxy.send<void>('dropVectorIndex', { collection: name, field }),
+
+      findNearest: async (field, vector, topK, filter?) => {
+        const json = await proxy.send<string>('findNearest', {
+          collection: name,
+          field,
+          queryJson: JSON.stringify(vector),
+          topK,
+          filterJson: filter ? JSON.stringify(filter) : 'null',
+        });
+        return JSON.parse(json) as { document: T; score: number }[];
+      },
+
       subscribe: (filter, callback) => {
         let active = true;
         let lastJson = '';
@@ -234,6 +273,13 @@ async function createNodeDB(dbName: string): Promise<TalaDB> {
       count: async (filter?) => col.count(filter ?? null),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createVectorIndex: async (field, options) =>
+        col.createVectorIndex(field, options.dimensions, options.metric ?? null),
+      dropVectorIndex: async (field) => col.dropVectorIndex(field),
+      findNearest: async (field, vector, topK, filter?) => {
+        const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
+        return raw;
+      },
       subscribe: (filter, callback) => {
         let active = true;
         let lastJson = '';
@@ -278,6 +324,9 @@ interface NativeCollection {
   count(filter: Record<string, unknown>): number;
   createIndex(field: string): void;
   dropIndex(field: string): void;
+  createVectorIndex(field: string, dimensions: number, metric: string | null): void;
+  dropVectorIndex(field: string): void;
+  findNearest(field: string, query: number[], topK: number, filter: Record<string, unknown> | null): { document: Record<string, unknown>; score: number }[];
 }
 
 interface NativeHostObject {
@@ -312,6 +361,13 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
       count: async (filter?) => col.count(filter ?? {}),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createVectorIndex: async (field, options) =>
+        col.createVectorIndex(field, options.dimensions, options.metric ?? null),
+      dropVectorIndex: async (field) => col.dropVectorIndex(field),
+      findNearest: async (field, vector, topK, filter?) => {
+        const raw = col.findNearest(field, vector, topK, filter ?? null);
+        return raw as { document: T; score: number }[];
+      },
       subscribe: (filter, callback) => {
         let active = true;
         let lastJson = '';

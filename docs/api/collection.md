@@ -1,6 +1,6 @@
 ---
 title: Collection API
-description: Full reference for TalaDB's Collection interface — insert, find, findOne, updateOne, updateMany, deleteOne, deleteMany, count, createIndex, dropIndex, and watch.
+description: Full reference for TalaDB's Collection interface — insert, find, findOne, updateOne, updateMany, deleteOne, deleteMany, count, createIndex, dropIndex, createVectorIndex, dropVectorIndex, findNearest, and watch.
 ---
 
 # Collection API
@@ -169,6 +169,113 @@ dropIndex(field: keyof Omit<T, '_id'> & string): Promise<void>
 ```ts
 await users.dropIndex('age')
 ```
+
+## `createVectorIndex(field, options)`
+
+Creates a vector index on a numeric-array field. Call once at startup — the operation is idempotent.
+
+```ts
+createVectorIndex(
+  field: keyof Omit<T, '_id'> & string,
+  options: VectorIndexOptions,
+): Promise<void>
+```
+
+`VectorIndexOptions`:
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `dimensions` | `number` | required | Expected length of every stored vector. Enforced on insert and search. |
+| `metric` | `'cosine' \| 'dot' \| 'euclidean'` | `'cosine'` | Similarity metric used by `findNearest`. |
+
+```ts
+// Cosine similarity — best for text embeddings
+await articles.createVectorIndex('embedding', { dimensions: 384 })
+
+// Dot product
+await articles.createVectorIndex('embedding', { dimensions: 1536, metric: 'dot' })
+
+// Euclidean distance (converted to similarity)
+await articles.createVectorIndex('coords', { dimensions: 2, metric: 'euclidean' })
+```
+
+Existing documents that already have a valid numeric array in `field` are backfilled automatically. Documents where `field` is absent or not a numeric array are skipped silently.
+
+Vectors are stored in a dedicated `vec::<collection>::<field>` redb table and updated atomically on every `insert`, `updateOne`, `updateMany`, `deleteOne`, and `deleteMany`.
+
+Throws `IndexExists` if a vector index already exists on this field.
+
+## `dropVectorIndex(field)`
+
+Removes a vector index and all its stored vectors. `findNearest` calls on this field will fail after dropping.
+
+```ts
+dropVectorIndex(field: keyof Omit<T, '_id'> & string): Promise<void>
+```
+
+```ts
+await articles.dropVectorIndex('embedding')
+```
+
+Throws `VectorIndexNotFound` if no vector index exists on this field.
+
+## `findNearest(field, vector, topK, filter?)`
+
+Returns the `topK` most similar documents to `vector` using the named vector index. Results are ordered by descending similarity score (highest first).
+
+```ts
+findNearest(
+  field: keyof Omit<T, '_id'> & string,
+  vector: number[],
+  topK: number,
+  filter?: Filter<T>,
+): Promise<VectorSearchResult<T>[]>
+```
+
+`VectorSearchResult<T>`:
+
+| Property | Type | Description |
+|---|---|---|
+| `document` | `T` | The matched document, including all fields and `_id`. |
+| `score` | `number` | Similarity score — higher is more similar. Range depends on the metric. |
+
+**Score ranges by metric:**
+
+| Metric | Range | Notes |
+|---|---|---|
+| `cosine` | [-1, 1] | 1.0 = identical direction, 0 = orthogonal, -1 = opposite |
+| `dot` | Unbounded | Depends on vector magnitude — use with unit-normalised vectors |
+| `euclidean` | (0, 1] | 1.0 = identical, approaches 0 as distance increases |
+
+**Basic usage:**
+
+```ts
+const query = await embed('how do I reset my password?')
+const results = await articles.findNearest('embedding', query, 5)
+
+results.forEach(({ document, score }) => {
+  console.log(`${score.toFixed(3)}  ${document.title}`)
+})
+```
+
+**Hybrid search — metadata filter + vector ranking:**
+
+Pass a standard `Filter<T>` as the fourth argument. Only documents matching the filter are considered as candidates before scoring.
+
+```ts
+// Find the 5 most relevant english support articles
+const results = await articles.findNearest('embedding', query, 5, {
+  category: 'support',
+  locale: 'en',
+})
+```
+
+The filter accepts any operator supported by `find` — `$and`, `$or`, `$in`, `$gt`, `$exists`, etc.
+
+**Errors:**
+
+- `VectorIndexNotFound` — no vector index exists on `field`
+- `VectorDimensionMismatch` — `vector.length` does not match the index's configured `dimensions`
 
 ## `watch(filter?)`
 

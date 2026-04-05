@@ -1,6 +1,6 @@
 use napi_derive::napi;
 use serde_json::Value as JsonValue;
-use taladb_core::{Collection, Database, Filter, Update, Value};
+use taladb_core::{Collection, Database, Filter, Update, Value, VectorMetric};
 
 // ---------------------------------------------------------------------------
 // Helpers: JSON ↔ taladb_core::Value
@@ -19,9 +19,11 @@ fn json_to_value(j: JsonValue) -> Value {
         }
         JsonValue::String(s) => Value::Str(s),
         JsonValue::Array(arr) => Value::Array(arr.into_iter().map(json_to_value).collect()),
-        JsonValue::Object(map) => {
-            Value::Object(map.into_iter().map(|(k, v)| (k, json_to_value(v))).collect())
-        }
+        JsonValue::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -37,7 +39,9 @@ fn value_to_json(v: &Value) -> JsonValue {
         Value::Bytes(b) => JsonValue::String(format!("<bytes:{}>", b.len())),
         Value::Array(arr) => JsonValue::Array(arr.iter().map(value_to_json).collect()),
         Value::Object(obj) => JsonValue::Object(
-            obj.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+            obj.iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect(),
         ),
     }
 }
@@ -53,7 +57,10 @@ fn doc_to_json(doc: &taladb_core::Document) -> JsonValue {
 
 fn obj_to_fields(json: JsonValue) -> napi::Result<Vec<(String, Value)>> {
     match json {
-        JsonValue::Object(map) => Ok(map.into_iter().map(|(k, v)| (k, json_to_value(v))).collect()),
+        JsonValue::Object(map) => Ok(map
+            .into_iter()
+            .map(|(k, v)| (k, json_to_value(v)))
+            .collect()),
         _ => Err(napi::Error::from_reason("document must be a plain object")),
     }
 }
@@ -62,7 +69,9 @@ fn json_to_filter(json: &JsonValue) -> napi::Result<Filter> {
     if json.is_null() {
         return Ok(Filter::All);
     }
-    let obj = json.as_object().ok_or_else(|| napi::Error::from_reason("filter must be an object"))?;
+    let obj = json
+        .as_object()
+        .ok_or_else(|| napi::Error::from_reason("filter must be an object"))?;
 
     if let Some(and_arr) = obj.get("$and") {
         let filters: napi::Result<Vec<Filter>> = and_arr
@@ -109,22 +118,37 @@ fn parse_field_filter(field: &str, expr: &JsonValue) -> napi::Result<Filter> {
     for (op, val) in ops {
         let v = json_to_value(val.clone());
         let f = match op.as_str() {
-            "$eq"  => Filter::Eq(field.to_string(), v),
-            "$ne"  => Filter::Ne(field.to_string(), v),
-            "$gt"  => Filter::Gt(field.to_string(), v),
+            "$eq" => Filter::Eq(field.to_string(), v),
+            "$ne" => Filter::Ne(field.to_string(), v),
+            "$gt" => Filter::Gt(field.to_string(), v),
             "$gte" => Filter::Gte(field.to_string(), v),
-            "$lt"  => Filter::Lt(field.to_string(), v),
+            "$lt" => Filter::Lt(field.to_string(), v),
             "$lte" => Filter::Lte(field.to_string(), v),
-            "$in"  => {
-                let arr = val.as_array().ok_or_else(|| napi::Error::from_reason("$in must be array"))?;
-                Filter::In(field.to_string(), arr.iter().map(|v| json_to_value(v.clone())).collect())
+            "$in" => {
+                let arr = val
+                    .as_array()
+                    .ok_or_else(|| napi::Error::from_reason("$in must be array"))?;
+                Filter::In(
+                    field.to_string(),
+                    arr.iter().map(|v| json_to_value(v.clone())).collect(),
+                )
             }
             "$nin" => {
-                let arr = val.as_array().ok_or_else(|| napi::Error::from_reason("$nin must be array"))?;
-                Filter::Nin(field.to_string(), arr.iter().map(|v| json_to_value(v.clone())).collect())
+                let arr = val
+                    .as_array()
+                    .ok_or_else(|| napi::Error::from_reason("$nin must be array"))?;
+                Filter::Nin(
+                    field.to_string(),
+                    arr.iter().map(|v| json_to_value(v.clone())).collect(),
+                )
             }
             "$exists" => Filter::Exists(field.to_string(), val.as_bool().unwrap_or(true)),
-            _ => return Err(napi::Error::from_reason(format!("unknown operator: {}", op))),
+            _ => {
+                return Err(napi::Error::from_reason(format!(
+                    "unknown operator: {}",
+                    op
+                )))
+            }
         };
         filters.push(f);
     }
@@ -136,10 +160,13 @@ fn parse_field_filter(field: &str, expr: &JsonValue) -> napi::Result<Filter> {
 }
 
 fn json_to_update(json: JsonValue) -> napi::Result<Update> {
-    let obj = json.as_object().ok_or_else(|| napi::Error::from_reason("update must be an object"))?;
+    let obj = json
+        .as_object()
+        .ok_or_else(|| napi::Error::from_reason("update must be an object"))?;
 
     if let Some(set_obj) = obj.get("$set") {
-        let pairs = set_obj.as_object()
+        let pairs = set_obj
+            .as_object()
             .ok_or_else(|| napi::Error::from_reason("$set must be an object"))?
             .iter()
             .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
@@ -147,7 +174,8 @@ fn json_to_update(json: JsonValue) -> napi::Result<Update> {
         return Ok(Update::Set(pairs));
     }
     if let Some(unset_obj) = obj.get("$unset") {
-        let keys = unset_obj.as_object()
+        let keys = unset_obj
+            .as_object()
             .ok_or_else(|| napi::Error::from_reason("$unset must be an object"))?
             .keys()
             .cloned()
@@ -155,7 +183,8 @@ fn json_to_update(json: JsonValue) -> napi::Result<Update> {
         return Ok(Update::Unset(keys));
     }
     if let Some(inc_obj) = obj.get("$inc") {
-        let pairs = inc_obj.as_object()
+        let pairs = inc_obj
+            .as_object()
             .ok_or_else(|| napi::Error::from_reason("$inc must be an object"))?
             .iter()
             .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
@@ -163,21 +192,42 @@ fn json_to_update(json: JsonValue) -> napi::Result<Update> {
         return Ok(Update::Inc(pairs));
     }
     if let Some(push_obj) = obj.get("$push") {
-        let map = push_obj.as_object()
+        let map = push_obj
+            .as_object()
             .ok_or_else(|| napi::Error::from_reason("$push must be an object"))?;
-        let (k, v) = map.iter().next()
+        let (k, v) = map
+            .iter()
+            .next()
             .ok_or_else(|| napi::Error::from_reason("$push needs one field"))?;
         return Ok(Update::Push(k.clone(), json_to_value(v.clone())));
     }
     if let Some(pull_obj) = obj.get("$pull") {
-        let map = pull_obj.as_object()
+        let map = pull_obj
+            .as_object()
             .ok_or_else(|| napi::Error::from_reason("$pull must be an object"))?;
-        let (k, v) = map.iter().next()
+        let (k, v) = map
+            .iter()
+            .next()
             .ok_or_else(|| napi::Error::from_reason("$pull needs one field"))?;
         return Ok(Update::Pull(k.clone(), json_to_value(v.clone())));
     }
 
     Err(napi::Error::from_reason("unsupported update operator"))
+}
+
+// ---------------------------------------------------------------------------
+// Vector helpers
+// ---------------------------------------------------------------------------
+
+fn parse_metric(metric: Option<String>) -> napi::Result<Option<VectorMetric>> {
+    match metric.as_deref() {
+        None | Some("cosine") => Ok(Some(VectorMetric::Cosine)),
+        Some("dot") => Ok(Some(VectorMetric::Dot)),
+        Some("euclidean") => Ok(Some(VectorMetric::Euclidean)),
+        Some(other) => Err(napi::Error::from_reason(format!(
+            "unknown metric \"{other}\": expected \"cosine\", \"dot\", or \"euclidean\""
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -194,8 +244,7 @@ impl TalaDBNode {
     /// Open an in-memory database (useful for testing).
     #[napi(factory)]
     pub fn open_in_memory() -> napi::Result<Self> {
-        let db = Database::open_in_memory()
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let db = Database::open_in_memory().map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(TalaDBNode { inner: db })
     }
 
@@ -226,7 +275,9 @@ impl CollectionNode {
     #[napi]
     pub fn insert(&self, doc: JsonValue) -> napi::Result<String> {
         let fields = obj_to_fields(doc)?;
-        let id = self.inner.insert(fields)
+        let id = self
+            .inner
+            .insert(fields)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(id.to_string())
     }
@@ -236,7 +287,9 @@ impl CollectionNode {
     pub fn insert_many(&self, docs: Vec<JsonValue>) -> napi::Result<Vec<String>> {
         let items: napi::Result<Vec<Vec<(String, Value)>>> =
             docs.into_iter().map(obj_to_fields).collect();
-        let ids = self.inner.insert_many(items?)
+        let ids = self
+            .inner
+            .insert_many(items?)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(ids.iter().map(|id| id.to_string()).collect())
     }
@@ -245,7 +298,9 @@ impl CollectionNode {
     #[napi]
     pub fn find(&self, filter: JsonValue) -> napi::Result<Vec<JsonValue>> {
         let f = json_to_filter(&filter)?;
-        let docs = self.inner.find(f)
+        let docs = self
+            .inner
+            .find(f)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(docs.iter().map(doc_to_json).collect())
     }
@@ -254,7 +309,9 @@ impl CollectionNode {
     #[napi(js_name = "findOne")]
     pub fn find_one(&self, filter: JsonValue) -> napi::Result<Option<JsonValue>> {
         let f = json_to_filter(&filter)?;
-        let doc = self.inner.find_one(f)
+        let doc = self
+            .inner
+            .find_one(f)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(doc.map(|d| doc_to_json(&d)))
     }
@@ -264,7 +321,8 @@ impl CollectionNode {
     pub fn update_one(&self, filter: JsonValue, update: JsonValue) -> napi::Result<bool> {
         let f = json_to_filter(&filter)?;
         let u = json_to_update(update)?;
-        self.inner.update_one(f, u)
+        self.inner
+            .update_one(f, u)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
@@ -273,7 +331,9 @@ impl CollectionNode {
     pub fn update_many(&self, filter: JsonValue, update: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
         let u = json_to_update(update)?;
-        let n = self.inner.update_many(f, u)
+        let n = self
+            .inner
+            .update_many(f, u)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(n as u32)
     }
@@ -282,7 +342,8 @@ impl CollectionNode {
     #[napi(js_name = "deleteOne")]
     pub fn delete_one(&self, filter: JsonValue) -> napi::Result<bool> {
         let f = json_to_filter(&filter)?;
-        self.inner.delete_one(f)
+        self.inner
+            .delete_one(f)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
@@ -290,7 +351,9 @@ impl CollectionNode {
     #[napi(js_name = "deleteMany")]
     pub fn delete_many(&self, filter: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
-        let n = self.inner.delete_many(f)
+        let n = self
+            .inner
+            .delete_many(f)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(n as u32)
     }
@@ -299,7 +362,9 @@ impl CollectionNode {
     #[napi]
     pub fn count(&self, filter: JsonValue) -> napi::Result<u32> {
         let f = json_to_filter(&filter)?;
-        let n = self.inner.count(f)
+        let n = self
+            .inner
+            .count(f)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         Ok(n as u32)
     }
@@ -307,14 +372,71 @@ impl CollectionNode {
     /// Create a secondary index on a field.
     #[napi(js_name = "createIndex")]
     pub fn create_index(&self, field: String) -> napi::Result<()> {
-        self.inner.create_index(&field)
+        self.inner
+            .create_index(&field)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
     }
 
     /// Drop a secondary index.
     #[napi(js_name = "dropIndex")]
     pub fn drop_index(&self, field: String) -> napi::Result<()> {
-        self.inner.drop_index(&field)
+        self.inner
+            .drop_index(&field)
             .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Create a vector index on `field`.
+    ///
+    /// `metric` — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
+    #[napi(js_name = "createVectorIndex")]
+    pub fn create_vector_index(
+        &self,
+        field: String,
+        dimensions: u32,
+        metric: Option<String>,
+    ) -> napi::Result<()> {
+        let m = parse_metric(metric)?;
+        self.inner
+            .create_vector_index(&field, dimensions as usize, m)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Drop a vector index.
+    #[napi(js_name = "dropVectorIndex")]
+    pub fn drop_vector_index(&self, field: String) -> napi::Result<()> {
+        self.inner
+            .drop_vector_index(&field)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Find the `top_k` nearest documents to `query`.
+    ///
+    /// `filter` — optional pre-filter in the same JSON object format as `find`.
+    ///
+    /// Returns an array of `{ document: {...}, score: number }` objects.
+    #[napi(js_name = "findNearest")]
+    pub fn find_nearest(
+        &self,
+        field: String,
+        query: Vec<f64>,
+        top_k: u32,
+        filter: Option<JsonValue>,
+    ) -> napi::Result<Vec<JsonValue>> {
+        let query_f32: Vec<f32> = query.iter().map(|&f| f as f32).collect();
+
+        let pre_filter = match filter {
+            Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
+            _ => None,
+        };
+
+        let results = self
+            .inner
+            .find_nearest(&field, &query_f32, top_k as usize, pre_filter)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        Ok(results
+            .iter()
+            .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
+            .collect())
     }
 }

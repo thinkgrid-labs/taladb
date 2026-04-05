@@ -1,7 +1,7 @@
 {
   "name": "taladb",
-  "version": "0.1.2",
-  "description": "Local-first document database for React, React Native, and Node.js",
+  "version": "0.2.0",
+  "description": "Local-first document and vector database for React, React Native, and Node.js",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -22,7 +22,7 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": ["database", "local-first", "offline", "wasm", "react-native"],
+  "keywords": ["database", "local-first", "offline", "wasm", "react-native", "vector", "vector-search", "embeddings", "semantic-search", "ai", "hybrid-search"],
   "license": "MIT",
   "repository": {
     "type": "git",

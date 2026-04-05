@@ -122,7 +122,13 @@ impl SyncAdapter for LastWriteWins {
             for doc in docs {
                 let changed_at = doc
                     .get("_changed_at")
-                    .and_then(|v| if let Value::Int(ts) = v { Some(*ts as u64) } else { None })
+                    .and_then(|v| {
+                        if let Value::Int(ts) = v {
+                            Some(*ts as u64)
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or(0);
 
                 if changed_at > since_ms {
@@ -152,22 +158,25 @@ impl SyncAdapter for LastWriteWins {
             match change.op {
                 ChangeOp::Upsert(remote_doc) => {
                     // Look up local version of the document
-                    let local = col.find_one(Filter::Eq(
-                        "_id".into(),
-                        Value::Str(change.id.to_string()),
-                    ))?;
+                    let local =
+                        col.find_one(Filter::Eq("_id".into(), Value::Str(change.id.to_string())))?;
 
                     let should_apply = match &local {
                         None => true,
                         Some(local_doc) => {
                             let local_ts = local_doc
                                 .get("_changed_at")
-                                .and_then(|v| if let Value::Int(ts) = v { Some(*ts as u64) } else { None })
+                                .and_then(|v| {
+                                    if let Value::Int(ts) = v {
+                                        Some(*ts as u64)
+                                    } else {
+                                        None
+                                    }
+                                })
                                 .unwrap_or(0);
                             // Remote wins if newer; ties broken by ULID order
                             change.changed_at > local_ts
-                                || (change.changed_at == local_ts
-                                    && change.id > local_doc.id)
+                                || (change.changed_at == local_ts && change.id > local_doc.id)
                         }
                     };
 
@@ -179,20 +188,15 @@ impl SyncAdapter for LastWriteWins {
                                 Value::Str(change.id.to_string()),
                             ))?;
                         }
-                        let fields: Vec<(String, Value)> = remote_doc
-                            .fields
-                            .into_iter()
-                            .collect();
+                        let fields: Vec<(String, Value)> = remote_doc.fields.into_iter().collect();
                         col.insert(fields)?;
                         applied += 1;
                     }
                 }
 
                 ChangeOp::Delete => {
-                    let deleted = col.delete_one(Filter::Eq(
-                        "_id".into(),
-                        Value::Str(change.id.to_string()),
-                    ))?;
+                    let deleted = col
+                        .delete_one(Filter::Eq("_id".into(), Value::Str(change.id.to_string())))?;
                     if deleted {
                         applied += 1;
                     }

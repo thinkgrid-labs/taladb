@@ -1,15 +1,17 @@
 ---
 title: Introduction
-description: Learn what TalaDB is, how it works, and why it was built — a local-first document database powered by a Rust core that runs in the browser, Node.js, and React Native.
+description: Learn what TalaDB is, how it works, and why it was built — an embedded document and vector database powered by a Rust core that runs in the browser, Node.js, and React Native.
 ---
 
 # Introduction
 
 ## What is TalaDB?
 
-TalaDB is an open-source, **local-first document database** built in Rust and designed for the modern JavaScript ecosystem. It lets React and React Native developers store and query structured data directly on the user's device — with no server, no network dependency, and no cloud subscription.
+TalaDB is an open-source, **local-first document and vector database** built in Rust and designed for the modern JavaScript ecosystem. It lets React and React Native developers store and query structured data — and search vector embeddings — directly on the user's device, with no server, no network dependency, and no cloud subscription.
 
-Data is stored as schemaless JSON-like documents, organised into named **collections**. Queries use a MongoDB-inspired filter DSL so the API feels familiar without requiring a separate query language.
+Data is stored as schemaless JSON-like documents organised into named **collections**. Queries use a MongoDB-inspired filter DSL. Vector indexes sit alongside regular document fields: a single `findNearest` call can rank by embedding similarity while filtering by metadata, giving you the hybrid search pattern that cloud vector databases charge for, running entirely on-device.
+
+As local AI inference becomes mainstream (transformers.js, ONNX Web, WebGPU), applications generate embeddings on the client and need somewhere to store and search them. TalaDB is that place.
 
 The same Rust core powers every runtime:
 
@@ -32,8 +34,9 @@ TalaDB is built in three layers:
 └──────────────────────────────┬───────────────────────────────┘
                                │  postcard bytes
 ┌──────────────────────────────▼───────────────────────────────┐
-│  Layer 2 — Document Engine  (taladb-core)                     │
-│  Document model · Secondary indexes · Query planner/executor  │
+│  Layer 2 — Document + Vector Engine  (taladb-core)            │
+│  Document model · B-tree indexes · Vector indexes             │
+│  Query planner/executor · FTS · Migrations · Live queries     │
 └──────────────────────────────┬───────────────────────────────┘
                                │  raw key/value bytes
 ┌──────────────────────────────▼───────────────────────────────┐
@@ -44,7 +47,7 @@ TalaDB is built in three layers:
 
 **Layer 1 — Storage.** [redb](https://github.com/cberner/redb) is a pure-Rust, B-tree embedded key-value store. In the browser, TalaDB replaces it with a custom OPFS backend that uses `FileSystemSyncAccessHandle` inside a SharedWorker, giving durable on-device persistence without IndexedDB's overhead.
 
-**Layer 2 — Document engine.** `taladb-core` sits above the storage layer and knows nothing about JavaScript bindings. It provides the document model, secondary index key encoding, the filter/update AST, the query planner, and schema migrations.
+**Layer 2 — Document + vector engine.** `taladb-core` sits above the storage layer and knows nothing about JavaScript bindings. It provides the document model, secondary index key encoding, vector index storage and similarity search, the filter/update AST, the query planner, full-text search, and schema migrations. Documents and vector entries live in separate redb tables (`docs::`, `idx::`, `vec::`) but are updated atomically in the same transaction.
 
 **Layer 3 — Bindings.** Thin platform-specific wrappers translate JavaScript values into the Rust types that `taladb-core` expects and route them through the storage layer.
 
@@ -61,7 +64,8 @@ taladb/
 │   │       ├── document.rs         # Value enum, Document struct (ULID IDs)
 │   │       ├── engine.rs           # StorageBackend trait + redb implementation
 │   │       ├── index.rs            # Secondary index key encoding
-│   │       ├── collection.rs       # CRUD operations
+│   │       ├── collection.rs       # CRUD + vector index operations
+│   │       ├── vector.rs           # Vector index, similarity math, encoding
 │   │       ├── migration.rs        # Schema versioning
 │   │       ├── crypto.rs           # AES-GCM-256 encryption wrapper
 │   │       ├── watch.rs            # Live query subscriptions
@@ -120,6 +124,6 @@ The `taladb` package lists the platform packages as `optionalDependencies`, whic
 
 ## Status
 
-TalaDB is under **active development**. The Rust core, browser WASM, and Node.js bindings are functional and tested. The React Native JSI layer has a complete scaffold but full iOS / Android integration requires platform-specific build tooling. APIs may change before a stable 1.0 release.
+TalaDB is in **alpha**. The Rust core, browser WASM, and Node.js bindings are functional and tested. The React Native JSI layer has a complete scaffold but full iOS / Android integration requires platform-specific build tooling. Core APIs are stable but may change before v1.0.
 
 Follow the [GitHub repository](https://github.com/thinkgrid-labs/taladb) for progress updates.

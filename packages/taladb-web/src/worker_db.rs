@@ -10,8 +10,8 @@
 use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
-use taladb_core::{Database, Filter, Update, Value};
 use taladb_core::engine::RedbBackend;
+use taladb_core::{Database, Filter, Update, Value, VectorMetric};
 
 use crate::storage::opfs_backend::OpfsBackend;
 
@@ -35,8 +35,7 @@ impl WorkerDB {
     /// Open an in-memory database (for tests and OPFS-unavailable fallback).
     #[wasm_bindgen(js_name = openInMemory)]
     pub fn open_in_memory() -> Result<WorkerDB, JsValue> {
-        let db = Database::open_in_memory()
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let db = Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(WorkerDB { db })
     }
 
@@ -63,11 +62,12 @@ impl WorkerDB {
 
     /// Insert a document. Returns the new ULID as a string.
     pub fn insert(&self, collection: &str, doc_json: &str) -> Result<String, JsValue> {
-        let v: serde_json::Value = serde_json::from_str(doc_json)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(doc_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let fields = json_obj_to_fields(&v)?;
         let col = self.db.collection(collection);
-        let id = col.insert(fields)
+        let id = col
+            .insert(fields)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(id.to_string())
     }
@@ -75,26 +75,26 @@ impl WorkerDB {
     /// Insert many documents. Returns a JSON array of ULID strings.
     #[wasm_bindgen(js_name = insertMany)]
     pub fn insert_many(&self, collection: &str, docs_json: &str) -> Result<String, JsValue> {
-        let arr: Vec<serde_json::Value> = serde_json::from_str(docs_json)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let arr: Vec<serde_json::Value> =
+            serde_json::from_str(docs_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let items: Result<Vec<_>, _> = arr.iter().map(json_obj_to_fields).collect();
         let col = self.db.collection(collection);
-        let ids = col.insert_many(items?)
+        let ids = col
+            .insert_many(items?)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
-        serde_json::to_string(&id_strs)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_json::to_string(&id_strs).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Find documents. Returns a JSON array of document objects.
     pub fn find(&self, collection: &str, filter_json: &str) -> Result<String, JsValue> {
         let filter = parse_filter(filter_json)?;
         let col = self.db.collection(collection);
-        let docs = col.find(filter)
+        let docs = col
+            .find(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let json: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
-        serde_json::to_string(&json)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Find one document. Returns a JSON object or `"null"`.
@@ -102,21 +102,25 @@ impl WorkerDB {
     pub fn find_one(&self, collection: &str, filter_json: &str) -> Result<String, JsValue> {
         let filter = parse_filter(filter_json)?;
         let col = self.db.collection(collection);
-        let doc = col.find_one(filter)
+        let doc = col
+            .find_one(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let json = doc.as_ref().map(doc_to_json);
-        serde_json::to_string(&json)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Update the first matching document. Returns `true` / `false`.
     #[wasm_bindgen(js_name = updateOne)]
     pub fn update_one(
-        &self, collection: &str, filter_json: &str, update_json: &str,
+        &self,
+        collection: &str,
+        filter_json: &str,
+        update_json: &str,
     ) -> Result<bool, JsValue> {
         let filter = parse_filter(filter_json)?;
         let update = parse_update(update_json)?;
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .update_one(filter, update)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -124,11 +128,15 @@ impl WorkerDB {
     /// Update all matching documents. Returns the count updated.
     #[wasm_bindgen(js_name = updateMany)]
     pub fn update_many(
-        &self, collection: &str, filter_json: &str, update_json: &str,
+        &self,
+        collection: &str,
+        filter_json: &str,
+        update_json: &str,
     ) -> Result<u32, JsValue> {
         let filter = parse_filter(filter_json)?;
         let update = parse_update(update_json)?;
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .update_many(filter, update)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -138,7 +146,8 @@ impl WorkerDB {
     #[wasm_bindgen(js_name = deleteOne)]
     pub fn delete_one(&self, collection: &str, filter_json: &str) -> Result<bool, JsValue> {
         let filter = parse_filter(filter_json)?;
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .delete_one(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -147,7 +156,8 @@ impl WorkerDB {
     #[wasm_bindgen(js_name = deleteMany)]
     pub fn delete_many(&self, collection: &str, filter_json: &str) -> Result<u32, JsValue> {
         let filter = parse_filter(filter_json)?;
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .delete_many(filter)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -156,7 +166,8 @@ impl WorkerDB {
     /// Count matching documents.
     pub fn count(&self, collection: &str, filter_json: &str) -> Result<u32, JsValue> {
         let filter = parse_filter(filter_json)?;
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .count(filter)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -168,30 +179,109 @@ impl WorkerDB {
 
     #[wasm_bindgen(js_name = createIndex)]
     pub fn create_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .create_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = dropIndex)]
     pub fn drop_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .drop_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = createFtsIndex)]
     pub fn create_fts_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .create_fts_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = dropFtsIndex)]
     pub fn drop_fts_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
-        self.db.collection(collection)
+        self.db
+            .collection(collection)
             .drop_fts_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Create a vector index. `metric_str`: `"cosine"` | `"dot"` | `"euclidean"` (default cosine).
+    #[wasm_bindgen(js_name = createVectorIndex)]
+    pub fn create_vector_index(
+        &self,
+        collection: &str,
+        field: &str,
+        dimensions: u32,
+        metric_str: Option<String>,
+    ) -> Result<(), JsValue> {
+        let metric = parse_metric(metric_str)?;
+        self.db
+            .collection(collection)
+            .create_vector_index(field, dimensions as usize, metric)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Drop a vector index.
+    #[wasm_bindgen(js_name = dropVectorIndex)]
+    pub fn drop_vector_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
+        self.db
+            .collection(collection)
+            .drop_vector_index(field)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Find nearest neighbours. Returns a JSON string of `[{ document, score }]`.
+    #[wasm_bindgen(js_name = findNearest)]
+    pub fn find_nearest(
+        &self,
+        collection: &str,
+        field: &str,
+        query_json: &str,
+        top_k: u32,
+        filter_json: &str,
+    ) -> Result<String, JsValue> {
+        let query: Vec<f32> =
+            serde_json::from_str(query_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let pre_filter = if filter_json == "null" {
+            None
+        } else {
+            let v: serde_json::Value =
+                serde_json::from_str(filter_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Some(json_to_filter_val(&v).ok_or_else(|| JsValue::from_str("invalid filter"))?)
+        };
+
+        let results = self
+            .db
+            .collection(collection)
+            .find_nearest(field, &query, top_k as usize, pre_filter)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let json: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
+            .collect();
+
+        serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vector helpers
+// ---------------------------------------------------------------------------
+
+fn parse_metric(metric: Option<String>) -> Result<Option<VectorMetric>, JsValue> {
+    match metric.as_deref() {
+        None | Some("cosine") => Ok(Some(VectorMetric::Cosine)),
+        Some("dot") => Ok(Some(VectorMetric::Dot)),
+        Some("euclidean") => Ok(Some(VectorMetric::Euclidean)),
+        Some(other) => Err(JsValue::from_str(&format!(
+            "unknown metric \"{other}\": expected \"cosine\", \"dot\", or \"euclidean\""
+        ))),
     }
 }
 
@@ -201,19 +291,18 @@ impl WorkerDB {
 
 fn json_obj_to_fields(v: &serde_json::Value) -> Result<Vec<(String, Value)>, JsValue> {
     match v {
-        serde_json::Value::Object(map) => {
-            Ok(map.iter()
-                .filter(|(k, _)| k.as_str() != "_id")
-                .map(|(k, v)| (k.clone(), json_to_core_value(v)))
-                .collect())
-        }
+        serde_json::Value::Object(map) => Ok(map
+            .iter()
+            .filter(|(k, _)| k.as_str() != "_id")
+            .map(|(k, v)| (k.clone(), json_to_core_value(v)))
+            .collect()),
         _ => Err(JsValue::from_str("document must be a JSON object")),
     }
 }
 
 fn parse_filter(json: &str) -> Result<Filter, JsValue> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
     if v.is_null() {
         return Ok(Filter::All);
     }
@@ -221,8 +310,8 @@ fn parse_filter(json: &str) -> Result<Filter, JsValue> {
 }
 
 fn parse_update(json: &str) -> Result<Update, JsValue> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
     json_to_update_val(&v)
 }
 
@@ -231,13 +320,18 @@ fn json_to_core_value(j: &serde_json::Value) -> Value {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(*b),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { Value::Int(i) }
-            else { Value::Float(n.as_f64().unwrap_or(0.0)) }
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Float(n.as_f64().unwrap_or(0.0))
+            }
         }
         serde_json::Value::String(s) => Value::Str(s.clone()),
         serde_json::Value::Array(arr) => Value::Array(arr.iter().map(json_to_core_value).collect()),
         serde_json::Value::Object(map) => Value::Object(
-            map.iter().map(|(k, v)| (k.clone(), json_to_core_value(v))).collect()
+            map.iter()
+                .map(|(k, v)| (k.clone(), json_to_core_value(v)))
+                .collect(),
         ),
     }
 }
@@ -267,14 +361,20 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
         for (op, val) in ops {
             let v = json_to_core_value(val);
             let f = match op.as_str() {
-                "$eq"  => Filter::Eq(field.clone(), v),
-                "$ne"  => Filter::Ne(field.clone(), v),
-                "$gt"  => Filter::Gt(field.clone(), v),
+                "$eq" => Filter::Eq(field.clone(), v),
+                "$ne" => Filter::Ne(field.clone(), v),
+                "$gt" => Filter::Gt(field.clone(), v),
                 "$gte" => Filter::Gte(field.clone(), v),
-                "$lt"  => Filter::Lt(field.clone(), v),
+                "$lt" => Filter::Lt(field.clone(), v),
                 "$lte" => Filter::Lte(field.clone(), v),
-                "$in"  => Filter::In(field.clone(), val.as_array()?.iter().map(json_to_core_value).collect()),
-                "$nin" => Filter::Nin(field.clone(), val.as_array()?.iter().map(json_to_core_value).collect()),
+                "$in" => Filter::In(
+                    field.clone(),
+                    val.as_array()?.iter().map(json_to_core_value).collect(),
+                ),
+                "$nin" => Filter::Nin(
+                    field.clone(),
+                    val.as_array()?.iter().map(json_to_core_value).collect(),
+                ),
                 "$exists" => Filter::Exists(field.clone(), val.as_bool().unwrap_or(true)),
                 _ => return None,
             };
@@ -289,31 +389,55 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
 }
 
 fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
-    let obj = v.as_object().ok_or_else(|| JsValue::from_str("update must be an object"))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| JsValue::from_str("update must be an object"))?;
 
     if let Some(set) = obj.get("$set") {
-        let pairs = set.as_object().ok_or_else(|| JsValue::from_str("$set must be object"))?
-            .iter().map(|(k, v)| (k.clone(), json_to_core_value(v))).collect();
+        let pairs = set
+            .as_object()
+            .ok_or_else(|| JsValue::from_str("$set must be object"))?
+            .iter()
+            .map(|(k, v)| (k.clone(), json_to_core_value(v)))
+            .collect();
         return Ok(Update::Set(pairs));
     }
     if let Some(unset) = obj.get("$unset") {
-        let keys = unset.as_object().ok_or_else(|| JsValue::from_str("$unset must be object"))?
-            .keys().cloned().collect();
+        let keys = unset
+            .as_object()
+            .ok_or_else(|| JsValue::from_str("$unset must be object"))?
+            .keys()
+            .cloned()
+            .collect();
         return Ok(Update::Unset(keys));
     }
     if let Some(inc) = obj.get("$inc") {
-        let pairs = inc.as_object().ok_or_else(|| JsValue::from_str("$inc must be object"))?
-            .iter().map(|(k, v)| (k.clone(), json_to_core_value(v))).collect();
+        let pairs = inc
+            .as_object()
+            .ok_or_else(|| JsValue::from_str("$inc must be object"))?
+            .iter()
+            .map(|(k, v)| (k.clone(), json_to_core_value(v)))
+            .collect();
         return Ok(Update::Inc(pairs));
     }
     if let Some(push) = obj.get("$push") {
-        let map = push.as_object().ok_or_else(|| JsValue::from_str("$push must be object"))?;
-        let (k, v) = map.iter().next().ok_or_else(|| JsValue::from_str("$push needs one field"))?;
+        let map = push
+            .as_object()
+            .ok_or_else(|| JsValue::from_str("$push must be object"))?;
+        let (k, v) = map
+            .iter()
+            .next()
+            .ok_or_else(|| JsValue::from_str("$push needs one field"))?;
         return Ok(Update::Push(k.clone(), json_to_core_value(v)));
     }
     if let Some(pull) = obj.get("$pull") {
-        let map = pull.as_object().ok_or_else(|| JsValue::from_str("$pull must be object"))?;
-        let (k, v) = map.iter().next().ok_or_else(|| JsValue::from_str("$pull needs one field"))?;
+        let map = pull
+            .as_object()
+            .ok_or_else(|| JsValue::from_str("$pull must be object"))?;
+        let (k, v) = map
+            .iter()
+            .next()
+            .ok_or_else(|| JsValue::from_str("$pull needs one field"))?;
         return Ok(Update::Pull(k.clone(), json_to_core_value(v)));
     }
 

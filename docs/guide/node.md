@@ -203,6 +203,106 @@ app.get('/events', async (req, res) => {
 app.listen(3000)
 ```
 
+## Vector search
+
+TalaDB's vector index works identically on Node.js. Pair it with any embedding library that runs in Node — the OpenAI SDK, a local ONNX model, or Hugging Face Transformers.
+
+### Setup — embedding function
+
+```ts
+// Option A: OpenAI (remote, requires API key)
+import OpenAI from 'openai'
+const openai = new OpenAI()
+async function embed(text: string): Promise<number[]> {
+  const res = await openai.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: text,
+  })
+  return res.data[0].embedding  // 1536 dimensions
+}
+
+// Option B: local model with @xenova/transformers (no API key, runs in-process)
+import { pipeline } from '@xenova/transformers'
+const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
+async function embed(text: string): Promise<number[]> {
+  const out = await embedder(text, { pooling: 'mean', normalize: true })
+  return Array.from(out.data) as number[]
+}
+```
+
+### Create a vector index
+
+```ts
+interface Doc {
+  _id?: string
+  content: string
+  source: string
+  embedding: number[]
+}
+
+const docs = db.collection<Doc>('docs')
+
+// Call once at startup — idempotent
+await docs.createVectorIndex('embedding', { dimensions: 1536 }) // OpenAI
+// or
+await docs.createVectorIndex('embedding', { dimensions: 384 })  // MiniLM
+```
+
+### Insert with embedding
+
+```ts
+const content = 'TalaDB stores documents and vectors on-device.'
+await docs.insert({
+  content,
+  source: 'readme',
+  embedding: await embed(content),
+})
+```
+
+### Semantic search
+
+```ts
+const query = await embed('embedded local database')
+const results = await docs.findNearest('embedding', query, 5)
+
+for (const { document, score } of results) {
+  console.log(score.toFixed(3), document.content)
+}
+```
+
+### Hybrid search
+
+```ts
+// Find the 3 most relevant docs from 'readme' source only
+const results = await docs.findNearest('embedding', query, 3, {
+  source: 'readme',
+})
+```
+
+### Ingestion script example
+
+```ts
+import { openDB } from 'taladb'
+import fs from 'node:fs/promises'
+
+const db = await openDB('./knowledge.db')
+const col = db.collection<Doc>('docs')
+await col.createVectorIndex('embedding', { dimensions: 1536 })
+
+const files = await fs.readdir('./content')
+for (const file of files) {
+  const content = await fs.readFile(`./content/${file}`, 'utf8')
+  await col.insert({
+    content,
+    source: file,
+    embedding: await embed(content),
+  })
+}
+
+console.log(`Indexed ${files.length} documents`)
+await db.close()
+```
+
 ## Migrations
 
 ```ts
