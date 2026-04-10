@@ -47,6 +47,20 @@
  * dropVectorIndex   { collection, field }
  * findNearest       { collection, field, queryJson, topK, filterJson? }
  * close             {}
+ *
+ * Multi-tab live queries (BroadcastChannel)
+ * -----------------------------------------
+ * When a write op (insert/insertMany/update*/delete*) commits, the worker
+ * posts a `"taladb:changed"` message on a BroadcastChannel named
+ * `"taladb:<dbName>"`.  Other tabs listening on the same channel re-trigger
+ * their active `subscribe()` pollers immediately, bypassing the 300 ms tick.
+ *
+ * IndexedDB fallback (no OPFS)
+ * ----------------------------
+ * When OPFS is unavailable (cross-origin iframes, Firefox without storage
+ * access) the worker opens an in-memory database seeded from the last snapshot
+ * stored in IndexedDB.  After every write it flushes a new snapshot back to
+ * IndexedDB so data survives page reloads.
  */
 
 // ---------------------------------------------------------------------------
@@ -75,6 +89,97 @@ const warn = isDev ? console.warn.bind(console, '[TalaDB Worker]') : () => {};
  * @type {(() => void) | null}
  */
 let releaseLock = null;
+
+/**
+ * BroadcastChannel used to notify sibling tabs of writes.
+ * Created in doInit; null until the channel name is known.
+ * @type {BroadcastChannel | null}
+ */
+let broadcastChannel = null;
+
+/**
+ * True when running in IDB-fallback mode (OPFS unavailable).
+ * In this mode every write flushes a snapshot back to IndexedDB.
+ * @type {boolean}
+ */
+let idbFallback = false;
+
+// ---------------------------------------------------------------------------
+// IndexedDB helpers (used only when OPFS is unavailable)
+// ---------------------------------------------------------------------------
+
+const IDB_DB_NAME = 'taladb';
+const IDB_STORE = 'snapshots';
+const IDB_VERSION = 1;
+
+/** Open (or upgrade) the "taladb" IDB database and return the IDBDatabase. */
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = self.indexedDB.open(IDB_DB_NAME, IDB_VERSION);
+    req.onupgradeneeded = () => {
+      // Create the object store the very first time.
+      if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+        req.result.createObjectStore(IDB_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * Load a snapshot Uint8Array from IndexedDB for `dbName`.
+ * Returns null if no snapshot is stored yet.
+ * @param {string} dbName
+ * @returns {Promise<Uint8Array | null>}
+ */
+async function idbLoadSnapshot(dbName) {
+  if (!self.indexedDB) return null;
+  try {
+    const idb = await idbOpen();
+    return new Promise((resolve) => {
+      const tx = idb.transaction(IDB_STORE, 'readonly');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(dbName);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a snapshot Uint8Array to IndexedDB for `dbName` (fire-and-forget).
+ * @param {string} dbName
+ * @param {Uint8Array} bytes
+ */
+async function idbSaveSnapshot(dbName, bytes) {
+  if (!self.indexedDB) return;
+  try {
+    const idb = await idbOpen();
+    await new Promise((resolve, reject) => {
+      const tx = idb.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(bytes, dbName);
+      tx.oncomplete = resolve;
+      tx.onerror = reject;
+    });
+  } catch { /* best-effort persistence — ignore failures */ }
+}
+
+/**
+ * Notify sibling tabs of a write and, when in IDB-fallback mode, flush the
+ * updated snapshot to IndexedDB.  Must be called after every mutating op.
+ */
+function onWriteCommitted() {
+  broadcastChannel?.postMessage('taladb:changed');
+  if (idbFallback && db && activeDbName) {
+    try {
+      const bytes = db.exportSnapshot();
+      idbSaveSnapshot(activeDbName, bytes).catch(() => {});
+    } catch { /* ignore snapshot export errors */ }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Dedicated Worker message handler
@@ -116,11 +221,17 @@ async function dispatch(op, args) {
   if (!db) throw new Error('TalaDB worker not initialised — call init first');
 
   switch (op) {
-    case 'insert':
-      return db.insert(args.collection, args.docJson);
+    case 'insert': {
+      const result = db.insert(args.collection, args.docJson);
+      onWriteCommitted();
+      return result;
+    }
 
-    case 'insertMany':
-      return db.insertMany(args.collection, args.docsJson);
+    case 'insertMany': {
+      const result = db.insertMany(args.collection, args.docsJson);
+      onWriteCommitted();
+      return result;
+    }
 
     case 'find':
       return db.find(args.collection, args.filterJson ?? 'null');
@@ -128,17 +239,29 @@ async function dispatch(op, args) {
     case 'findOne':
       return db.findOne(args.collection, args.filterJson ?? 'null');
 
-    case 'updateOne':
-      return db.updateOne(args.collection, args.filterJson, args.updateJson);
+    case 'updateOne': {
+      const result = db.updateOne(args.collection, args.filterJson, args.updateJson);
+      onWriteCommitted();
+      return result;
+    }
 
-    case 'updateMany':
-      return db.updateMany(args.collection, args.filterJson, args.updateJson);
+    case 'updateMany': {
+      const result = db.updateMany(args.collection, args.filterJson, args.updateJson);
+      onWriteCommitted();
+      return result;
+    }
 
-    case 'deleteOne':
-      return db.deleteOne(args.collection, args.filterJson);
+    case 'deleteOne': {
+      const result = db.deleteOne(args.collection, args.filterJson);
+      onWriteCommitted();
+      return result;
+    }
 
-    case 'deleteMany':
-      return db.deleteMany(args.collection, args.filterJson);
+    case 'deleteMany': {
+      const result = db.deleteMany(args.collection, args.filterJson);
+      onWriteCommitted();
+      return result;
+    }
 
     case 'count':
       return db.count(args.collection, args.filterJson ?? 'null');
@@ -179,6 +302,9 @@ async function dispatch(op, args) {
     case 'close':
       // Release the Web Lock and close the sync handle gracefully.
       if (releaseLock) { releaseLock(); releaseLock = null; }
+      broadcastChannel?.close();
+      broadcastChannel = null;
+      idbFallback = false;
       db = null;
       return null;
 
@@ -197,10 +323,23 @@ async function doInit(dbName) {
 
   const { WorkerDB } = wasm;
 
+  // Open the BroadcastChannel now that we know the db name.
+  if (typeof BroadcastChannel !== 'undefined') {
+    broadcastChannel = new BroadcastChannel(`taladb:${dbName}`);
+    log('BroadcastChannel opened:', `taladb:${dbName}`);
+  }
+
   const opfsAvailable = await checkOpfs();
   if (!opfsAvailable) {
-    warn('OPFS unavailable — falling back to in-memory');
-    db = WorkerDB.openInMemory();
+    warn('OPFS unavailable — falling back to IndexedDB-backed in-memory');
+    const snapshot = await idbLoadSnapshot(dbName);
+    db = WorkerDB.openWithSnapshot(snapshot);
+    idbFallback = true;
+    if (snapshot) {
+      log(`Restored from IndexedDB snapshot (${snapshot.byteLength} bytes)`);
+    } else {
+      log('New in-memory database — writes will be persisted to IndexedDB');
+    }
     return;
   }
 
