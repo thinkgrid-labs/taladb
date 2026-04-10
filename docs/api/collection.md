@@ -187,17 +187,40 @@ createVectorIndex(
 |---|---|---|---|
 | `dimensions` | `number` | required | Expected length of every stored vector. Enforced on insert and search. |
 | `metric` | `'cosine' \| 'dot' \| 'euclidean'` | `'cosine'` | Similarity metric used by `findNearest`. |
+| `indexType` | `'flat' \| 'hnsw'` | `'flat'` | Search algorithm. `'hnsw'` requires the `vector-hnsw` feature. |
+| `hnswM` | `number` | `16` | HNSW links per node. Higher = better recall, more memory. Only used when `indexType: 'hnsw'`. |
+| `hnswEfConstruction` | `number` | `200` | HNSW build-time quality. Higher = better graph, slower build. Must be ≥ `hnswM`. |
 
 ```ts
-// Cosine similarity — best for text embeddings
+// Flat (brute-force) — default, exact, best for < ~10K documents
 await articles.createVectorIndex('embedding', { dimensions: 384 })
 
-// Dot product
-await articles.createVectorIndex('embedding', { dimensions: 1536, metric: 'dot' })
+// HNSW — approximate, sub-linear search, best for large collections
+await articles.createVectorIndex('embedding', {
+  dimensions: 384,
+  metric: 'cosine',
+  indexType: 'hnsw',
+  hnswM: 16,              // connectivity — higher = better recall, more memory
+  hnswEfConstruction: 200 // build quality — higher = better graph, slower build
+})
 
-// Euclidean distance (converted to similarity)
+// Dot product with HNSW
+await articles.createVectorIndex('embedding', { dimensions: 1536, metric: 'dot', indexType: 'hnsw' })
+
+// Euclidean distance (converted to similarity score)
 await articles.createVectorIndex('coords', { dimensions: 2, metric: 'euclidean' })
 ```
+
+**Flat vs HNSW:**
+
+| | `flat` | `hnsw` |
+|---|---|---|
+| Search | Exact, O(n·d) | Approximate (~95–99% recall), O(log n · d) |
+| Build | Instant | O(n log n) |
+| Memory | Vectors only | Vectors + graph (~`m × 2 × n` edges) |
+| Best for | < ~10K docs, or when exact results are required | > ~10K docs where query latency matters |
+
+When `indexType: 'hnsw'` is set, the HNSW graph is built in-memory at index creation time. The flat vector table is always kept as the source of truth — use [`upgradeVectorIndex`](#upgradevectorindexfield) to rebuild the graph after bulk inserts.
 
 Existing documents that already have a valid numeric array in `field` are backfilled automatically. Documents where `field` is absent or not a numeric array are skipped silently.
 
@@ -219,9 +242,34 @@ await articles.dropVectorIndex('embedding')
 
 Throws `VectorIndexNotFound` if no vector index exists on this field.
 
+## `upgradeVectorIndex(field)`
+
+Rebuilds the HNSW graph for a vector index from the current flat vector table. Use this after bulk inserts or when approximate-nearest-neighbor recall has degraded.
+
+```ts
+upgradeVectorIndex(field: keyof Omit<T, '_id'> & string): Promise<void>
+```
+
+```ts
+// After a bulk import, rebuild the HNSW graph so findNearest uses the latest data
+await articles.upgradeVectorIndex('embedding')
+```
+
+The graph is rebuilt entirely in memory — no disk I/O beyond reading the flat vector table. The flat table is never modified.
+
+This is a no-op when:
+- The index was created with `indexType: 'flat'` (no HNSW options stored)
+- The `vector-hnsw` feature is disabled at compile time
+
+You can also trigger this from the CLI: see [`upgrade-vector-index`](/guide/cli#upgrade-vector-index-rebuild-hnsw-graph) in the CLI docs.
+
+Throws `VectorIndexNotFound` if no vector index exists on `field`.
+
 ## `findNearest(field, vector, topK, filter?)`
 
 Returns the `topK` most similar documents to `vector` using the named vector index. Results are ordered by descending similarity score (highest first).
+
+When the index was created with `indexType: 'hnsw'` and the HNSW graph is in memory, the search uses the approximate graph automatically. Falls back to flat (brute-force) scan when no graph is available (e.g. after `upgradeVectorIndex` has not yet been called, or when a `filter` is provided — pre-filtering always forces the flat path).
 
 ```ts
 findNearest(

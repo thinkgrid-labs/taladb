@@ -245,6 +245,7 @@ impl WorkerDB {
     /// - `index_type`: `"flat"` (default) | `"hnsw"`
     /// - `hnsw_m`: HNSW connectivity (default 16, only used when `index_type = "hnsw"`)
     /// - `hnsw_ef_construction`: build-time quality (default 200, only used when `index_type = "hnsw"`)
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = createVectorIndex)]
     pub fn create_vector_index(
         &self,
