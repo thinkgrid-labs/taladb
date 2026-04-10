@@ -10,6 +10,7 @@ export default defineConfig({
   title,
   description,
   base: "/taladb/",
+  appearance: false,
 
   // Canonical URL injected into every page <head>
   transformHead({ pageData }) {
@@ -70,7 +71,7 @@ export default defineConfig({
 
   themeConfig: {
     logo: { src: "/tala-db.png", alt: "TalaDB logo" },
-    siteTitle: "TalaDB",
+    siteTitle: false,
 
     nav: [
       { text: "Introduction", link: "/introduction" },
