@@ -158,6 +158,29 @@ taladb drop ./myapp.db sessions
 
 ---
 
+### `upgrade-vector-index` — rebuild HNSW graph
+
+Rebuild the in-memory HNSW graph for a vector index from the current flat vector table. Use this after bulk imports, or whenever the HNSW index has grown stale due to writes since the graph was last built.
+
+```sh
+taladb upgrade-vector-index ./myapp.db articles embedding
+# HNSW graph for 'articles::embedding' rebuilt successfully.
+```
+
+| Argument | Description |
+|---|---|
+| `<file>` | Path to the TalaDB database file |
+| `<collection>` | Collection name |
+| `<field>` | Vector field name |
+
+This command is a no-op when:
+- The index was created as flat-only (no HNSW options were stored)
+- The binary was compiled without the `vector-hnsw` feature
+
+You can also trigger this programmatically: see [`upgradeVectorIndex`](/api/collection#upgradevectorindexfield) in the Collection API docs.
+
+---
+
 ## Common workflows
 
 **Back up a collection before a migration:**
@@ -214,9 +237,9 @@ taladb inspect ./dev.db
 #   Vector indexes:  embedding (384-dim, cosine)
 ```
 
-## Vector CLI commands (roadmap)
+## Planned commands
 
-The following commands are planned for a future release and are not yet available:
+The following commands are planned for a future release:
 
 | Command | Description |
 |---|---|
