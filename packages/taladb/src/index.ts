@@ -254,7 +254,7 @@ async function createBrowserDB(dbName: string): Promise<TalaDB> {
 
       subscribe: (filter, callback) => {
         let active = true;
-        let lastJson = '';
+        let lastJson = '[]';
         let timer: ReturnType<typeof setTimeout> | null = null;
 
         const poll = async () => {

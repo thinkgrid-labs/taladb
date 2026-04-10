@@ -51,10 +51,8 @@ impl WorkerDB {
     #[wasm_bindgen(js_name = openWithSnapshot)]
     pub fn open_with_snapshot(data: Option<Vec<u8>>) -> Result<WorkerDB, JsValue> {
         let db = match data {
-            Some(ref bytes) if !bytes.is_empty() => {
-                Database::restore_from_snapshot(bytes)
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?
-            }
+            Some(ref bytes) if !bytes.is_empty() => Database::restore_from_snapshot(bytes)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?,
             _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
         };
         Ok(WorkerDB { db })
@@ -520,9 +518,7 @@ mod tests {
         let json = restored.find("items", "null").unwrap();
         let docs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
         assert_eq!(docs.len(), 2);
-        let names: Vec<&str> = docs.iter()
-            .filter_map(|d| d["name"].as_str())
-            .collect();
+        let names: Vec<&str> = docs.iter().filter_map(|d| d["name"].as_str()).collect();
         assert!(names.contains(&"Alice"));
         assert!(names.contains(&"Bob"));
     }
@@ -617,9 +613,7 @@ mod tests {
         let json = db3.find("items", "null").unwrap();
         let docs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
         assert_eq!(docs.len(), 2);
-        let gens: Vec<i64> = docs.iter()
-            .filter_map(|d| d["gen"].as_i64())
-            .collect();
+        let gens: Vec<i64> = docs.iter().filter_map(|d| d["gen"].as_i64()).collect();
         assert!(gens.contains(&1));
         assert!(gens.contains(&2));
     }
@@ -648,15 +642,19 @@ mod tests {
         db.insert("col", r#"{"k":"remove"}"#).unwrap();
 
         db.delete_one("col", r#"{"k":"remove"}"#).unwrap();
-        db.update_one("col", r#"{"k":"keep"}"#, r#"{"$set":{"k":"updated"}}"#).unwrap();
+        db.update_one("col", r#"{"k":"keep"}"#, r#"{"$set":{"k":"updated"}}"#)
+            .unwrap();
 
         let snap = db.export_snapshot().unwrap();
         let restored = WorkerDB::open_with_snapshot(Some(snap)).unwrap();
 
         let json = restored.find("col", "null").unwrap();
         let docs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
-        assert_eq!(docs.len(), 1, "deleted document must not appear in snapshot");
+        assert_eq!(
+            docs.len(),
+            1,
+            "deleted document must not appear in snapshot"
+        );
         assert_eq!(docs[0]["k"].as_str().unwrap(), "updated");
     }
-}
 }

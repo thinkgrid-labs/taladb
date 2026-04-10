@@ -62,10 +62,14 @@ async fn load_inner(db_name: &str) -> Result<JsValue, JsValue> {
     let idb = open_idb().await?;
 
     // tx = idb.transaction("snapshots", "readonly")
-    let tx = call_method(&idb, "transaction", &[
-        &JsValue::from_str(IDB_STORE),
-        &JsValue::from_str("readonly"),
-    ])?;
+    let tx = call_method(
+        &idb,
+        "transaction",
+        &[
+            &JsValue::from_str(IDB_STORE),
+            &JsValue::from_str("readonly"),
+        ],
+    )?;
     // store = tx.objectStore("snapshots")
     let store = call_method(&tx, "objectStore", &[&JsValue::from_str(IDB_STORE)])?;
     // req = store.get(db_name)
@@ -79,10 +83,14 @@ async fn save_inner(db_name: &str, data: &[u8]) -> Result<(), JsValue> {
     let idb = open_idb().await?;
 
     // tx = idb.transaction("snapshots", "readwrite")
-    let tx = call_method(&idb, "transaction", &[
-        &JsValue::from_str(IDB_STORE),
-        &JsValue::from_str("readwrite"),
-    ])?;
+    let tx = call_method(
+        &idb,
+        "transaction",
+        &[
+            &JsValue::from_str(IDB_STORE),
+            &JsValue::from_str("readwrite"),
+        ],
+    )?;
     let store = call_method(&tx, "objectStore", &[&JsValue::from_str(IDB_STORE)])?;
 
     // store.put(Uint8Array, db_name)
@@ -102,13 +110,17 @@ async fn open_idb() -> Result<JsValue, JsValue> {
     let global = js_sys::global();
 
     // indexedDB may be on the global (Worker) or on window (main thread).
+    // Use Reflect::get to avoid requiring the IdbFactory web-sys feature flag.
     let idb_factory = js_sys::Reflect::get(&global, &"indexedDB".into())
         .ok()
         .filter(|v| !v.is_undefined() && !v.is_null())
         .or_else(|| {
-            web_sys::window()
-                .and_then(|w| w.indexed_db().ok().flatten())
-                .map(JsValue::from)
+            // Fallback: look up window.indexedDB for main-thread contexts
+            js_sys::Reflect::get(&global, &"window".into())
+                .ok()
+                .filter(|v| !v.is_undefined() && !v.is_null())
+                .and_then(|win| js_sys::Reflect::get(&win, &"indexedDB".into()).ok())
+                .filter(|v| !v.is_undefined() && !v.is_null())
         })
         .ok_or_else(|| JsValue::from_str("IndexedDB not available in this context"))?;
 
@@ -126,7 +138,11 @@ async fn open_idb() -> Result<JsValue, JsValue> {
     let open_req_c = open_req.clone();
     let on_upgrade = Closure::once(move |_: JsValue| {
         if let Ok(result) = js_sys::Reflect::get(&open_req_c, &"result".into()) {
-            let _ = call_method(&result, "createObjectStore", &[&JsValue::from_str(IDB_STORE)]);
+            let _ = call_method(
+                &result,
+                "createObjectStore",
+                &[&JsValue::from_str(IDB_STORE)],
+            );
         }
     });
     js_sys::Reflect::set(&open_req, &"onupgradeneeded".into(), on_upgrade.as_ref())?;
@@ -149,8 +165,8 @@ fn request_promise(req: &JsValue) -> Promise {
         let resolve_c = resolve.clone();
 
         let on_success = Closure::once(move |_: JsValue| {
-            let result = js_sys::Reflect::get(&req_s, &"result".into())
-                .unwrap_or(JsValue::UNDEFINED);
+            let result =
+                js_sys::Reflect::get(&req_s, &"result".into()).unwrap_or(JsValue::UNDEFINED);
             let _ = resolve_c.call1(&JsValue::UNDEFINED, &result);
         });
         let on_error = Closure::once(move |_: JsValue| {
@@ -193,10 +209,9 @@ fn transaction_promise(tx: &JsValue) -> Promise {
 // ---------------------------------------------------------------------------
 
 fn call_method(obj: &JsValue, method: &str, args: &[&JsValue]) -> Result<JsValue, JsValue> {
-    let func: js_sys::Function =
-        js_sys::Reflect::get(obj, &method.into())?.dyn_into().map_err(|_| {
-            JsValue::from_str(&format!("IDB: '{method}' is not a function"))
-        })?;
+    let func: js_sys::Function = js_sys::Reflect::get(obj, &method.into())?
+        .dyn_into()
+        .map_err(|_| JsValue::from_str(&format!("IDB: '{method}' is not a function")))?;
     let js_args = js_sys::Array::new();
     for arg in args {
         js_args.push(arg);

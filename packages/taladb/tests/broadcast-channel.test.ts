@@ -60,7 +60,7 @@ function makeNudgableSubscribe<T extends Document>(
 ) {
   return function subscribe(callback: (docs: T[]) => void): () => void {
     let active = true;
-    let lastJson = '';
+    let lastJson = '[]';
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const poll = async () => {
