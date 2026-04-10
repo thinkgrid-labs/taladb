@@ -11,29 +11,7 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 ---
 
-## 1 · Browser fundamentals
-
-These are gaps that affect every browser app today.
-
-### Multi-tab live queries (BroadcastChannel)
-
-Currently each browser tab spawns its own DedicatedWorker and acquires an exclusive Web Locks lock on the OPFS file — tabs do not conflict, but writes in one tab are not visible to another tab's `subscribe()` callbacks until that tab reloads and re-opens the database.
-
-The planned fix keeps the DedicatedWorker + Web Locks architecture (required because `createSyncAccessHandle` is only available in DedicatedWorkers) and adds a `BroadcastChannel` layer on top:
-
-- When a tab's worker commits a write it posts a `"taladb:changed"` message on a named `BroadcastChannel`
-- All other tabs receive the message and re-trigger their active `subscribe()` pollers immediately, without waiting for the next 300 ms tick
-- No OPFS locking changes are needed — reads are lock-free; only writes hold the exclusive handle momentarily
-
-Result: inserts, updates, and deletes in tab A appear in tab B's live-query subscriptions within one round-trip, matching the experience users expect from a shared database.
-
-### IndexedDB fallback backend
-
-A complete `StorageBackend` implementation on top of IndexedDB for browsers that will never support OPFS (e.g. cross-origin iframes). Currently the fallback is in-memory only — data is lost on page reload in these environments.
-
----
-
-## 2 · Vector search (HNSW)
+## 1 · Vector search (HNSW)
 
 v0.3 ships flat (brute-force) vector search — O(n·d) per query, perfect for collections up to ~10 K documents. The next step replaces the inner loop with an HNSW (Hierarchical Navigable Small World) graph index for sub-linear approximate nearest-neighbor search, making vector search viable for production-scale collections.
 
@@ -59,7 +37,7 @@ await col.createVectorIndex('embedding', {
 
 ---
 
-## 3 · Query engine
+## 2 · Query engine
 
 Features that almost every real application needs before it can ship.
 
@@ -89,7 +67,7 @@ Pattern matching against string fields using a compiled regex. Evaluated as a po
 
 ---
 
-## 4 · Developer experience
+## 3 · Developer experience
 
 Better DX drives adoption and reduces time-to-production.
 
@@ -115,7 +93,7 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 ---
 
-## 5 · Sync
+## 4 · Sync
 
 Multi-device and collaborative data sync — the next frontier for local-first apps.
 
@@ -133,7 +111,7 @@ A reference sync server (`taladb-sync-server`) that accepts snapshot diffs over 
 
 ---
 
-## 6 · Storage
+## 5 · Storage
 
 Internal improvements that improve efficiency and interoperability.
 
@@ -147,7 +125,7 @@ Allow the caller to swap `postcard` for `MessagePack` or `CBOR` via a `Codec` tr
 
 ---
 
-## 7 · Platform
+## 6 · Platform
 
 Expanding the runtimes TalaDB can target.
 
@@ -169,7 +147,7 @@ Compile `taladb-core` to WASI (`wasm32-wasip1`) so it can run inside WASI runtim
 
 ---
 
-## 8 · Security
+## 7 · Security
 
 Hardening for apps that handle sensitive data.
 

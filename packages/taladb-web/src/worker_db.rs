@@ -39,6 +39,38 @@ impl WorkerDB {
         Ok(WorkerDB { db })
     }
 
+    /// Open a database, restoring from a previously exported snapshot if provided.
+    ///
+    /// Pass the bytes returned by `WorkerDB.exportSnapshot()` (or `null`/`undefined`
+    /// for a fresh empty database). Used by the IndexedDB fallback path.
+    ///
+    /// ```js
+    /// const bytes = await idbLoadSnapshot(dbName);   // null on first open
+    /// const workerDb = WorkerDB.openWithSnapshot(bytes);
+    /// ```
+    #[wasm_bindgen(js_name = openWithSnapshot)]
+    pub fn open_with_snapshot(data: Option<Vec<u8>>) -> Result<WorkerDB, JsValue> {
+        let db = match data {
+            Some(ref bytes) if !bytes.is_empty() => {
+                Database::restore_from_snapshot(bytes)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?
+            }
+            _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
+        };
+        Ok(WorkerDB { db })
+    }
+
+    /// Serialize the entire in-memory database to bytes for persistence.
+    ///
+    /// Pass the returned bytes to `idbSaveSnapshot` to persist across page reloads.
+    /// On next open, pass the same bytes to `openWithSnapshot` to restore all data.
+    #[wasm_bindgen(js_name = exportSnapshot)]
+    pub fn export_snapshot(&self) -> Result<Vec<u8>, JsValue> {
+        self.db
+            .export_snapshot()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     /// Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
     ///
     /// Call sequence in the SharedWorker:
@@ -442,4 +474,189 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
     }
 
     Err(JsValue::from_str("unsupported update operator"))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    // ------------------------------------------------------------------
+    // WorkerDB::open_with_snapshot
+    // ------------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn open_with_snapshot_none_produces_empty_db() {
+        let db = WorkerDB::open_with_snapshot(None).unwrap();
+        // A collection that was never written returns an empty JSON array.
+        let result = db.find("items", "null").unwrap();
+        assert_eq!(result, "[]");
+    }
+
+    #[wasm_bindgen_test]
+    fn open_with_snapshot_empty_vec_treated_as_fresh_db() {
+        // An empty Vec<u8> is equivalent to None — open fresh in-memory DB.
+        let db = WorkerDB::open_with_snapshot(Some(vec![])).unwrap();
+        let result = db.find("items", "null").unwrap();
+        assert_eq!(result, "[]");
+    }
+
+    #[wasm_bindgen_test]
+    fn open_with_snapshot_restores_documents() {
+        // Build a DB, export its snapshot, restore into a new WorkerDB.
+        let original = WorkerDB::open_with_snapshot(None).unwrap();
+        original.insert("items", r#"{"name":"Alice"}"#).unwrap();
+        original.insert("items", r#"{"name":"Bob"}"#).unwrap();
+
+        let snapshot = original.export_snapshot().unwrap();
+
+        let restored = WorkerDB::open_with_snapshot(Some(snapshot)).unwrap();
+        let json = restored.find("items", "null").unwrap();
+        let docs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(docs.len(), 2);
+        let names: Vec<&str> = docs.iter()
+            .filter_map(|d| d["name"].as_str())
+            .collect();
+        assert!(names.contains(&"Alice"));
+        assert!(names.contains(&"Bob"));
+    }
+
+    #[wasm_bindgen_test]
+    fn open_with_snapshot_restores_multiple_collections() {
+        let original = WorkerDB::open_with_snapshot(None).unwrap();
+        original.insert("users", r#"{"name":"Alice"}"#).unwrap();
+        original.insert("posts", r#"{"title":"Hello"}"#).unwrap();
+        original.insert("posts", r#"{"title":"World"}"#).unwrap();
+
+        let snapshot = original.export_snapshot().unwrap();
+        let restored = WorkerDB::open_with_snapshot(Some(snapshot)).unwrap();
+
+        let users: Vec<serde_json::Value> =
+            serde_json::from_str(&restored.find("users", "null").unwrap()).unwrap();
+        let posts: Vec<serde_json::Value> =
+            serde_json::from_str(&restored.find("posts", "null").unwrap()).unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(posts.len(), 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn open_with_snapshot_preserves_document_ids() {
+        let original = WorkerDB::open_with_snapshot(None).unwrap();
+        let id = original.insert("col", r#"{"x":42}"#).unwrap();
+
+        let snapshot = original.export_snapshot().unwrap();
+        let restored = WorkerDB::open_with_snapshot(Some(snapshot)).unwrap();
+
+        let json = restored.find("col", "null").unwrap();
+        let docs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["_id"].as_str().unwrap(), id);
+    }
+
+    // ------------------------------------------------------------------
+    // WorkerDB::export_snapshot
+    // ------------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn export_snapshot_of_empty_db_starts_with_magic_bytes() {
+        let db = WorkerDB::open_with_snapshot(None).unwrap();
+        let bytes = db.export_snapshot().unwrap();
+        // TalaDB snapshot magic: "TDBS"
+        assert!(bytes.len() >= 4, "snapshot must be at least 4 bytes");
+        assert_eq!(&bytes[..4], b"TDBS");
+    }
+
+    #[wasm_bindgen_test]
+    fn export_snapshot_grows_after_inserts() {
+        let db = WorkerDB::open_with_snapshot(None).unwrap();
+        let empty_size = db.export_snapshot().unwrap().len();
+
+        db.insert("col", r#"{"payload":"aaaaaaaaaa"}"#).unwrap();
+        let after_insert = db.export_snapshot().unwrap().len();
+
+        assert!(
+            after_insert > empty_size,
+            "snapshot must grow after inserting a document"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn export_snapshot_twice_produces_equal_bytes_if_no_writes_in_between() {
+        let db = WorkerDB::open_with_snapshot(None).unwrap();
+        db.insert("col", r#"{"k":"v"}"#).unwrap();
+
+        let snap1 = db.export_snapshot().unwrap();
+        let snap2 = db.export_snapshot().unwrap();
+        assert_eq!(snap1, snap2);
+    }
+
+    // ------------------------------------------------------------------
+    // Round-trip — snapshot → restore → mutate → snapshot again
+    // ------------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn snapshot_round_trip_then_further_inserts_are_visible() {
+        // First generation
+        let db1 = WorkerDB::open_with_snapshot(None).unwrap();
+        db1.insert("items", r#"{"gen":1}"#).unwrap();
+        let snap1 = db1.export_snapshot().unwrap();
+
+        // Second generation — restore from snap1, add more data
+        let db2 = WorkerDB::open_with_snapshot(Some(snap1)).unwrap();
+        db2.insert("items", r#"{"gen":2}"#).unwrap();
+        let snap2 = db2.export_snapshot().unwrap();
+
+        // Third generation — must see both gen:1 and gen:2
+        let db3 = WorkerDB::open_with_snapshot(Some(snap2)).unwrap();
+        let json = db3.find("items", "null").unwrap();
+        let docs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(docs.len(), 2);
+        let gens: Vec<i64> = docs.iter()
+            .filter_map(|d| d["gen"].as_i64())
+            .collect();
+        assert!(gens.contains(&1));
+        assert!(gens.contains(&2));
+    }
+
+    #[wasm_bindgen_test]
+    fn snapshot_round_trip_preserves_secondary_index() {
+        let db = WorkerDB::open_with_snapshot(None).unwrap();
+        db.create_index("users", "age").unwrap();
+        db.insert("users", r#"{"age":30,"name":"Alice"}"#).unwrap();
+        db.insert("users", r#"{"age":25,"name":"Bob"}"#).unwrap();
+
+        let snap = db.export_snapshot().unwrap();
+        let restored = WorkerDB::open_with_snapshot(Some(snap)).unwrap();
+
+        // Filter via the indexed field
+        let json = restored.find("users", r#"{"age":{"$eq":30}}"#).unwrap();
+        let docs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["name"].as_str().unwrap(), "Alice");
+    }
+
+    #[wasm_bindgen_test]
+    fn snapshot_round_trip_update_delete_then_restore() {
+        let db = WorkerDB::open_with_snapshot(None).unwrap();
+        db.insert("col", r#"{"k":"keep"}"#).unwrap();
+        db.insert("col", r#"{"k":"remove"}"#).unwrap();
+
+        db.delete_one("col", r#"{"k":"remove"}"#).unwrap();
+        db.update_one("col", r#"{"k":"keep"}"#, r#"{"$set":{"k":"updated"}}"#).unwrap();
+
+        let snap = db.export_snapshot().unwrap();
+        let restored = WorkerDB::open_with_snapshot(Some(snap)).unwrap();
+
+        let json = restored.find("col", "null").unwrap();
+        let docs: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(docs.len(), 1, "deleted document must not appear in snapshot");
+        assert_eq!(docs[0]["k"].as_str().unwrap(), "updated");
+    }
+}
 }
