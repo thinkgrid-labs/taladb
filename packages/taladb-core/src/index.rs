@@ -160,8 +160,115 @@ pub fn docs_table_name(collection: &str) -> String {
 }
 
 pub const META_INDEXES_TABLE: &str = "meta::indexes";
+pub const META_COMPOUND_TABLE: &str = "meta::compound_indexes";
 pub const META_VERSION_TABLE: &str = "meta::db_version";
 pub const META_VERSION_KEY: &[u8] = b"version";
+
+// ---------------------------------------------------------------------------
+// Compound index metadata
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompoundIndexDef {
+    pub collection: String,
+    /// Ordered list of fields in the compound key.
+    pub fields: Vec<String>,
+}
+
+/// Meta-table key for a compound index: `"{collection}::{f1}::{f2}::..."`.
+pub fn compound_meta_key(collection: &str, fields: &[&str]) -> String {
+    format!("{}::{}", collection, fields.join("::"))
+}
+
+/// redb table for a compound index.
+pub fn compound_table_name(collection: &str, fields: &[&str]) -> String {
+    format!("cidx::{}::{}", collection, fields.join("::"))
+}
+
+// ---------------------------------------------------------------------------
+// Compound index key encoding
+//
+// Key layout: [field1_encoded][field2_encoded]...[ulid: 16 B]
+//
+// Each field is encoded with its type prefix.  Variable-length types (Str,
+// Bytes) use null-escape encoding so the terminator 0x00 marks the end:
+//   • 0x00 inside the value → [0x00, 0xFF]
+//   • end of value          → [0x00]
+// Fixed-width types (Null, Bool, Int, Float) have known widths from the type
+// prefix, so no terminator is needed and sort order is preserved.
+// ---------------------------------------------------------------------------
+
+fn encode_compound_field(value: &Value, buf: &mut Vec<u8>) -> Option<()> {
+    match value {
+        Value::Null => buf.push(0x00),
+        Value::Bool(false) => buf.push(0x10),
+        Value::Bool(true) => buf.push(0x11),
+        Value::Int(n) => {
+            buf.push(0x20);
+            let sortable = (*n as u64) ^ 0x8000_0000_0000_0000u64;
+            buf.extend_from_slice(&sortable.to_be_bytes());
+        }
+        Value::Float(f) => {
+            buf.push(0x30);
+            let bits = f.to_bits();
+            let sortable = if bits >> 63 == 1 {
+                !bits
+            } else {
+                bits ^ 0x8000_0000_0000_0000
+            };
+            buf.extend_from_slice(&sortable.to_be_bytes());
+        }
+        Value::Str(s) => {
+            buf.push(0x40);
+            for &b in s.as_bytes() {
+                if b == 0x00 {
+                    buf.extend_from_slice(&[0x00, 0xFF]);
+                } else {
+                    buf.push(b);
+                }
+            }
+            buf.push(0x00); // terminator
+        }
+        Value::Bytes(b) => {
+            buf.push(0x50);
+            for &byte in b {
+                if byte == 0x00 {
+                    buf.extend_from_slice(&[0x00, 0xFF]);
+                } else {
+                    buf.push(byte);
+                }
+            }
+            buf.push(0x00); // terminator
+        }
+        Value::Array(_) | Value::Object(_) => return None,
+    }
+    Some(())
+}
+
+/// Encode a compound index key from `values` (one per field) plus the ULID.
+pub fn encode_compound_key(values: &[&Value], id: Ulid) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    for v in values {
+        encode_compound_field(v, &mut buf)?;
+    }
+    buf.extend_from_slice(&id.to_bytes());
+    Some(buf)
+}
+
+/// Range bounds for an exact-equality scan on the given prefix values.
+/// Appends [0x00; 16] and [0xFF; 16] ULID bounds so all documents with this
+/// compound key prefix are included.
+pub fn compound_range_eq(values: &[&Value]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut prefix = Vec::new();
+    for v in values {
+        encode_compound_field(v, &mut prefix)?;
+    }
+    let mut start = prefix.clone();
+    start.extend_from_slice(&[0x00u8; 16]);
+    let mut end = prefix;
+    end.extend_from_slice(&[0xFFu8; 16]);
+    Some((start, end))
+}
 
 #[cfg(test)]
 mod tests {

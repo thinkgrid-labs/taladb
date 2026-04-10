@@ -1,3 +1,4 @@
+pub mod aggregate;
 pub mod collection;
 pub mod crypto;
 pub mod document;
@@ -11,11 +12,13 @@ pub mod sync;
 pub mod vector;
 pub mod watch;
 
+pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
 pub use collection::{Collection, Update};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
 pub use migration::{run_migrations, Migration};
+pub use query::options::{FindOptions, SortDirection, SortSpec};
 pub use query::Filter;
 pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 

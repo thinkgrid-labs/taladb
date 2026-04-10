@@ -43,6 +43,9 @@ pub enum TalaDbError {
 
     #[error("vector dimension mismatch: index expects {expected}, got {got}")]
     VectorDimensionMismatch { expected: usize, got: usize },
+
+    #[error("invalid operation: {0}")]
+    InvalidOperation(String),
 }
 
 impl From<redb::DatabaseError> for TalaDbError {

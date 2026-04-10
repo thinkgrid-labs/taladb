@@ -2,16 +2,20 @@ use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
+use crate::aggregate::{execute_pipeline, Stage};
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
 use crate::fts::{encode_fts_key, fts_table_name, tokenize, FtsDef};
 use crate::index::{
-    docs_table_name, encode_index_key, index_table_name, meta_key, IndexDef, META_INDEXES_TABLE,
+    compound_meta_key, compound_table_name, docs_table_name, encode_compound_key, encode_index_key,
+    index_table_name, meta_key, CompoundIndexDef, IndexDef, META_COMPOUND_TABLE,
+    META_INDEXES_TABLE,
 };
 use crate::query::executor::execute;
 use crate::query::filter::Filter;
-use crate::query::planner::plan_with_fts;
+use crate::query::options::{project_document, sort_documents, FindOptions};
+use crate::query::planner::plan_full;
 #[cfg(feature = "vector-hnsw")]
 use crate::vector::{build_hnsw, search_hnsw, SharedHnswCache};
 use crate::vector::{
@@ -26,6 +30,7 @@ struct CachedIndexes {
     indexes: Vec<IndexDef>,
     fts_indexes: Vec<FtsDef>,
     vec_indexes: Vec<VectorDef>,
+    compound_indexes: Vec<CompoundIndexDef>,
 }
 
 /// An update operation on a document.
@@ -83,20 +88,24 @@ impl Collection {
                 indexes: cached.indexes.clone(),
                 fts_indexes: cached.fts_indexes.clone(),
                 vec_indexes: cached.vec_indexes.clone(),
+                compound_indexes: cached.compound_indexes.clone(),
             });
         }
         let indexes = self.load_indexes()?;
         let fts_indexes = self.load_fts_indexes()?;
         let vec_indexes = self.load_vector_indexes()?;
+        let compound_indexes = self.load_compound_indexes()?;
         *guard = Some(CachedIndexes {
             indexes: indexes.clone(),
             fts_indexes: fts_indexes.clone(),
             vec_indexes: vec_indexes.clone(),
+            compound_indexes: compound_indexes.clone(),
         });
         Ok(CachedIndexes {
             indexes,
             fts_indexes,
             vec_indexes,
+            compound_indexes,
         })
     }
 
@@ -236,6 +245,115 @@ impl Collection {
         wtxn.commit()?;
         self.invalidate_index_cache();
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Compound index management
+    // ------------------------------------------------------------------
+
+    /// Create a compound index on an ordered list of fields.
+    ///
+    /// A compound index accelerates queries where all listed fields are
+    /// constrained by equality (`Filter::Eq`), e.g.:
+    ///
+    /// ```ignore
+    /// col.create_compound_index(&["lastName", "firstName"])?;
+    /// col.find(Filter::And(vec![
+    ///     Filter::Eq("lastName".into(), Value::Str("Smith".into())),
+    ///     Filter::Eq("firstName".into(), Value::Str("John".into())),
+    /// ]))?;
+    /// ```
+    ///
+    /// Backfills existing documents. The index name is derived from the
+    /// field list, so `["a","b"]` and `["b","a"]` are two distinct indexes.
+    pub fn create_compound_index(&self, fields: &[&str]) -> Result<(), TalaDbError> {
+        if fields.len() < 2 {
+            return Err(TalaDbError::InvalidOperation(
+                "compound index requires at least 2 fields".into(),
+            ));
+        }
+        let meta_key = compound_meta_key(&self.name, fields);
+        let mut wtxn = self.backend.begin_write()?;
+
+        // Idempotent
+        if wtxn
+            .get(META_COMPOUND_TABLE, meta_key.as_bytes())?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        let def = CompoundIndexDef {
+            collection: self.name.clone(),
+            fields: fields.iter().map(|s| s.to_string()).collect(),
+        };
+        let bytes = postcard::to_allocvec(&def)?;
+        wtxn.put(META_COMPOUND_TABLE, meta_key.as_bytes(), &bytes)?;
+
+        // Backfill existing documents
+        let docs_table = docs_table_name(&self.name);
+        let existing = wtxn.range(
+            &docs_table,
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Unbounded,
+        )?;
+        let ctable = compound_table_name(&self.name, fields);
+        for (_, doc_bytes) in existing {
+            let doc: Document = postcard::from_bytes(&doc_bytes)?;
+            let vals: Option<Vec<&crate::document::Value>> =
+                fields.iter().map(|f| doc.get(f)).collect();
+            if let Some(v) = vals {
+                if let Some(key) = encode_compound_key(&v, doc.id) {
+                    wtxn.put(&ctable, &key, &[])?;
+                }
+            }
+        }
+
+        wtxn.commit()?;
+        self.invalidate_index_cache();
+        Ok(())
+    }
+
+    /// Drop a compound index and all its stored entries.
+    pub fn drop_compound_index(&self, fields: &[&str]) -> Result<(), TalaDbError> {
+        let meta_key = compound_meta_key(&self.name, fields);
+        let mut wtxn = self.backend.begin_write()?;
+
+        if wtxn
+            .get(META_COMPOUND_TABLE, meta_key.as_bytes())?
+            .is_none()
+        {
+            return Err(TalaDbError::IndexNotFound(format!("compound:{}", meta_key)));
+        }
+
+        let ctable = compound_table_name(&self.name, fields);
+        let all = wtxn.range(
+            &ctable,
+            std::ops::Bound::Unbounded,
+            std::ops::Bound::Unbounded,
+        )?;
+        for (k, _) in all {
+            wtxn.delete(&ctable, &k)?;
+        }
+        wtxn.delete(META_COMPOUND_TABLE, meta_key.as_bytes())?;
+        wtxn.commit()?;
+        self.invalidate_index_cache();
+        Ok(())
+    }
+
+    fn load_compound_indexes(&self) -> Result<Vec<CompoundIndexDef>, TalaDbError> {
+        let rtxn = self.backend.begin_read()?;
+        let prefix = format!("{}::", self.name);
+        let all = rtxn.scan_all(META_COMPOUND_TABLE).unwrap_or_default();
+        let mut defs = Vec::new();
+        for (k, v) in all {
+            let key_str = String::from_utf8_lossy(&k);
+            if key_str.starts_with(&prefix) {
+                let def: CompoundIndexDef = postcard::from_bytes(&v)?;
+                defs.push(def);
+            }
+        }
+        Ok(defs)
     }
 
     // ------------------------------------------------------------------
@@ -583,13 +701,15 @@ impl Collection {
     // Write helpers
     // ------------------------------------------------------------------
 
-    fn write_doc_and_indexes(
+    #[allow(clippy::too_many_arguments)]
+    fn write_doc_and_indexes_with_compound(
         &self,
         doc: &Document,
         old_doc: Option<&Document>,
         indexes: &[IndexDef],
         fts_indexes: &[FtsDef],
         vec_indexes: &[VectorDef],
+        compound_indexes: &[CompoundIndexDef],
         wtxn: &mut dyn crate::engine::WriteTxn,
     ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
@@ -651,6 +771,28 @@ impl Collection {
             }
         }
 
+        // Compound indexes
+        for cidx in compound_indexes {
+            let field_refs: Vec<&str> = cidx.fields.iter().map(|s| s.as_str()).collect();
+            let ctable = compound_table_name(&self.name, &field_refs);
+            // Remove old compound entry
+            if let Some(old) = old_doc {
+                let old_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| old.get(f)).collect();
+                if let Some(v) = old_vals {
+                    if let Some(old_key) = encode_compound_key(&v, old.id) {
+                        wtxn.delete(&ctable, &old_key)?;
+                    }
+                }
+            }
+            // Write new compound entry
+            let new_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
+            if let Some(v) = new_vals {
+                if let Some(new_key) = encode_compound_key(&v, doc.id) {
+                    wtxn.put(&ctable, &new_key, &[])?;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -661,9 +803,22 @@ impl Collection {
     pub fn insert(&self, fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
         let doc = Document::new(fields);
         let cache = self.load_indexes_cached()?;
-        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
+        let (indexes, fts, vecs, cidxs) = (
+            cache.indexes,
+            cache.fts_indexes,
+            cache.vec_indexes,
+            cache.compound_indexes,
+        );
         let mut wtxn = self.backend.begin_write()?;
-        self.write_doc_and_indexes(&doc, None, &indexes, &fts, &vecs, wtxn.as_mut())?;
+        self.write_doc_and_indexes_with_compound(
+            &doc,
+            None,
+            &indexes,
+            &fts,
+            &vecs,
+            &cidxs,
+            wtxn.as_mut(),
+        )?;
         let id = doc.id;
         wtxn.commit()?;
         Ok(id)
@@ -672,11 +827,24 @@ impl Collection {
     pub fn insert_many(&self, items: Vec<Vec<(String, Value)>>) -> Result<Vec<Ulid>, TalaDbError> {
         let docs: Vec<Document> = items.into_iter().map(Document::new).collect();
         let cache = self.load_indexes_cached()?;
-        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
+        let (indexes, fts, vecs, cidxs) = (
+            cache.indexes,
+            cache.fts_indexes,
+            cache.vec_indexes,
+            cache.compound_indexes,
+        );
         let mut wtxn = self.backend.begin_write()?;
         let mut ids = Vec::with_capacity(docs.len());
         for doc in &docs {
-            self.write_doc_and_indexes(doc, None, &indexes, &fts, &vecs, wtxn.as_mut())?;
+            self.write_doc_and_indexes_with_compound(
+                doc,
+                None,
+                &indexes,
+                &fts,
+                &vecs,
+                &cidxs,
+                wtxn.as_mut(),
+            )?;
             ids.push(doc.id);
         }
         wtxn.commit()?;
@@ -686,7 +854,8 @@ impl Collection {
     pub fn find(&self, filter: Filter) -> Result<Vec<Document>, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
-        let qplan = plan_with_fts(&filter, &indexes, &fts);
+        let cidxs = self.load_compound_indexes()?;
+        let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
         execute(&qplan, &filter, rtxn.as_ref(), &self.name)
     }
@@ -695,12 +864,106 @@ impl Collection {
         Ok(self.find(filter)?.into_iter().next())
     }
 
+    /// Like `find`, but with sort, pagination, and field projection.
+    ///
+    /// Processing order:
+    /// 1. Filter (index-accelerated where possible)
+    /// 2. Sort (`options.sort`)
+    /// 3. Skip (`options.skip`)
+    /// 4. Limit (`options.limit`)
+    /// 5. Projection (`options.fields`)
+    pub fn find_with_options(
+        &self,
+        filter: Filter,
+        options: FindOptions,
+    ) -> Result<Vec<Document>, TalaDbError> {
+        let indexes = self.load_indexes()?;
+        let fts = self.load_fts_indexes()?;
+        let cidxs = self.load_compound_indexes()?;
+        let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
+        let rtxn = self.backend.begin_read()?;
+        let mut docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
+
+        // Sort
+        if !options.sort.is_empty() {
+            sort_documents(&mut docs, &options.sort);
+        }
+
+        // Skip
+        if options.skip > 0 {
+            let skip = options.skip as usize;
+            if skip >= docs.len() {
+                return Ok(vec![]);
+            }
+            docs = docs.split_off(skip);
+        }
+
+        // Limit
+        if let Some(limit) = options.limit {
+            docs.truncate(limit as usize);
+        }
+
+        // Projection
+        if let Some(ref fields) = options.fields {
+            docs = docs
+                .into_iter()
+                .map(|d| project_document(d, fields))
+                .collect();
+        }
+
+        Ok(docs)
+    }
+
+    /// Execute an aggregation pipeline against the collection.
+    ///
+    /// If the first stage is `Stage::Match`, the query planner is consulted so
+    /// that any available index can be used to narrow the candidate set before
+    /// the remaining stages run.
+    pub fn aggregate(
+        &self,
+        pipeline: crate::aggregate::Pipeline,
+    ) -> Result<Vec<Document>, TalaDbError> {
+        let (initial_docs, rest_start) = if let Some(Stage::Match(filter)) = pipeline.first() {
+            let indexes = self.load_indexes()?;
+            let fts = self.load_fts_indexes()?;
+            let cidxs = self.load_compound_indexes()?;
+            let plan = plan_full(filter, &indexes, &fts, &cidxs);
+            let rtxn = self.backend.begin_read()?;
+            let docs = execute(&plan, filter, rtxn.as_ref(), &self.name)?;
+            (docs, 1usize)
+        } else {
+            let rtxn = self.backend.begin_read()?;
+            let docs = execute(
+                &crate::query::planner::QueryPlan::FullScan,
+                &Filter::All,
+                rtxn.as_ref(),
+                &self.name,
+            )?;
+            (docs, 0usize)
+        };
+
+        execute_pipeline(initial_docs, &pipeline[rest_start..])
+    }
+
     pub fn insert_with_id(&self, doc: Document) -> Result<Ulid, TalaDbError> {
         let cache = self.load_indexes_cached()?;
-        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
+        let (indexes, fts, vecs, cidxs) = (
+            cache.indexes,
+            cache.fts_indexes,
+            cache.vec_indexes,
+            cache.compound_indexes,
+        );
         let mut wtxn = self.backend.begin_write()?;
         let id = doc.id;
-        self.write_doc_and_indexes(&doc, None, &indexes, &fts, &vecs, wtxn.as_mut())?;
+        self.write_doc_and_indexes_with_compound(
+            &doc,
+            None,
+            &indexes,
+            &fts,
+            &vecs,
+            &cidxs,
+            wtxn.as_mut(),
+        )?;
         wtxn.commit()?;
         Ok(id)
     }
@@ -716,7 +979,12 @@ impl Collection {
 
     pub fn delete_by_id(&self, id: Ulid) -> Result<bool, TalaDbError> {
         let cache = self.load_indexes_cached()?;
-        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
+        let (indexes, fts, vecs, cidxs) = (
+            cache.indexes,
+            cache.fts_indexes,
+            cache.vec_indexes,
+            cache.compound_indexes,
+        );
         let docs_table = docs_table_name(&self.name);
         let rtxn = self.backend.begin_read()?;
         let doc: Option<Document> = match rtxn.get(&docs_table, &id.to_bytes())? {
@@ -728,7 +996,14 @@ impl Collection {
             None => Ok(false),
             Some(doc) => {
                 let mut wtxn = self.backend.begin_write()?;
-                self.delete_doc_and_indexes(&doc, &indexes, &fts, &vecs, wtxn.as_mut())?;
+                self.delete_doc_and_indexes_with_compound(
+                    &doc,
+                    &indexes,
+                    &fts,
+                    &vecs,
+                    &cidxs,
+                    wtxn.as_mut(),
+                )?;
                 wtxn.commit()?;
                 Ok(true)
             }
@@ -737,8 +1012,13 @@ impl Collection {
 
     pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
         let cache = self.load_indexes_cached()?;
-        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
-        let qplan = plan_with_fts(&filter, &indexes, &fts);
+        let (indexes, fts, vecs, cidxs) = (
+            cache.indexes,
+            cache.fts_indexes,
+            cache.vec_indexes,
+            cache.compound_indexes,
+        );
+        let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
         let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
         drop(rtxn);
@@ -747,12 +1027,13 @@ impl Collection {
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, update)?;
             let mut wtxn = self.backend.begin_write()?;
-            self.write_doc_and_indexes(
+            self.write_doc_and_indexes_with_compound(
                 &new_doc,
                 Some(&old_doc),
                 &indexes,
                 &fts,
                 &vecs,
+                &cidxs,
                 wtxn.as_mut(),
             )?;
             wtxn.commit()?;
@@ -763,8 +1044,13 @@ impl Collection {
 
     pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, TalaDbError> {
         let cache = self.load_indexes_cached()?;
-        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
-        let qplan = plan_with_fts(&filter, &indexes, &fts);
+        let (indexes, fts, vecs, cidxs) = (
+            cache.indexes,
+            cache.fts_indexes,
+            cache.vec_indexes,
+            cache.compound_indexes,
+        );
+        let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
         drop(rtxn);
@@ -774,12 +1060,13 @@ impl Collection {
         for old_doc in &candidates {
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, update.clone())?;
-            self.write_doc_and_indexes(
+            self.write_doc_and_indexes_with_compound(
                 &new_doc,
                 Some(old_doc),
                 &indexes,
                 &fts,
                 &vecs,
+                &cidxs,
                 wtxn.as_mut(),
             )?;
             count += 1;
@@ -790,15 +1077,27 @@ impl Collection {
 
     pub fn delete_one(&self, filter: Filter) -> Result<bool, TalaDbError> {
         let cache = self.load_indexes_cached()?;
-        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
-        let qplan = plan_with_fts(&filter, &indexes, &fts);
+        let (indexes, fts, vecs, cidxs) = (
+            cache.indexes,
+            cache.fts_indexes,
+            cache.vec_indexes,
+            cache.compound_indexes,
+        );
+        let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
         let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
         drop(rtxn);
 
         if let Some(doc) = candidates.drain(..).next() {
             let mut wtxn = self.backend.begin_write()?;
-            self.delete_doc_and_indexes(&doc, &indexes, &fts, &vecs, wtxn.as_mut())?;
+            self.delete_doc_and_indexes_with_compound(
+                &doc,
+                &indexes,
+                &fts,
+                &vecs,
+                &cidxs,
+                wtxn.as_mut(),
+            )?;
             wtxn.commit()?;
             return Ok(true);
         }
@@ -807,8 +1106,13 @@ impl Collection {
 
     pub fn delete_many(&self, filter: Filter) -> Result<u64, TalaDbError> {
         let cache = self.load_indexes_cached()?;
-        let (indexes, fts, vecs) = (cache.indexes, cache.fts_indexes, cache.vec_indexes);
-        let qplan = plan_with_fts(&filter, &indexes, &fts);
+        let (indexes, fts, vecs, cidxs) = (
+            cache.indexes,
+            cache.fts_indexes,
+            cache.vec_indexes,
+            cache.compound_indexes,
+        );
+        let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
         let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
         drop(rtxn);
@@ -816,7 +1120,14 @@ impl Collection {
         let mut count = 0u64;
         let mut wtxn = self.backend.begin_write()?;
         for doc in &candidates {
-            self.delete_doc_and_indexes(doc, &indexes, &fts, &vecs, wtxn.as_mut())?;
+            self.delete_doc_and_indexes_with_compound(
+                doc,
+                &indexes,
+                &fts,
+                &vecs,
+                &cidxs,
+                wtxn.as_mut(),
+            )?;
             count += 1;
         }
         wtxn.commit()?;
@@ -827,12 +1138,13 @@ impl Collection {
         Ok(self.find(filter)?.len() as u64)
     }
 
-    fn delete_doc_and_indexes(
+    fn delete_doc_and_indexes_with_compound(
         &self,
         doc: &Document,
         indexes: &[IndexDef],
         fts_indexes: &[FtsDef],
         vec_indexes: &[VectorDef],
+        compound_indexes: &[CompoundIndexDef],
         wtxn: &mut dyn crate::engine::WriteTxn,
     ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
@@ -860,6 +1172,17 @@ impl Collection {
         for vdef in vec_indexes {
             let vtable = vec_table_name(&self.name, &vdef.field);
             wtxn.delete(&vtable, &doc.id.to_bytes())?;
+        }
+
+        for cidx in compound_indexes {
+            let field_refs: Vec<&str> = cidx.fields.iter().map(|s| s.as_str()).collect();
+            let ctable = compound_table_name(&self.name, &field_refs);
+            let vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
+            if let Some(v) = vals {
+                if let Some(key) = encode_compound_key(&v, doc.id) {
+                    wtxn.delete(&ctable, &key)?;
+                }
+            }
         }
 
         Ok(())

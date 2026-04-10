@@ -1251,6 +1251,7 @@ dependencies = [
  "postcard",
  "rand 0.8.5",
  "redb",
+ "regex",
  "serde",
  "sha2",
  "tempfile",

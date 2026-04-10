@@ -28,6 +28,7 @@ fn err_to_js(e: TalaDbError) -> JsValue {
         TalaDbError::InvalidSnapshot => "InvalidSnapshot",
         TalaDbError::VectorIndexNotFound(_) => "VectorIndexNotFound",
         TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
+        TalaDbError::InvalidOperation(_) => "InvalidOperation",
     };
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &"error".into(), &JsValue::from_str(&msg));

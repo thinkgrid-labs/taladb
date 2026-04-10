@@ -12,6 +12,7 @@ postcard   = { version = "1.0", features = ["alloc"] }
 serde      = { version = "1.0", features = ["derive"] }
 ulid       = { version = "1.1", features = ["serde"] }
 thiserror  = "1.0"
+regex      = { version = "1.11", default-features = false, features = ["std", "unicode-perl"] }
 # Encryption optional deps — only pulled in when `encryption` feature is enabled.
 aes-gcm          = { version = "0.10", optional = true }
 rand             = { version = "0.8",  optional = true }

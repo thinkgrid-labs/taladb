@@ -18,6 +18,7 @@ fn err_to_napi(e: TalaDbError) -> napi::Error {
         TalaDbError::InvalidSnapshot => "InvalidSnapshot",
         TalaDbError::VectorIndexNotFound(_) => "VectorIndexNotFound",
         TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
+        TalaDbError::InvalidOperation(_) => "InvalidOperation",
     };
     napi::Error::from_reason(format!("{}: {}", code, e))
 }

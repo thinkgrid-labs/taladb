@@ -11,37 +11,7 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 ---
 
-## 1 · Query engine
-
-Features that almost every real application needs before it can ship.
-
-### Cursor / pagination
-
-`find(filter, { skip: 0, limit: 20, sort: { createdAt: -1 } })` — stable, index-aware pagination without loading the entire result set into memory. Blocking for any app with a list view.
-
-### Nested field queries
-
-Dot-notation access to nested object fields — `{ 'address.city': 'London' }` — without requiring the caller to flatten documents before inserting.
-
-### Compound indexes
-
-Index a tuple of fields `(lastName, firstName)` so that queries with equality on `lastName` and a range on `firstName` use a single B-tree scan instead of two separate index scans with an in-memory join.
-
-### Aggregation pipeline
-
-A lightweight `aggregate()` method supporting `$group`, `$sum`, `$avg`, `$min`, `$max`, `$count`, and `$sort` — enough to power dashboards and analytics views without moving data out of the database.
-
-### Projection
-
-`find(filter, { fields: ['name', 'email'] })` — return only specified fields, reducing deserialization cost for wide documents with many fields.
-
-### `$regex` filter
-
-Pattern matching against string fields using a compiled regex. Evaluated as a post-filter (no index support) but useful for search and validation.
-
----
-
-## 2 · Developer experience
+## 1 · Developer experience
 
 Better DX drives adoption and reduces time-to-production.
 
@@ -67,7 +37,7 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 ---
 
-## 3 · Sync
+## 2 · Sync
 
 Multi-device and collaborative data sync — the next frontier for local-first apps.
 
@@ -85,7 +55,7 @@ A reference sync server (`taladb-sync-server`) that accepts snapshot diffs over 
 
 ---
 
-## 4 · Storage
+## 3 · Storage
 
 Internal improvements that improve efficiency and interoperability.
 
@@ -99,7 +69,7 @@ Allow the caller to swap `postcard` for `MessagePack` or `CBOR` via a `Codec` tr
 
 ---
 
-## 5 · Platform
+## 4 · Platform
 
 Expanding the runtimes TalaDB can target.
 
@@ -121,7 +91,7 @@ Compile `taladb-core` to WASI (`wasm32-wasip1`) so it can run inside WASI runtim
 
 ---
 
-## 6 · Security
+## 5 · Security
 
 Hardening for apps that handle sensitive data.
 
