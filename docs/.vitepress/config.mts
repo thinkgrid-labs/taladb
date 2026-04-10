@@ -47,10 +47,10 @@ export default defineConfig({
   head: [
     [
       "link",
-      { rel: "icon", href: "/taladb/favicon.svg", type: "image/svg+xml" },
+      { rel: "icon", href: "/taladb/favicon.png", type: "image/png" },
     ],
-    ["link", { rel: "icon", href: "/taladb/favicon.svg" }],
-    ["meta", { name: "theme-color", content: "#00CED1" }],
+    ["link", { rel: "apple-touch-icon", href: "/taladb/apple-touch-icon.png" }],
+    ["meta", { name: "theme-color", content: "#B54B31" }],
     ["meta", { name: "author", content: "thinkgrid-labs" }],
     [
       "meta",
