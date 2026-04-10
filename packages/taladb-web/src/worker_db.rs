@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
 use taladb_core::engine::RedbBackend;
-use taladb_core::{Database, Filter, Update, Value, VectorMetric};
+use taladb_core::{Database, Filter, HnswOptions, Update, Value, VectorMetric};
 
 use crate::storage::opfs_backend::OpfsBackend;
 
@@ -239,7 +239,12 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    /// Create a vector index. `metric_str`: `"cosine"` | `"dot"` | `"euclidean"` (default cosine).
+    /// Create a vector index.
+    ///
+    /// - `metric_str`: `"cosine"` (default) | `"dot"` | `"euclidean"`
+    /// - `index_type`: `"flat"` (default) | `"hnsw"`
+    /// - `hnsw_m`: HNSW connectivity (default 16, only used when `index_type = "hnsw"`)
+    /// - `hnsw_ef_construction`: build-time quality (default 200, only used when `index_type = "hnsw"`)
     #[wasm_bindgen(js_name = createVectorIndex)]
     pub fn create_vector_index(
         &self,
@@ -247,20 +252,36 @@ impl WorkerDB {
         field: &str,
         dimensions: u32,
         metric_str: Option<String>,
+        index_type: Option<String>,
+        hnsw_m: Option<u32>,
+        hnsw_ef_construction: Option<u32>,
     ) -> Result<(), JsValue> {
         let metric = parse_metric(metric_str)?;
+        let hnsw = parse_hnsw_opts(index_type, hnsw_m, hnsw_ef_construction);
         self.db
             .collection(collection)
-            .create_vector_index(field, dimensions as usize, metric)
+            .create_vector_index(field, dimensions as usize, metric, hnsw)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    /// Drop a vector index.
+    /// Drop a vector index (and its HNSW graph if present).
     #[wasm_bindgen(js_name = dropVectorIndex)]
     pub fn drop_vector_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db
             .collection(collection)
             .drop_vector_index(field)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Rebuild the HNSW graph for a vector index from the current flat vector
+    /// table.  Use after bulk inserts or when ANN recall has degraded.
+    ///
+    /// No-op when the `vector-hnsw` feature is disabled or the index is flat-only.
+    #[wasm_bindgen(js_name = upgradeVectorIndex)]
+    pub fn upgrade_vector_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
+        self.db
+            .collection(collection)
+            .upgrade_vector_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -312,6 +333,21 @@ fn parse_metric(metric: Option<String>) -> Result<Option<VectorMetric>, JsValue>
         Some(other) => Err(JsValue::from_str(&format!(
             "unknown metric \"{other}\": expected \"cosine\", \"dot\", or \"euclidean\""
         ))),
+    }
+}
+
+/// Parse optional HNSW parameters. Returns `None` for flat indexes.
+fn parse_hnsw_opts(
+    index_type: Option<String>,
+    m: Option<u32>,
+    ef_construction: Option<u32>,
+) -> Option<HnswOptions> {
+    match index_type.as_deref() {
+        Some("hnsw") => Some(HnswOptions {
+            m: m.unwrap_or(16),
+            ef_construction: ef_construction.unwrap_or(200),
+        }),
+        _ => None, // "flat" or absent → flat index
     }
 }
 

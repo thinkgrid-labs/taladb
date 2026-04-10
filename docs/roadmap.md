@@ -11,33 +11,7 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 ---
 
-## 1 · Vector search (HNSW)
-
-v0.3 ships flat (brute-force) vector search — O(n·d) per query, perfect for collections up to ~10 K documents. The next step replaces the inner loop with an HNSW (Hierarchical Navigable Small World) graph index for sub-linear approximate nearest-neighbor search, making vector search viable for production-scale collections.
-
-### Planned design
-
-- **Crate:** [`instant-distance`](https://github.com/instant-labs/instant-distance) — pure Rust, WASM-compatible, MIT license
-- **Persistence:** HNSW graph serialised to a dedicated `hnsw::<collection>::<field>` redb table as a single blob; loaded into memory on database open
-- **Feature flag:** `--features vector-hnsw` keeps the base WASM bundle lean; flat search remains the default and is used automatically for small collections
-- **API:** fully backward-compatible — same `createVectorIndex` / `findNearest` calls, new `indexType` option:
-
-```ts
-await col.createVectorIndex('embedding', {
-  dimensions: 384,
-  metric: 'cosine',
-  indexType: 'hnsw',       // 'flat' (default) | 'hnsw'
-  hnswM: 16,               // connectivity — higher = better recall, more memory
-  hnswEfConstruction: 200, // build-time quality
-})
-```
-
-- **Auto-upgrade:** `taladb upgrade-vector-index <file> <collection> <field>` CLI command promotes a flat index to HNSW in-place without re-inserting documents
-- **Target performance:** <5 ms `findNearest` on 100 K 384-dim vectors on a mid-range device
-
----
-
-## 2 · Query engine
+## 1 · Query engine
 
 Features that almost every real application needs before it can ship.
 
@@ -67,7 +41,7 @@ Pattern matching against string fields using a compiled regex. Evaluated as a po
 
 ---
 
-## 3 · Developer experience
+## 2 · Developer experience
 
 Better DX drives adoption and reduces time-to-production.
 
@@ -93,7 +67,7 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 ---
 
-## 4 · Sync
+## 3 · Sync
 
 Multi-device and collaborative data sync — the next frontier for local-first apps.
 
@@ -111,7 +85,7 @@ A reference sync server (`taladb-sync-server`) that accepts snapshot diffs over 
 
 ---
 
-## 5 · Storage
+## 4 · Storage
 
 Internal improvements that improve efficiency and interoperability.
 
@@ -125,7 +99,7 @@ Allow the caller to swap `postcard` for `MessagePack` or `CBOR` via a `Codec` tr
 
 ---
 
-## 6 · Platform
+## 5 · Platform
 
 Expanding the runtimes TalaDB can target.
 
@@ -147,7 +121,7 @@ Compile `taladb-core` to WASI (`wasm32-wasip1`) so it can run inside WASI runtim
 
 ---
 
-## 7 · Security
+## 6 · Security
 
 Hardening for apps that handle sensitive data.
 

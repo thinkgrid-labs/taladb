@@ -12,9 +12,12 @@ use crate::index::{
 use crate::query::executor::execute;
 use crate::query::filter::Filter;
 use crate::query::planner::plan_with_fts;
+#[cfg(feature = "vector-hnsw")]
+use crate::vector::{build_hnsw, search_hnsw, SharedHnswCache};
 use crate::vector::{
     compute_similarity, decode_f32_vec, encode_f32_vec, value_to_f32_vec, vec_meta_key,
-    vec_table_name, VectorDef, VectorMetric, VectorSearchResult, META_VECTOR_TABLE,
+    vec_table_name, HnswOptions, VectorDef, VectorMetric, VectorSearchResult, META_HNSW_TABLE,
+    META_VECTOR_TABLE,
 };
 
 const META_FTS_TABLE: &str = "meta::fts_indexes";
@@ -44,6 +47,8 @@ pub struct Collection {
     pub(crate) name: String,
     backend: Arc<dyn StorageBackend>,
     index_cache: Mutex<Option<CachedIndexes>>,
+    #[cfg(feature = "vector-hnsw")]
+    hnsw_cache: SharedHnswCache,
 }
 
 impl Collection {
@@ -52,7 +57,17 @@ impl Collection {
             name: name.into(),
             backend,
             index_cache: Mutex::new(None),
+            #[cfg(feature = "vector-hnsw")]
+            hnsw_cache: crate::vector::new_shared_cache(),
         }
+    }
+
+    /// Attach a shared HNSW cache (called by `Database::collection()` so all
+    /// handles from the same `Database` share a single graph store).
+    #[cfg(feature = "vector-hnsw")]
+    pub(crate) fn with_hnsw_cache(mut self, cache: SharedHnswCache) -> Self {
+        self.hnsw_cache = cache;
+        self
     }
 
     fn invalidate_index_cache(&self) {
@@ -231,6 +246,9 @@ impl Collection {
     ///
     /// - `dimensions`: expected length of every stored vector.
     /// - `metric`: similarity metric used by `find_nearest` (default: Cosine).
+    /// - `hnsw`: when `Some`, builds an HNSW approximate-nearest-neighbor index
+    ///   in addition to the flat vector table.  Requires the `vector-hnsw` feature;
+    ///   ignored (with a no-op) if the feature is disabled.
     ///
     /// Backfills any existing documents that already have a numeric array in
     /// `field`. Silently skips documents where `field` is absent or not a
@@ -240,6 +258,7 @@ impl Collection {
         field: &str,
         dimensions: usize,
         metric: Option<VectorMetric>,
+        hnsw: Option<HnswOptions>,
     ) -> Result<(), TalaDbError> {
         let meta_key = vec_meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
@@ -249,16 +268,17 @@ impl Collection {
             return Ok(());
         }
 
+        let resolved_metric = metric.unwrap_or_default();
         let def = VectorDef {
             collection: self.name.clone(),
             field: field.to_string(),
             dimensions,
-            metric: metric.unwrap_or_default(),
+            metric: resolved_metric.clone(),
         };
         let bytes = postcard::to_allocvec(&def)?;
         wtxn.put(META_VECTOR_TABLE, meta_key.as_bytes(), &bytes)?;
 
-        // Backfill existing documents
+        // Backfill existing documents into flat vec table
         let docs_table = docs_table_name(&self.name);
         let existing = wtxn.range(
             &docs_table,
@@ -266,14 +286,31 @@ impl Collection {
             std::ops::Bound::Unbounded,
         )?;
         let vtable = vec_table_name(&self.name, field);
+        let mut backfill: Vec<(ulid::Ulid, Vec<f32>)> = Vec::new();
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             if let Some(val) = doc.get(field) {
                 if let Some(vec) = value_to_f32_vec(val) {
                     if vec.len() == dimensions {
                         wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
+                        backfill.push((doc.id, vec));
                     }
                 }
+            }
+        }
+
+        // Persist HNSW options and build the in-memory graph when requested
+        if let Some(hnsw_opts) = hnsw {
+            let hnsw_meta_key = format!("{}::{}", self.name, field);
+            let opts_bytes = postcard::to_allocvec(&hnsw_opts)?;
+            wtxn.put(META_HNSW_TABLE, hnsw_meta_key.as_bytes(), &opts_bytes)?;
+
+            #[cfg(feature = "vector-hnsw")]
+            {
+                let graph = build_hnsw(&backfill, &resolved_metric, hnsw_opts.ef_construction)?;
+                let cache_key = format!("{}::{}", self.name, field);
+                let mut cache = self.hnsw_cache.lock().unwrap_or_else(|p| p.into_inner());
+                cache.insert(cache_key, graph);
             }
         }
 
@@ -283,6 +320,7 @@ impl Collection {
     }
 
     /// Drop a vector index and remove all stored vectors for that field.
+    /// Also removes any HNSW graph and options associated with this index.
     pub fn drop_vector_index(&self, field: &str) -> Result<(), TalaDbError> {
         let meta_key = vec_meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
@@ -294,6 +332,7 @@ impl Collection {
             )));
         }
 
+        // Remove flat vector entries
         let vtable = vec_table_name(&self.name, field);
         let all = wtxn.range(
             &vtable,
@@ -303,6 +342,17 @@ impl Collection {
         for (k, _) in all {
             wtxn.delete(&vtable, &k)?;
         }
+
+        // Remove HNSW metadata (if present) and evict from in-memory cache
+        let hnsw_meta_key = format!("{}::{}", self.name, field);
+        let _ = wtxn.delete(META_HNSW_TABLE, hnsw_meta_key.as_bytes());
+        #[cfg(feature = "vector-hnsw")]
+        {
+            let cache_key = format!("{}::{}", self.name, field);
+            let mut cache = self.hnsw_cache.lock().unwrap_or_else(|p| p.into_inner());
+            cache.remove(&cache_key);
+        }
+
         wtxn.delete(META_VECTOR_TABLE, meta_key.as_bytes())?;
         wtxn.commit()?;
         self.invalidate_index_cache();
@@ -312,9 +362,17 @@ impl Collection {
     /// Search for the `top_k` most similar documents to `query` using the
     /// named vector index.
     ///
+    /// When the index was created with `hnsw: Some(...)` and the `vector-hnsw`
+    /// feature is enabled, uses the HNSW approximate-nearest-neighbor graph for
+    /// sub-linear search.  Falls back automatically to the flat brute-force
+    /// scan when no HNSW graph is stored (e.g. the feature is disabled, or the
+    /// graph has not been built yet).
+    ///
     /// If `pre_filter` is `Some`, only documents matching that filter are
     /// considered. This lets you combine metadata filtering with vector
-    /// similarity in one call.
+    /// similarity in one call.  Pre-filtering forces flat search regardless of
+    /// whether an HNSW graph exists, because the graph does not support
+    /// arbitrary set-membership constraints.
     ///
     /// Results are ordered by descending similarity score (highest first).
     pub fn find_nearest(
@@ -339,7 +397,21 @@ impl Collection {
             });
         }
 
-        // 3. Load all stored vectors
+        // 3a. HNSW path — only when no pre-filter and a graph is in the cache.
+        #[cfg(feature = "vector-hnsw")]
+        if pre_filter.is_none() {
+            let cache_key = format!("{}::{}", self.name, field);
+            let graph_opt = {
+                let cache = self.hnsw_cache.lock().unwrap_or_else(|p| p.into_inner());
+                cache.get(&cache_key).cloned()
+            };
+            if let Some(graph) = graph_opt {
+                let scored = search_hnsw(&graph, query, &def.metric, top_k);
+                return self.load_results(scored);
+            }
+        }
+
+        // 3b. Flat (brute-force) path
         let vtable = vec_table_name(&self.name, field);
         let rtxn = self.backend.begin_read()?;
         let all_entries = rtxn.scan_all(&vtable)?;
@@ -383,7 +455,72 @@ impl Collection {
         scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(top_k);
 
-        // 7. Load full documents for top_k results
+        self.load_results(scored)
+    }
+
+    /// Rebuild the HNSW graph for a vector index from the current flat vector
+    /// table.  Use this after bulk inserts or when the graph has become stale.
+    ///
+    /// Requires the `vector-hnsw` feature.  Returns `Ok(())` (no-op) when the
+    /// feature is disabled or when no HNSW options exist for the given field.
+    pub fn upgrade_vector_index(&self, field: &str) -> Result<(), TalaDbError> {
+        // Load current VectorDef to get metric & dimensions
+        let defs = self.load_vector_indexes()?;
+        let def = defs
+            .iter()
+            .find(|d| d.field == field)
+            .ok_or_else(|| TalaDbError::VectorIndexNotFound(format!("{}::{}", self.name, field)))?
+            .clone();
+
+        // Load HNSW options — if not present, this index is flat-only; nothing to do
+        let hnsw_meta_key = format!("{}::{}", self.name, field);
+        let rtxn = self.backend.begin_read()?;
+        let opts_bytes = rtxn.get(META_HNSW_TABLE, hnsw_meta_key.as_bytes())?;
+        drop(rtxn);
+
+        let hnsw_opts: HnswOptions = match opts_bytes {
+            Some(b) => postcard::from_bytes(&b)?,
+            None => return Ok(()), // flat index — nothing to upgrade
+        };
+
+        // Read all vectors from the flat table
+        let vtable = vec_table_name(&self.name, field);
+        let rtxn = self.backend.begin_read()?;
+        let all_entries = rtxn.scan_all(&vtable)?;
+        drop(rtxn);
+
+        let mut vectors: Vec<(ulid::Ulid, Vec<f32>)> = Vec::with_capacity(all_entries.len());
+        for (key_bytes, val_bytes) in &all_entries {
+            if key_bytes.len() == 16 {
+                let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                let id = ulid::Ulid::from_bytes(arr);
+                if let Some(v) = decode_f32_vec(val_bytes) {
+                    vectors.push((id, v));
+                }
+            }
+        }
+
+        #[cfg(feature = "vector-hnsw")]
+        {
+            let graph = build_hnsw(&vectors, &def.metric, hnsw_opts.ef_construction)?;
+            let cache_key = format!("{}::{}", self.name, field);
+            let mut cache = self.hnsw_cache.lock().unwrap_or_else(|p| p.into_inner());
+            cache.insert(cache_key, graph);
+        }
+
+        // Suppress unused-variable warning when feature is disabled
+        let _ = (hnsw_opts, vectors, def);
+        Ok(())
+    }
+
+    /// Load full documents for a set of `(Ulid, score)` pairs.
+    fn load_results(
+        &self,
+        scored: Vec<(ulid::Ulid, f32)>,
+    ) -> Result<Vec<VectorSearchResult>, TalaDbError> {
         let docs_table = docs_table_name(&self.name);
         let rtxn = self.backend.begin_read()?;
         let mut results = Vec::with_capacity(scored.len());
@@ -393,7 +530,6 @@ impl Collection {
                 results.push(VectorSearchResult { document, score });
             }
         }
-
         Ok(results)
     }
 

@@ -6,7 +6,7 @@ pub use worker_db::WorkerDB;
 use std::sync::Arc;
 
 use serde_wasm_bindgen::{from_value, to_value};
-use taladb_core::{Collection, Database, Filter, TalaDbError, Update, Value, VectorMetric};
+use taladb_core::{Collection, Database, Filter, HnswOptions, TalaDbError, Update, Value, VectorMetric};
 use wasm_bindgen::prelude::*;
 
 pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_load_snapshot};
@@ -206,25 +206,38 @@ impl CollectionWasm {
 
     /// Create a vector index on `field`.
     ///
-    /// `dimensions` — expected vector length.
-    /// `metric`     — optional string: `"cosine"` (default), `"dot"`, or `"euclidean"`.
+    /// `dimensions`           — expected vector length.
+    /// `metric`               — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
+    /// `index_type`           — optional: `"flat"` (default) or `"hnsw"`.
+    /// `hnsw_m`               — HNSW connectivity (default 16).
+    /// `hnsw_ef_construction` — build quality (default 200).
     #[wasm_bindgen(js_name = createVectorIndex)]
     pub fn create_vector_index(
         &self,
         field: &str,
         dimensions: u32,
         metric: Option<String>,
+        index_type: Option<String>,
+        hnsw_m: Option<u32>,
+        hnsw_ef_construction: Option<u32>,
     ) -> Result<(), JsValue> {
         let m = parse_metric(metric)?;
+        let hnsw = parse_hnsw_opts(index_type, hnsw_m, hnsw_ef_construction);
         self.inner
-            .create_vector_index(field, dimensions as usize, m)
+            .create_vector_index(field, dimensions as usize, m, hnsw)
             .map_err(err_to_js)
     }
 
-    /// Drop a vector index.
+    /// Drop a vector index (and its HNSW graph if present).
     #[wasm_bindgen(js_name = dropVectorIndex)]
     pub fn drop_vector_index(&self, field: &str) -> Result<(), JsValue> {
         self.inner.drop_vector_index(field).map_err(err_to_js)
+    }
+
+    /// Rebuild the HNSW graph from the current flat vector table.
+    #[wasm_bindgen(js_name = upgradeVectorIndex)]
+    pub fn upgrade_vector_index(&self, field: &str) -> Result<(), JsValue> {
+        self.inner.upgrade_vector_index(field).map_err(err_to_js)
     }
 
     /// Find the `top_k` nearest documents to `query` on a vector index.
@@ -491,6 +504,20 @@ fn parse_metric(metric: Option<String>) -> Result<Option<VectorMetric>, JsValue>
         Some(other) => Err(JsValue::from_str(&format!(
             "unknown metric \"{other}\": expected \"cosine\", \"dot\", or \"euclidean\""
         ))),
+    }
+}
+
+fn parse_hnsw_opts(
+    index_type: Option<String>,
+    m: Option<u32>,
+    ef_construction: Option<u32>,
+) -> Option<HnswOptions> {
+    match index_type.as_deref() {
+        Some("hnsw") => Some(HnswOptions {
+            m: m.unwrap_or(16),
+            ef_construction: ef_construction.unwrap_or(200),
+        }),
+        _ => None,
     }
 }
 

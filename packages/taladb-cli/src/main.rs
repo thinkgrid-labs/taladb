@@ -83,6 +83,20 @@ enum Command {
         /// Collection name to clear.
         collection: String,
     },
+
+    /// Rebuild the HNSW graph for a vector index from the current flat data.
+    ///
+    /// Use after bulk inserts or when approximate-nearest-neighbor recall has
+    /// degraded due to writes since the graph was last built.
+    /// No-op when the vector-hnsw feature is disabled or the index is flat-only.
+    UpgradeVectorIndex {
+        /// Path to the TalaDB database file.
+        file: PathBuf,
+        /// Collection name.
+        collection: String,
+        /// Vector field name.
+        field: String,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -118,6 +132,11 @@ fn main() -> Result<()> {
             data,
         } => cmd_import(&file, &collection, &data),
         Command::Drop { file, collection } => cmd_drop(&file, &collection),
+        Command::UpgradeVectorIndex {
+            file,
+            collection,
+            field,
+        } => cmd_upgrade_vector_index(&file, &collection, &field),
     }
 }
 
@@ -289,6 +308,26 @@ fn cmd_drop(file: &PathBuf, collection: &str) -> Result<()> {
     let col = db.collection(collection);
     let n = col.delete_many(Filter::All)?;
     eprintln!("Deleted {} documents from '{}'", n, collection);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// upgrade-vector-index
+// ---------------------------------------------------------------------------
+
+fn cmd_upgrade_vector_index(file: &PathBuf, collection: &str, field: &str) -> Result<()> {
+    let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
+    db.collection(collection)
+        .upgrade_vector_index(field)
+        .with_context(|| {
+            format!(
+                "rebuilding HNSW graph for '{collection}::{field}' in {:?}",
+                file
+            )
+        })?;
+    eprintln!(
+        "HNSW graph for '{collection}::{field}' rebuilt successfully."
+    );
     Ok(())
 }
 

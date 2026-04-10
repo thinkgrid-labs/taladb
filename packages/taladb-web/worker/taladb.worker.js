@@ -43,8 +43,9 @@
  * dropIndex     { collection, field }
  * createFtsIndex    { collection, field }
  * dropFtsIndex      { collection, field }
- * createVectorIndex { collection, field, dimensions, metric? }
+ * createVectorIndex { collection, field, dimensions, metric?, indexType?, hnswM?, hnswEfConstruction? }
  * dropVectorIndex   { collection, field }
+ * upgradeVectorIndex { collection, field }
  * findNearest       { collection, field, queryJson, topK, filterJson? }
  * close             {}
  *
@@ -283,11 +284,23 @@ async function dispatch(op, args) {
       return null;
 
     case 'createVectorIndex':
-      db.createVectorIndex(args.collection, args.field, args.dimensions, args.metric ?? null);
+      db.createVectorIndex(
+        args.collection,
+        args.field,
+        args.dimensions,
+        args.metric ?? null,
+        args.indexType ?? null,
+        args.hnswM ?? null,
+        args.hnswEfConstruction ?? null,
+      );
       return null;
 
     case 'dropVectorIndex':
       db.dropVectorIndex(args.collection, args.field);
+      return null;
+
+    case 'upgradeVectorIndex':
+      db.upgradeVectorIndex(args.collection, args.field);
       return null;
 
     case 'findNearest':
