@@ -9,6 +9,7 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/thinkgrid-labs/taladb)
+[![Sponsor](https://img.shields.io/badge/Sponsor-thinkgrid--labs-red?logo=github-sponsors)](https://github.com/sponsors/thinkgrid-labs)
 
 **[Documentation](https://thinkgrid-labs.github.io/taladb/) · [Live Demo](https://taladb-playground.vercel.app/) · [Web Guide](https://thinkgrid-labs.github.io/taladb/guide/web) · [Node.js Guide](https://thinkgrid-labs.github.io/taladb/guide/node) · [React Native Guide](https://thinkgrid-labs.github.io/taladb/guide/react-native)**
 
@@ -263,6 +264,11 @@ Please open an issue first for large features or architectural changes.
 ## License
 
 MIT © [thinkgrid-labs](https://github.com/thinkgrid-labs)
+
+## Sponsors
+
+If you find TalaDB useful, please consider [sponsoring the project](https://github.com/sponsors/thinkgrid-labs). Your support helps us maintain the project and develop new features.
+
 
 ---
 

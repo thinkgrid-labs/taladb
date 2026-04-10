@@ -127,6 +127,7 @@ export default defineConfig({
 
     socialLinks: [
       { icon: "github", link: "https://github.com/thinkgrid-labs/taladb" },
+      { icon: "heart", link: "https://github.com/sponsors/thinkgrid-labs" },
     ],
 
     footer: {

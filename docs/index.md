@@ -15,6 +15,9 @@ hero:
     - theme: alt
       text: View on GitHub
       link: https://github.com/thinkgrid-labs/taladb
+    - theme: alt
+      text: Sponsor
+      link: https://github.com/sponsors/thinkgrid-labs
 
 features:
   - icon: 🧠
