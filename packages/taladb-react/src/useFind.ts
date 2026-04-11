@@ -41,7 +41,7 @@ export function useFind<T extends Document>(
   const subscribe = useCallback(
     (notify: () => void) => {
       snapshotRef.current = { data: snapshotRef.current.data, loading: true }
-      return collection.subscribe(filter as Filter<T>, (docs) => {
+      return collection.subscribe(filter as Filter<T>, (docs: T[]) => {
         snapshotRef.current = { data: docs, loading: false }
         notify()
       })

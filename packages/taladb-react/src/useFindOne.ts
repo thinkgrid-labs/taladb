@@ -32,7 +32,7 @@ export function useFindOne<T extends Document>(
   const subscribe = useCallback(
     (notify: () => void) => {
       snapshotRef.current = { data: snapshotRef.current.data, loading: true }
-      return collection.subscribe(filter, (docs) => {
+      return collection.subscribe(filter, (docs: T[]) => {
         snapshotRef.current = { data: docs[0] ?? null, loading: false }
         notify()
       })
