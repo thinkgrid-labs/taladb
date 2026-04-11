@@ -36,15 +36,12 @@ fn create_and_drop_fts_index() {
 }
 
 #[test]
-fn create_fts_index_twice_returns_error() {
+fn create_fts_index_twice_is_idempotent() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("articles");
     col.create_fts_index("title").unwrap();
-    let err = col.create_fts_index("title").unwrap_err();
-    assert!(
-        format!("{err}").contains("exists"),
-        "expected IndexExists error, got: {err}"
-    );
+    // Second call must be a no-op, not an error.
+    col.create_fts_index("title").unwrap();
 }
 
 #[test]

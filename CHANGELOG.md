@@ -5,6 +5,20 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-11
+
+### Added
+- **Full-text search index** — `collection.createFtsIndex(field)` builds an inverted token index on any string field. `$contains` queries now use a `FtsScan` plan (O(1) token lookup) instead of a `FullScan` (O(n) document scan). Drop with `dropFtsIndex(field)`. Backfills existing documents on creation.
+- **HNSW vector index** — `createVectorIndex(field, { indexType: 'hnsw', hnswM?, hnswEfConstruction? })` builds a Hierarchical Navigable Small World graph for approximate nearest-neighbour search. Significantly faster than flat brute-force on large collections. Upgrade an existing flat index in-place with `upgradeVectorIndex(field)`. Available on Node.js and React Native; browser WASM now throws a clear error (requires native threads via `rayon`).
+- **`listIndexes()` API** — `await collection.listIndexes()` returns `{ btree: string[], fts: string[], vector: string[] }` describing every index currently on the collection. Available on all three runtimes.
+- **Query planner plans** — the query engine now selects from four execution strategies: `FullScan` (no usable index), `IndexScan` (B-tree, O(log n)), `FtsScan` (inverted FTS index, O(1)), and `IndexOr` (sorted-merge union of index scans, zero duplicates).
+
+### Fixed
+- **`createFtsIndex` idempotency** — previously returned `Err(IndexExists)` when called on a collection that already had the index. Now returns `Ok(())` (no-op), matching the behaviour of `createIndex` and `createVectorIndex`.
+- **`$contains` missing from WASM filter parsers** — the `$contains` operator was not handled in `worker_db.rs` or `lib.rs`, causing every `find({ field: { $contains: ... } })` call in the browser to return `Error: invalid filter`. Added to both parsers.
+- **`Update` enum missing `Clone` derive** — `updateMany` called `update.clone()` internally but `Update` did not derive `Clone`, causing a compile error surfaced by a full incremental rebuild. Fixed with `#[derive(Clone)]`.
+- **Multi-tab OPFS deadlock** — a second browser tab would block indefinitely waiting for the OPFS Web Lock held by the first tab. Fixed with `{ ifAvailable: true }` — the second tab now falls back to an IndexedDB-backed in-memory database immediately and stays live-synced via `BroadcastChannel`.
+
 ## [0.2.1] - 2026-04-05
 
 ### Fixed
@@ -69,6 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
 
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.1...v0.4.0
+[0.2.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/thinkgrid-labs/taladb/releases/tag/v0.1.0

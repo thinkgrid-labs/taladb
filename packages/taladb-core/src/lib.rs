@@ -1,3 +1,4 @@
+pub mod aggregate;
 pub mod collection;
 pub mod crypto;
 pub mod document;
@@ -11,13 +12,15 @@ pub mod sync;
 pub mod vector;
 pub mod watch;
 
-pub use collection::{Collection, Update};
+pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
+pub use collection::{Collection, CollectionIndexInfo, Update};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
 pub use migration::{run_migrations, Migration};
+pub use query::options::{FindOptions, SortDirection, SortSpec};
 pub use query::Filter;
-pub use vector::{VectorMetric, VectorSearchResult};
+pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -29,6 +32,8 @@ const SNAPSHOT_VERSION: u32 = 1;
 /// The main TalaDB database handle.
 pub struct Database {
     backend: Arc<dyn StorageBackend>,
+    #[cfg(feature = "vector-hnsw")]
+    hnsw_cache: vector::SharedHnswCache,
 }
 
 impl Database {
@@ -37,6 +42,8 @@ impl Database {
         let backend = RedbBackend::open(path)?;
         Ok(Database {
             backend: Arc::new(backend),
+            #[cfg(feature = "vector-hnsw")]
+            hnsw_cache: vector::new_shared_cache(),
         })
     }
 
@@ -44,6 +51,8 @@ impl Database {
     pub fn open_with_backend(backend: Box<dyn StorageBackend>) -> Result<Self, TalaDbError> {
         Ok(Database {
             backend: Arc::from(backend),
+            #[cfg(feature = "vector-hnsw")]
+            hnsw_cache: vector::new_shared_cache(),
         })
     }
 
@@ -52,6 +61,8 @@ impl Database {
         let backend = RedbBackend::open_in_memory()?;
         Ok(Database {
             backend: Arc::new(backend),
+            #[cfg(feature = "vector-hnsw")]
+            hnsw_cache: vector::new_shared_cache(),
         })
     }
 
@@ -62,12 +73,50 @@ impl Database {
     ) -> Result<Self, TalaDbError> {
         let backend = Arc::new(RedbBackend::open(path)?);
         run_migrations(backend.as_ref(), migrations)?;
-        Ok(Database { backend })
+        Ok(Database {
+            backend,
+            #[cfg(feature = "vector-hnsw")]
+            hnsw_cache: vector::new_shared_cache(),
+        })
     }
 
     /// Get a collection handle by name.
     pub fn collection(&self, name: &str) -> Collection {
-        Collection::new(name, Arc::clone(&self.backend))
+        let col = Collection::new(name, Arc::clone(&self.backend));
+        #[cfg(feature = "vector-hnsw")]
+        let col = col.with_hnsw_cache(Arc::clone(&self.hnsw_cache));
+        col
+    }
+
+    /// Warm the in-memory HNSW cache by rebuilding all graphs whose options are
+    /// stored in [`META_HNSW_TABLE`].  Call this once after `Database::open*`
+    /// if you want approximate-nearest-neighbor search to be available
+    /// immediately without waiting for the first `upgrade_vector_index` call.
+    ///
+    /// No-op when the `vector-hnsw` feature is disabled.
+    #[cfg(feature = "vector-hnsw")]
+    pub fn rebuild_hnsw_indexes(&self) -> Result<(), TalaDbError> {
+        let txn = self.backend.begin_read()?;
+        let all = txn.scan_all(vector::META_HNSW_TABLE).unwrap_or_default();
+        drop(txn);
+
+        for (k, _) in all {
+            let key_str = match std::str::from_utf8(&k) {
+                Ok(s) => s.to_string(),
+                Err(_) => continue,
+            };
+            let mut parts = key_str.splitn(2, "::");
+            let col_name = match parts.next() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let field = match parts.next() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            self.collection(&col_name).upgrade_vector_index(&field)?;
+        }
+        Ok(())
     }
 
     /// Return the names of all collections stored in this database.

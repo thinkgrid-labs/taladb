@@ -1,103 +1,36 @@
 ---
 title: Node.js Guide
-description: Use TalaDB in Node.js via a prebuilt napi-rs native module. Fast synchronous Rust engine with no subprocess — works in Express, Fastify, and CLI tools.
+description: Use TalaDB in Node.js via a prebuilt native module. Fast Rust engine with no subprocess — works in Express, Fastify, and CLI tools.
 ---
 
 # Node.js
 
-TalaDB's Node.js integration uses a prebuilt native `.node` module produced by [napi-rs](https://napi.rs). The Rust engine runs natively — no WASM, no subprocess — so performance is identical to embedding the Rust library directly.
+TalaDB's Node.js integration uses a prebuilt native `.node` module via [napi-rs](https://napi.rs). The Rust engine runs natively — no WASM, no subprocess — with performance identical to embedding the library directly in Rust.
 
-## How it works
+## Requirements
 
-```
-Your Node.js process
-        │  N-API (native ABI)
-        ▼
-@taladb/node (.node native module)
-        │
-        ▼
-taladb-core (Rust) + redb (file on disk)
-```
-
-Because the native module links directly into the Node.js process, reads and writes are synchronous at the Rust level. The JavaScript API wraps them in `Promise`s for consistency with the browser adapter, but there is no async overhead beyond V8's microtask scheduling.
-
-## Prerequisites
-
-- Node.js 18 or later
-- A supported OS / architecture:
-  - `linux-x64-gnu`
-  - `linux-arm64-gnu`
-  - `darwin-x64`
-  - `darwin-arm64` (Apple Silicon)
-  - `win32-x64-msvc`
+- Node.js **18+**
+- Supported platforms: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` (Apple Silicon), `win32-x64`
 
 ## Installation
-
-### Option A — Unified API (recommended)
 
 ```bash
 pnpm add taladb @taladb/node
 ```
 
-Use `openDB` from `taladb`. The API is async and identical to the browser version — code can be shared between Node.js and browser projects:
+## Quick start
 
 ```ts
 import { openDB } from 'taladb'
+
 const db = await openDB('./myapp.db')
+const users = db.collection('users')
+
+await users.insert({ name: 'Alice', age: 30 })
+const all = await users.find()
 ```
 
-### Option B — Standalone (Node.js only)
-
-```bash
-pnpm add @taladb/node
-```
-
-Import `TalaDBNode` directly for a synchronous API with one fewer dependency:
-
-```ts
-import { TalaDBNode } from '@taladb/node'
-const db = TalaDBNode.open('./myapp.db')
-const id = db.collection('users').insert({ name: 'Alice' })  // no await
-```
-
-The `@taladb/node` package ships platform-specific prebuilt binaries. `@napi-rs/cli` selects the correct `.node` file for your platform automatically.
-
-## Opening a database
-
-```ts
-import { openDB } from 'taladb'
-
-// Opens (or creates) a redb database file at the given path
-const db = await openDB('./data/myapp.db')
-```
-
-The database file is created if it does not exist. Parent directories must exist. The `.db` extension is conventional but not required.
-
-### In-memory database
-
-For testing or ephemeral use:
-
-```ts
-import { TalaDBNode } from '@taladb/node'
-
-const db = TalaDBNode.openInMemory()
-```
-
-An in-memory database is not persisted to disk and is discarded when the process exits.
-
-## TypeScript setup
-
-```ts
-// tsconfig.json — recommended settings
-{
-  "compilerOptions": {
-    "module": "Node16",
-    "moduleResolution": "Node16",
-    "target": "ES2022",
-    "strict": true
-  }
-}
-```
+`openDB` detects Node.js automatically and routes calls through the native module. The database file is created if it does not exist. Parent directories must exist.
 
 ## Basic CRUD
 
@@ -115,11 +48,11 @@ interface Task {
 const db = await openDB('./tasks.db')
 const tasks = db.collection<Task>('tasks')
 
-// Indexes — create once at startup (idempotent)
+// Indexes — create once at startup, idempotent
 await tasks.createIndex('done')
 await tasks.createIndex('priority')
 
-// Insert
+// Insert — returns the generated ULID string
 const id = await tasks.insert({
   title: 'Write documentation',
   done: false,
@@ -127,40 +60,142 @@ const id = await tasks.insert({
   createdAt: Date.now(),
 })
 
-// Find all undone tasks with priority 1
-const urgent = await tasks.find({
-  $and: [{ done: false }, { priority: 1 }],
-})
+// Find
+const urgent = await tasks.find({ $and: [{ done: false }, { priority: 1 }] })
+const task   = await tasks.findOne({ _id: id })
 
-// Find one by ID
-const task = await tasks.findOne({ _id: id })
-
-// Mark done
+// Update
 await tasks.updateOne({ _id: id }, { $set: { done: true } })
 
-// Delete completed tasks
+// Delete
 const removed = await tasks.deleteMany({ done: true })
 ```
 
-## Using the low-level native API directly
+## Full-text search
 
-If you need synchronous access or want to avoid the `taladb` wrapper, import `@taladb/node` directly:
+Create an FTS index on any string field to enable fast `$contains` queries:
 
 ```ts
-import { TalaDBNode } from '@taladb/node'
+const posts = db.collection<Post>('posts')
 
-const db = TalaDBNode.open('./myapp.db')
-const col = db.collection('users')
+// Create once at startup — idempotent
+await posts.createFtsIndex('body')
 
-// Synchronous at the Rust level — Promise resolves in the same microtask
-col.createIndex('email')
-const id = col.insert({ name: 'Alice', email: 'alice@example.com' })
-const alice = col.findOne({ email: 'alice@example.com' })
-
-db.close()
+// Uses FTS index automatically — O(1) token lookup instead of a full scan
+const results = await posts.find({ body: { $contains: 'taladb' } })
 ```
 
-## Server usage example
+## Inspecting indexes
+
+```ts
+const { btree, fts, vector } = await tasks.listIndexes()
+// btree: ['done', 'priority']
+// fts:   []
+// vector: []
+```
+
+## Live queries
+
+`subscribe` fires the callback immediately and again after any write that affects the result:
+
+```ts
+const unsub = tasks.subscribe({ done: false }, (pending) => {
+  console.log(`${pending.length} tasks remaining`)
+})
+
+// Later — stop listening
+unsub()
+```
+
+## Vector search
+
+TalaDB's vector index works on Node.js with any embedding source — a local model, the OpenAI API, or anything that returns a `number[]`.
+
+```ts
+// Option A: local model, no API key
+import { pipeline } from '@huggingface/transformers'
+const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
+async function embed(text: string): Promise<number[]> {
+  const out = await embedder(text, { pooling: 'mean', normalize: true })
+  return Array.from(out.data) as number[]
+}
+
+// Option B: OpenAI
+import OpenAI from 'openai'
+const openai = new OpenAI()
+async function embed(text: string): Promise<number[]> {
+  const res = await openai.embeddings.create({ model: 'text-embedding-3-small', input: text })
+  return res.data[0].embedding
+}
+```
+
+```ts
+interface Doc {
+  _id?: string
+  content: string
+  source: string
+  embedding: number[]
+}
+
+const docs = db.collection<Doc>('docs')
+await docs.createVectorIndex('embedding', { dimensions: 384 })
+
+// Insert
+await docs.insert({ content, source: 'readme', embedding: await embed(content) })
+
+// Semantic search
+const results = await docs.findNearest('embedding', await embed('local database'), 5)
+for (const { document, score } of results) {
+  console.log(score.toFixed(3), document.content)
+}
+
+// Hybrid: filter + vector ranking in one call
+const filtered = await docs.findNearest('embedding', await embed('local database'), 5, {
+  source: 'readme',
+})
+```
+
+### HNSW for large collections
+
+On Node.js, HNSW (approximate nearest-neighbour) is available for faster search on large collections:
+
+```ts
+// Create with HNSW from the start
+await docs.createVectorIndex('embedding', {
+  dimensions: 384,
+  indexType: 'hnsw',
+  hnswM: 16,              // graph connectivity — higher = better recall, more memory
+  hnswEfConstruction: 200, // build-time quality
+})
+
+// Or upgrade an existing flat index in-place (no data loss)
+await docs.upgradeVectorIndex('embedding')
+
+// findNearest API is identical — HNSW is transparent
+const results = await docs.findNearest('embedding', queryVec, 10)
+```
+
+### Ingestion script
+
+```ts
+import { openDB } from 'taladb'
+import fs from 'node:fs/promises'
+
+const db   = await openDB('./knowledge.db')
+const docs = db.collection<Doc>('docs')
+await docs.createVectorIndex('embedding', { dimensions: 1536 })
+
+const files = await fs.readdir('./content')
+for (const file of files) {
+  const content = await fs.readFile(`./content/${file}`, 'utf8')
+  await docs.insert({ content, source: file, embedding: await embed(content) })
+}
+
+console.log(`Indexed ${files.length} documents`)
+await db.close()
+```
+
+## Server example
 
 ```ts
 // server.ts — Express + TalaDB
@@ -174,136 +209,30 @@ interface Event {
   ts: number
 }
 
-const app = express()
-app.use(express.json())
-
-const db = await openDB('./events.db')
+const app    = express().use(express.json())
+const db     = await openDB('./events.db')
 const events = db.collection<Event>('events')
 await events.createIndex('type')
 await events.createIndex('ts')
 
 app.post('/events', async (req, res) => {
-  const id = await events.insert({
-    type: req.body.type,
-    payload: req.body.payload ?? {},
-    ts: Date.now(),
-  })
+  const id = await events.insert({ type: req.body.type, payload: req.body.payload ?? {}, ts: Date.now() })
   res.json({ id })
 })
 
 app.get('/events', async (req, res) => {
-  const { type, since } = req.query
-  const filter: object = {}
-  if (type) Object.assign(filter, { type })
-  if (since) Object.assign(filter, { ts: { $gte: Number(since) } })
-  const docs = await events.find(filter)
-  res.json(docs)
+  const filter: Record<string, unknown> = {}
+  if (req.query.type)  filter.type = req.query.type
+  if (req.query.since) filter.ts   = { $gte: Number(req.query.since) }
+  res.json(await events.find(filter))
 })
 
 app.listen(3000)
 ```
 
-## Vector search
-
-TalaDB's vector index works identically on Node.js. Pair it with any embedding library that runs in Node — the OpenAI SDK, a local ONNX model, or Hugging Face Transformers.
-
-### Setup — embedding function
-
-```ts
-// Option A: OpenAI (remote, requires API key)
-import OpenAI from 'openai'
-const openai = new OpenAI()
-async function embed(text: string): Promise<number[]> {
-  const res = await openai.embeddings.create({
-    model: 'text-embedding-3-small',
-    input: text,
-  })
-  return res.data[0].embedding  // 1536 dimensions
-}
-
-// Option B: local model with @xenova/transformers (no API key, runs in-process)
-import { pipeline } from '@xenova/transformers'
-const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
-async function embed(text: string): Promise<number[]> {
-  const out = await embedder(text, { pooling: 'mean', normalize: true })
-  return Array.from(out.data) as number[]
-}
-```
-
-### Create a vector index
-
-```ts
-interface Doc {
-  _id?: string
-  content: string
-  source: string
-  embedding: number[]
-}
-
-const docs = db.collection<Doc>('docs')
-
-// Call once at startup — idempotent
-await docs.createVectorIndex('embedding', { dimensions: 1536 }) // OpenAI
-// or
-await docs.createVectorIndex('embedding', { dimensions: 384 })  // MiniLM
-```
-
-### Insert with embedding
-
-```ts
-const content = 'TalaDB stores documents and vectors on-device.'
-await docs.insert({
-  content,
-  source: 'readme',
-  embedding: await embed(content),
-})
-```
-
-### Semantic search
-
-```ts
-const query = await embed('embedded local database')
-const results = await docs.findNearest('embedding', query, 5)
-
-for (const { document, score } of results) {
-  console.log(score.toFixed(3), document.content)
-}
-```
-
-### Hybrid search
-
-```ts
-// Find the 3 most relevant docs from 'readme' source only
-const results = await docs.findNearest('embedding', query, 3, {
-  source: 'readme',
-})
-```
-
-### Ingestion script example
-
-```ts
-import { openDB } from 'taladb'
-import fs from 'node:fs/promises'
-
-const db = await openDB('./knowledge.db')
-const col = db.collection<Doc>('docs')
-await col.createVectorIndex('embedding', { dimensions: 1536 })
-
-const files = await fs.readdir('./content')
-for (const file of files) {
-  const content = await fs.readFile(`./content/${file}`, 'utf8')
-  await col.insert({
-    content,
-    source: file,
-    embedding: await embed(content),
-  })
-}
-
-console.log(`Indexed ${files.length} documents`)
-await db.close()
-```
-
 ## Migrations
+
+Each migration runs once at open time, in version order, inside an atomic transaction:
 
 ```ts
 const db = await openDB('./myapp.db', {
@@ -319,8 +248,6 @@ const db = await openDB('./myapp.db', {
 })
 ```
 
-Migrations run at open time, in version order, inside a single atomic transaction.
-
 ## Snapshot export / import
 
 ```ts
@@ -329,11 +256,21 @@ import fs from 'node:fs/promises'
 // Export
 const bytes = await db.exportSnapshot()
 await fs.writeFile('backup.taladb', bytes)
-
-// Restore
-const data = await fs.readFile('backup.taladb')
-const restored = await Database.restoreFromSnapshot(data)
 ```
+
+## Testing with an in-memory database
+
+```ts
+// vitest / jest
+import { TalaDBNode } from '@taladb/node'
+
+let db: ReturnType<typeof TalaDBNode.openInMemory>
+
+beforeEach(() => { db = TalaDBNode.openInMemory() })
+afterEach(() => { db.close() })
+```
+
+No file system cleanup, no interference between test runs.
 
 ## Closing
 
@@ -342,32 +279,3 @@ await db.close()
 ```
 
 Always close the database before the process exits to flush any pending writes and release the file lock.
-
-## Testing with an in-memory database
-
-```ts
-// vitest / jest
-import { TalaDBNode } from '@taladb/node'
-
-beforeEach(() => {
-  db = TalaDBNode.openInMemory()
-})
-
-afterEach(() => {
-  db.close()
-})
-```
-
-Using an in-memory database in tests means no file system cleanup and no interference between test runs.
-
-## CLI
-
-The `taladb-cli` binary can inspect any redb database file produced by TalaDB.
-Download the pre-built binary for your platform from the [GitHub Releases page](https://github.com/thinkgrid-labs/taladb/releases), then:
-
-```bash
-taladb inspect ./myapp.db
-taladb export  ./myapp.db
-taladb count   ./myapp.db users
-taladb drop    ./myapp.db sessions
-```

@@ -1,6 +1,6 @@
 ---
 title: Filters
-description: TalaDB filter DSL reference — $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $exists, $and, $or, $not, and $contains for full-text search.
+description: TalaDB filter DSL reference — $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $exists, $regex, $and, $or, $not, $contains, and dot-notation nested field queries.
 ---
 
 # Filters
@@ -105,12 +105,100 @@ await users.find({ avatar: { $exists: true } })
 await users.find({ deletedAt: { $exists: false } })
 ```
 
-## Full-text search (`$contains`)
+## Pattern matching (`$regex`)
 
-Available on fields indexed with `_fts:` prefix:
+Match string fields against a regular expression. The regex is compiled at query time and evaluated per document — there is no index acceleration.
 
 ```ts
-await posts.createIndex('_fts:body')
+await users.find({ email: { $regex: '@example\\.com$' } })
+```
+
+| Behaviour | Notes |
+|---|---|
+| Non-string fields | Never match — `$regex` against a number or boolean always returns no results |
+| Invalid pattern | Returns no results — the engine does not throw on a malformed regex |
+| Character classes | Full PCRE-like syntax: `\d`, `\w`, `\s`, anchors `^` / `$`, groups, quantifiers |
+| Case-insensitive | Use the inline flag: `(?i)pattern` |
+
+```ts
+// Domain suffix
+await accounts.find({ website: { $regex: '\\.(io|com|dev)$' } })
+
+// Starts with a digit
+await codes.find({ ref: { $regex: '^\\d' } })
+
+// Case-insensitive match (inline flag)
+await tags.find({ label: { $regex: '(?i)^todo' } })
+
+// Combined with other operators
+await users.find({
+  $and: [
+    { role: 'admin' },
+    { email: { $regex: '@company\\.com$' } },
+  ],
+})
+```
+
+::: warning Performance
+`$regex` always performs a full collection scan — even when an index exists on the same field. For large collections, consider adding additional equality or range filters in an `$and` to narrow the candidate set first.
+:::
+
+## Nested field queries (dot-notation)
+
+Use dot-notation to filter on fields inside nested objects. Any comparison or existence operator works on a nested path.
+
+```ts
+// Equality on a nested field
+await users.find({ 'address.city': 'London' })
+
+// Range on a nested field
+await users.find({ 'location.altitude': { $gt: 1000 } })
+
+// Three levels deep
+await config.find({ 'server.tls.enabled': true })
+
+// Existence check on a nested field
+await profiles.find({ 'meta.avatarUrl': { $exists: true } })
+```
+
+Nested paths resolve into `Value::Object` entries recursively. If any segment along the path is absent or is not an object, the document is treated as not matching (no error is thrown).
+
+```ts
+// Documents where address.city == 'London' are matched;
+// documents where `address` is absent, not an object, or has no `city` are not matched.
+await users.find({ 'address.city': 'London' })
+```
+
+### With logical operators
+
+Dot-notation paths work inside `$and`, `$or`, and `$not`:
+
+```ts
+await users.find({
+  $or: [
+    { 'address.city': 'London' },
+    { 'address.city': 'Edinburgh' },
+  ],
+})
+
+await users.find({
+  $and: [
+    { 'address.country': 'UK' },
+    { 'address.postcode': { $regex: '^SW' } },
+  ],
+})
+```
+
+::: tip Index acceleration with nested fields
+Standard secondary indexes (created with `createIndex`) work on top-level fields only. Filtering on a nested field always uses a full scan. If you frequently query a nested field, consider flattening it to a top-level field or using a compound index on the top-level fields you need.
+:::
+
+## Full-text search (`$contains`)
+
+Available on fields indexed with `createFtsIndex`:
+
+```ts
+await posts.createFtsIndex('body')
 
 // Matches documents whose `body` contains all three terms (after normalisation)
 const results = await posts.find({ body: { $contains: 'rust embedded database' } })
@@ -129,16 +217,17 @@ const all = await users.find({})
 
 ## Index acceleration summary
 
-The query planner selects an index when the outermost filter (or an `$and` branch) contains one of these operators on an indexed field:
+The query planner selects an index when the filter matches one of these patterns:
 
-| Operator | Plan |
+| Pattern | Plan |
 |---|---|
-| `$eq` | `IndexEq` — point lookup |
-| `$gt`, `$gte`, `$lt`, `$lte` | `IndexRange` — B-tree range scan |
-| `$in` | `IndexIn` — one point lookup per value, results merged |
-| `$or` (all branches indexed) | `IndexOr` — one range scan per branch, results merged |
-
-All other filters use `FullScan` — every document is fetched and evaluated in memory.
+| `{ field: value }` or `{ field: { $eq: value } }` on an indexed field | `IndexEq` — point lookup |
+| `{ field: { $gt/$gte/$lt/$lte } }` on an indexed field | `IndexRange` — B-tree range scan |
+| `{ field: { $in: [...] } }` on an indexed field | `IndexIn` — one point lookup per value |
+| `$or` where every branch is an indexed equality/range | `IndexOr` — one range scan per branch, merged |
+| `$and` with equality on all fields of a compound index | `CompoundIndexEq` — single B-tree range scan |
+| `{ field: { $contains: '...' } }` on an FTS-indexed field | `FtsSearch` — inverted token index |
+| All other filters | `FullScan` — every document evaluated in memory |
 
 ## Filter examples
 
@@ -174,4 +263,13 @@ await profiles.find({ bio: { $exists: true } })
 
 // Full-text
 await articles.find({ content: { $contains: 'open source rust' } })
+
+// Regex — domain match
+await accounts.find({ email: { $regex: '@acme\\.com$' } })
+
+// Nested field
+await orders.find({ 'shipping.address.city': 'Berlin' })
+
+// Compound index — equality on both indexed fields in one B-tree scan
+await people.find({ $and: [{ lastName: 'Smith' }, { firstName: 'Alice' }] })
 ```

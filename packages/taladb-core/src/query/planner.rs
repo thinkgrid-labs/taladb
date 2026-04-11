@@ -1,7 +1,9 @@
 use std::ops::Bound;
 
 use crate::fts::FtsDef;
-use crate::index::{index_range_cmp, index_range_eq, IndexDef};
+use crate::index::{
+    compound_range_eq, index_range_cmp, index_range_eq, CompoundIndexDef, IndexDef,
+};
 use crate::query::filter::Filter;
 
 /// The execution plan produced by the query planner.
@@ -40,6 +42,14 @@ pub enum QueryPlan {
         /// Tokenized query terms — all must match (AND semantics).
         tokens: Vec<String>,
     },
+
+    /// Compound index equality scan — all prefix fields are constrained by Eq.
+    CompoundIndexEq {
+        /// Ordered field names forming the compound key.
+        fields: Vec<String>,
+        start: Vec<u8>,
+        end: Vec<u8>,
+    },
 }
 
 /// Select the best execution plan for a filter given available indexes.
@@ -56,12 +66,27 @@ pub fn plan(filter: &Filter, indexes: &[IndexDef]) -> QueryPlan {
 
 /// Extended planner that also considers full-text search indexes.
 pub fn plan_with_fts(filter: &Filter, indexes: &[IndexDef], fts_indexes: &[FtsDef]) -> QueryPlan {
-    let indexed_fields: Vec<&str> = indexes.iter().map(|i| i.field.as_str()).collect();
-    let fts_fields: Vec<&str> = fts_indexes.iter().map(|i| i.field.as_str()).collect();
-    plan_inner(filter, &indexed_fields, &fts_fields)
+    plan_full(filter, indexes, fts_indexes, &[])
 }
 
-fn plan_inner(filter: &Filter, indexed_fields: &[&str], fts_fields: &[&str]) -> QueryPlan {
+/// Full planner that considers single-field indexes, FTS indexes, and compound indexes.
+pub fn plan_full(
+    filter: &Filter,
+    indexes: &[IndexDef],
+    fts_indexes: &[FtsDef],
+    compound_indexes: &[CompoundIndexDef],
+) -> QueryPlan {
+    let indexed_fields: Vec<&str> = indexes.iter().map(|i| i.field.as_str()).collect();
+    let fts_fields: Vec<&str> = fts_indexes.iter().map(|i| i.field.as_str()).collect();
+    plan_inner(filter, &indexed_fields, &fts_fields, compound_indexes)
+}
+
+fn plan_inner(
+    filter: &Filter,
+    indexed_fields: &[&str],
+    fts_fields: &[&str],
+    compound_indexes: &[CompoundIndexDef],
+) -> QueryPlan {
     match filter {
         Filter::All => QueryPlan::FullScan,
 
@@ -145,10 +170,47 @@ fn plan_inner(filter: &Filter, indexed_fields: &[&str], fts_fields: &[&str]) -> 
             }
         }
 
-        // For And: try each sub-filter for an index, use first hit
+        // For And: try compound indexes first, then single-field indexes
         Filter::And(filters) => {
+            // Collect all Eq constraints from this And expression
+            let eq_map: Vec<(&str, &crate::document::Value)> = filters
+                .iter()
+                .filter_map(|f| {
+                    if let Filter::Eq(field, val) = f {
+                        Some((field.as_str(), val))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Try compound indexes: find one whose fields are all covered by Eq constraints
+            for cidx in compound_indexes {
+                let values: Option<Vec<&crate::document::Value>> = cidx
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        eq_map
+                            .iter()
+                            .find(|(k, _)| *k == f.as_str())
+                            .map(|(_, v)| *v)
+                    })
+                    .collect();
+                if let Some(vals) = values {
+                    let val_refs: Vec<&crate::document::Value> = vals;
+                    if let Some((start, end)) = compound_range_eq(&val_refs) {
+                        return QueryPlan::CompoundIndexEq {
+                            fields: cidx.fields.clone(),
+                            start,
+                            end,
+                        };
+                    }
+                }
+            }
+
+            // Fall back to single-field index on any sub-filter
             for f in filters {
-                let sub = plan_inner(f, indexed_fields, fts_fields);
+                let sub = plan_inner(f, indexed_fields, fts_fields, compound_indexes);
                 if !matches!(sub, QueryPlan::FullScan) {
                     return sub;
                 }
@@ -160,7 +222,7 @@ fn plan_inner(filter: &Filter, indexed_fields: &[&str], fts_fields: &[&str]) -> 
         Filter::Or(filters) => {
             let sub_plans: Vec<QueryPlan> = filters
                 .iter()
-                .map(|f| plan_inner(f, indexed_fields, fts_fields))
+                .map(|f| plan_inner(f, indexed_fields, fts_fields, compound_indexes))
                 .collect();
             if sub_plans.iter().all(|p| !matches!(p, QueryPlan::FullScan)) {
                 return QueryPlan::IndexOr { plans: sub_plans };
@@ -168,7 +230,7 @@ fn plan_inner(filter: &Filter, indexed_fields: &[&str], fts_fields: &[&str]) -> 
             QueryPlan::FullScan
         }
 
-        // Not / Ne / Nin / Exists / unindexed Contains — full scan
+        // Not / Ne / Nin / Exists / Regex / unindexed Contains — full scan
         _ => QueryPlan::FullScan,
     }
 }

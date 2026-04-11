@@ -1,50 +1,33 @@
 ---
 title: Web Guide — Browser / WASM
-description: Use TalaDB in the browser with WebAssembly and OPFS persistent storage via a SharedWorker. Works with Vite, Next.js, and any modern bundler.
+description: Use TalaDB in the browser with WebAssembly and OPFS persistent storage. Works with Vite, Next.js, and any modern bundler.
 ---
 
 # Web (Browser / WASM)
 
-TalaDB runs in the browser as a WebAssembly module compiled from the same Rust core used on every other platform. Persistent storage is provided by the [Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) (OPFS) via a SharedWorker.
+TalaDB runs in the browser as a WebAssembly module compiled from the same Rust core used on every other platform. Data is persisted to the [Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) (OPFS) — a fast, private storage area built into modern browsers. No server, no cloud, no extra infrastructure.
 
-## How it works
+## Browser support
 
-```
-Your React app
-     │  postMessage
-     ▼
-SharedWorker (taladb.worker.js)
-     │  FileSystemSyncAccessHandle (OPFS)
-     ▼
-@taladb/web (Rust + redb, compiled to WASM)
-```
+| Feature | Chrome | Firefox | Safari |
+|---|---|---|---|
+| WASM (in-memory) | 79+ | 78+ | 14+ |
+| OPFS (persistent) | 86+ | 111+ | 15.2+ |
+| Full persistence | 86+ | 111+ | 16.4+ |
 
-The SharedWorker owns the OPFS file handle and the WASM instance. All tabs in the same origin share the same worker, so there is always exactly one writer — no write conflicts between tabs.
-
-On browsers without SharedWorker (primarily iOS Safari before 16.4) the library falls back to an in-memory WASM instance automatically. Data written in the fallback mode is not persisted across page reloads.
-
-## Prerequisites
-
-- Chrome 86+, Edge 86+, Firefox 111+, or Safari 16.4+ (persistent storage)
-- A bundler that supports `new URL(specifier, import.meta.url)` — Vite, Rollup, Webpack 5, or esbuild
+On browsers without OPFS support, TalaDB falls back to an in-memory database automatically. Data is not persisted across page reloads in that case.
 
 ## Installation
 
 ```bash
-npm install taladb @taladb/web
-# or
 pnpm add taladb @taladb/web
 ```
 
-::: warning Build step required
-`@taladb/web` ships prebuilt WASM artifacts. Run `wasm-pack build` inside `packages/@taladb/web` during your CI pipeline or before local development.
-:::
-
 ## Vite setup
 
-No Vite plugin is needed. The `new URL(...)` import in the library is handled natively by Vite's bundler.
-
-Add the following to your `vite.config.ts` to allow SharedWorker:
+Add two things to `vite.config.ts`:
+1. Exclude `taladb` and `@taladb/web` from dependency pre-bundling
+2. Set the COOP/COEP headers required for OPFS in a Worker context
 
 ```ts
 // vite.config.ts
@@ -53,31 +36,31 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  // SharedWorker assets are automatically included when new URL() is used
   optimizeDeps: {
-    exclude: ['@taladb/web'],
+    exclude: ['taladb', '@taladb/web'],
+  },
+  server: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'credentialless',
+    },
   },
 })
 ```
 
-## Opening a database
+## Quick start
 
 ```ts
 import { openDB } from 'taladb'
 
 const db = await openDB('myapp.db')
+const users = db.collection('users')
+
+await users.insert({ name: 'Alice', age: 30 })
+const all = await users.find()
 ```
 
-`openDB` automatically detects that it is running in a browser, spins up (or connects to an existing) SharedWorker, and opens or creates the OPFS file named `myapp.db` within your origin's private storage directory.
-
-### Opening with a snapshot
-
-If you have a snapshot from a previous session or from another device, pass it to `openDB`:
-
-```ts
-const snapshot = loadSnapshotFromSomewhere()  // Uint8Array
-const db = await openDB('myapp.db', { snapshot })
-```
+That's all the setup you need. `openDB` detects the browser automatically, opens a persistent OPFS database named `myapp.db`, and returns a collection API identical to Node.js and React Native.
 
 ## Defining your schema
 
@@ -92,15 +75,6 @@ interface User {
   role: 'user' | 'admin'
   createdAt: number
 }
-
-interface Post {
-  _id?: string
-  title: string
-  body: string
-  authorId: string
-  publishedAt?: number
-  tags: string[]
-}
 ```
 
 ## Basic CRUD
@@ -108,11 +82,11 @@ interface Post {
 ```ts
 const users = db.collection<User>('users')
 
-// Create indexes at startup (idempotent)
+// Create indexes at startup — idempotent, safe to call on every open
 await users.createIndex('email')
 await users.createIndex('age')
 
-// Insert one document — returns the generated ULID string
+// Insert — returns the generated ULID string
 const id = await users.insert({
   name: 'Alice',
   email: 'alice@example.com',
@@ -122,7 +96,7 @@ const id = await users.insert({
 })
 
 // Insert many
-const ids = await users.insertMany([
+await users.insertMany([
   { name: 'Bob',   email: 'bob@example.com',   age: 25, role: 'user',  createdAt: Date.now() },
   { name: 'Carol', email: 'carol@example.com', age: 35, role: 'admin', createdAt: Date.now() },
 ])
@@ -130,7 +104,7 @@ const ids = await users.insertMany([
 // Find all
 const everyone = await users.find()
 
-// Find with filter — uses the age index automatically
+// Find with filter — uses index automatically
 const adults = await users.find({ age: { $gte: 18 } })
 
 // Find one
@@ -139,69 +113,161 @@ const alice = await users.findOne({ email: 'alice@example.com' })
 // Count
 const adminCount = await users.count({ role: 'admin' })
 
-// Update one
-await users.updateOne(
-  { email: 'alice@example.com' },
-  { $set: { age: 31 }, $inc: { loginCount: 1 } },
-)
+// Update
+await users.updateOne({ email: 'alice@example.com' }, { $set: { age: 31 } })
+await users.updateMany({ role: 'user' }, { $set: { verified: true } })
 
-// Update many
-const updated = await users.updateMany(
-  { role: 'user' },
-  { $set: { verified: true } },
-)
-
-// Delete one
-const deleted = await users.deleteOne({ email: 'alice@example.com' })
-
-// Delete many
-const count = await users.deleteMany({ role: 'banned' })
+// Delete
+await users.deleteOne({ email: 'alice@example.com' })
+await users.deleteMany({ role: 'banned' })
 ```
 
-## Range and complex queries
+## Queries
 
 ```ts
-// Range on indexed field
+// Range
 const thirties = await users.find({ age: { $gte: 30, $lte: 39 } })
 
-// OR across values — uses IndexOr plan when both fields are indexed
-const adminsOrSuperusers = await users.find({
-  $or: [{ role: 'admin' }, { role: 'superuser' }],
+// OR — uses IndexOr plan when both fields are indexed
+const staff = await users.find({
+  $or: [{ role: 'admin' }, { role: 'moderator' }],
 })
+
+// Membership test
+const team = await users.find({ role: { $in: ['admin', 'moderator', 'editor'] } })
 
 // Compound AND
 const activeAdults = await users.find({
-  $and: [
-    { age: { $gte: 18 } },
-    { role: { $ne: 'banned' } },
-  ],
+  $and: [{ age: { $gte: 18 } }, { role: { $ne: 'banned' } }],
+})
+```
+
+## Full-text search
+
+Create an FTS index on any string field to enable fast `$contains` queries without scanning every document:
+
+```ts
+const posts = db.collection<Post>('posts')
+
+// Create once at startup — idempotent
+await posts.createFtsIndex('body')
+
+// Query — uses the FTS index automatically (O(1) token lookup)
+const results = await posts.find({ body: { $contains: 'taladb' } })
+```
+
+## Inspecting indexes
+
+```ts
+const { btree, fts, vector } = await users.listIndexes()
+// btree: ['email', 'age']
+// fts:   []
+// vector: []
+```
+
+## Live queries in React
+
+`subscribe` fires the callback immediately with the current results, then again after any write that could affect the result set. Call the returned function to unsubscribe.
+
+```tsx
+import { useEffect, useState } from 'react'
+import { openDB, type Collection, type Document } from 'taladb'
+
+function useLiveQuery<T extends Document>(col: Collection<T>, filter = {}) {
+  const [docs, setDocs] = useState<T[]>([])
+
+  useEffect(() => {
+    const unsub = col.subscribe(filter, setDocs)
+    return unsub
+  }, [])
+
+  return docs
+}
+
+// Usage
+const admins = useLiveQuery(db.collection<User>('users'), { role: 'admin' })
+```
+
+## Vector search
+
+Store and search embeddings from an on-device model — no cloud API, no data leaving the browser.
+
+```ts
+import { pipeline } from '@huggingface/transformers'
+
+// Model is downloaded and cached on first use (~25 MB for MiniLM)
+const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
+
+async function embed(text: string): Promise<number[]> {
+  const out = await embedder(text, { pooling: 'mean', normalize: true })
+  return Array.from(out.data) as number[]
+}
+```
+
+```ts
+interface Article {
+  _id?: string
+  title: string
+  body: string
+  category: string
+  embedding: number[]
+}
+
+const articles = db.collection<Article>('articles')
+
+// Create once at startup — idempotent
+await articles.createVectorIndex('embedding', { dimensions: 384 })
+
+// Insert with embedding
+await articles.insert({
+  title: 'Getting started',
+  body: '...',
+  category: 'guide',
+  embedding: await embed('Getting started'),
 })
 
-// Membership
-const staff = await users.find({ role: { $in: ['admin', 'moderator', 'editor'] } })
+// Semantic search
+const queryVec = await embed('how do I begin')
+const results = await articles.findNearest('embedding', queryVec, 5)
+
+results.forEach(({ document, score }) => {
+  console.log(`${score.toFixed(3)}  ${document.title}`)
+})
+
+// Hybrid: filter first, then rank by similarity — one call, no extra round-trips
+const filtered = await articles.findNearest('embedding', queryVec, 5, {
+  category: 'guide',
+})
 ```
+
+### Similarity metrics
+
+| Metric | Best for | Score range |
+|---|---|---|
+| `cosine` (default) | Text embeddings, normalised vectors | [-1, 1] |
+| `dot` | Embeddings where magnitude matters | Unbounded |
+| `euclidean` | Spatial / coordinate data | (0, 1] |
 
 ## Migrations
 
-Run schema changes at open time with the `migrations` option:
+Run schema changes at open time — each migration runs once, in order, atomically:
 
 ```ts
 const db = await openDB('myapp.db', {
   migrations: [
     {
       version: 1,
-      description: 'Create email index',
+      description: 'Add email index',
       up: async (db) => {
         await db.collection('users').createIndex('email')
       },
     },
     {
       version: 2,
-      description: 'Add role field to existing users',
+      description: 'Backfill role field',
       up: async (db) => {
         const users = db.collection('users')
-        const all = await users.find({})
-        for (const user of all) {
+        for (const user of await users.find({})) {
           if (!user.role) {
             await users.updateOne({ _id: user._id }, { $set: { role: 'user' } })
           }
@@ -212,169 +278,16 @@ const db = await openDB('myapp.db', {
 })
 ```
 
-## Live queries in React
-
-```tsx
-import { useEffect, useState } from 'react'
-import { openDB, type Collection } from 'taladb'
-
-function useWatch<T extends { _id?: string }>(
-  col: Collection<T>,
-  filter: object = {},
-) {
-  const [docs, setDocs] = useState<T[]>([])
-
-  useEffect(() => {
-    const handle = col.watch(filter)
-    let cancelled = false
-
-    async function poll() {
-      while (!cancelled) {
-        const snapshot = await handle.next()
-        if (!cancelled) setDocs(snapshot)
-      }
-    }
-
-    poll()
-    return () => { cancelled = true }
-  }, [])
-
-  return docs
-}
-
-// Usage
-const admins = useWatch(db.collection<User>('users'), { role: 'admin' })
-```
-
-## Vector search
-
-TalaDB's vector index lets you store and search embeddings generated by an on-device model — no cloud API, no network latency, no data leaving the browser.
-
-### Setup — on-device embedding model
-
-```ts
-import { pipeline } from '@xenova/transformers'
-
-// Downloaded and cached in the browser on first use (~25 MB for MiniLM)
-const embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
-
-async function embed(text: string): Promise<number[]> {
-  const output = await embedder(text, { pooling: 'mean', normalize: true })
-  return Array.from(output.data) as number[]
-}
-```
-
-### Create a vector index
-
-Call once at startup (idempotent — safe to call on every open):
-
-```ts
-interface Article {
-  _id?: string
-  title: string
-  body: string
-  category: string
-  locale: string
-  embedding: number[]
-}
-
-const articles = db.collection<Article>('articles')
-
-await articles.createVectorIndex('embedding', { dimensions: 384 })
-// metric defaults to 'cosine' — best for text embeddings
-```
-
-### Insert documents with embeddings
-
-```ts
-const text = 'How to reset your password'
-await articles.insert({
-  title: text,
-  body: '...',
-  category: 'support',
-  locale: 'en',
-  embedding: await embed(text),
-})
-```
-
-The vector is stored atomically alongside the document — no separate upsert step.
-
-### Semantic search
-
-```ts
-const query = await embed('forgot my login credentials')
-const results = await articles.findNearest('embedding', query, 5)
-
-results.forEach(({ document, score }) => {
-  console.log(`${score.toFixed(3)}  ${document.title}`)
-})
-// 0.941  How to reset your password
-// 0.887  Account recovery options
-```
-
-### Hybrid search — filter + vector ranking
-
-The most powerful pattern: narrow by metadata first, then rank by similarity. One call, no extra round-trips.
-
-```ts
-// Find the 5 most semantically relevant english support articles
-const results = await articles.findNearest('embedding', query, 5, {
-  category: 'support',
-  locale: 'en',
-})
-```
-
-This works with any regular filter expression — `$and`, `$or`, range operators, `$in`, etc.
-
-### React hook
-
-```tsx
-import { useState } from 'react'
-import type { Collection, VectorSearchResult } from 'taladb'
-
-function useVectorSearch<T extends { _id?: string }>(
-  col: Collection<T>,
-  field: string,
-) {
-  const [results, setResults] = useState<VectorSearchResult<T>[]>([])
-
-  async function search(queryVec: number[], topK = 5, filter?: object) {
-    const hits = await col.findNearest(field, queryVec, topK, filter)
-    setResults(hits)
-  }
-
-  return { results, search }
-}
-
-// Usage
-const { results, search } = useVectorSearch(articles, 'embedding')
-
-const handleSearch = async (input: string) => {
-  const vec = await embed(input)
-  await search(vec, 5, { locale: 'en' })
-}
-```
-
-### Metrics
-
-| Metric | Best for | Score range |
-|---|---|---|
-| `cosine` (default) | Text embeddings, normalized vectors | [-1, 1] |
-| `dot` | Embeddings where magnitude matters | Unbounded |
-| `euclidean` | Spatial / coordinate data | (0, 1] |
-
 ## Exporting a snapshot
 
 ```ts
 // Export the whole database to a Uint8Array
 const bytes = await db.exportSnapshot()
 
-// Save to local file
+// Save as a file download
 const blob = new Blob([bytes], { type: 'application/octet-stream' })
 const url  = URL.createObjectURL(blob)
-const a    = document.createElement('a')
-a.href = url
-a.download = 'myapp.taladb'
+const a    = Object.assign(document.createElement('a'), { href: url, download: 'myapp.taladb' })
 a.click()
 ```
 
@@ -384,13 +297,8 @@ a.click()
 await db.close()
 ```
 
-This sends a `close` message to the SharedWorker, which flushes any pending writes and releases the OPFS file handle.
+## Current limitations
 
-## Browser compatibility table
-
-| Feature | Chrome | Firefox | Safari |
-|---|---|---|---|
-| WASM (in-memory) | 79+ | 78+ | 14+ |
-| OPFS (persistent) | 86+ | 111+ | 15.2+ |
-| SharedWorker | 4+ | 29+ | 16+ |
-| Full persistence | 86+ | 111+ | 16.4+ |
+- **HNSW vector index** — not available in the browser. The HNSW algorithm uses `rayon` for parallelism which requires native threads. Calling `createVectorIndex({ indexType: 'hnsw' })` or `upgradeVectorIndex()` in the browser throws a clear error. Flat (brute-force) vector search works fine for collections up to ~100k vectors.
+- **Multi-tab writes** — only the first tab to open the database gets OPFS write access. Additional tabs open a live read replica synced via `BroadcastChannel`. Writes from any tab are reflected across all tabs automatically.
+- **In-memory fallback** — on browsers without OPFS (or when OPFS is unavailable), data is stored in memory only and lost on page reload.

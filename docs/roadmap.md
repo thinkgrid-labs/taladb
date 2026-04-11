@@ -11,85 +11,7 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 ---
 
-## 1 · Browser fundamentals
-
-These are gaps that affect every browser app today.
-
-### Multi-tab live queries (BroadcastChannel)
-
-Currently each browser tab spawns its own DedicatedWorker and acquires an exclusive Web Locks lock on the OPFS file — tabs do not conflict, but writes in one tab are not visible to another tab's `subscribe()` callbacks until that tab reloads and re-opens the database.
-
-The planned fix keeps the DedicatedWorker + Web Locks architecture (required because `createSyncAccessHandle` is only available in DedicatedWorkers) and adds a `BroadcastChannel` layer on top:
-
-- When a tab's worker commits a write it posts a `"taladb:changed"` message on a named `BroadcastChannel`
-- All other tabs receive the message and re-trigger their active `subscribe()` pollers immediately, without waiting for the next 300 ms tick
-- No OPFS locking changes are needed — reads are lock-free; only writes hold the exclusive handle momentarily
-
-Result: inserts, updates, and deletes in tab A appear in tab B's live-query subscriptions within one round-trip, matching the experience users expect from a shared database.
-
-### IndexedDB fallback backend
-
-A complete `StorageBackend` implementation on top of IndexedDB for browsers that will never support OPFS (e.g. cross-origin iframes). Currently the fallback is in-memory only — data is lost on page reload in these environments.
-
----
-
-## 2 · Vector search (HNSW)
-
-v0.3 ships flat (brute-force) vector search — O(n·d) per query, perfect for collections up to ~10 K documents. The next step replaces the inner loop with an HNSW (Hierarchical Navigable Small World) graph index for sub-linear approximate nearest-neighbor search, making vector search viable for production-scale collections.
-
-### Planned design
-
-- **Crate:** [`instant-distance`](https://github.com/instant-labs/instant-distance) — pure Rust, WASM-compatible, MIT license
-- **Persistence:** HNSW graph serialised to a dedicated `hnsw::<collection>::<field>` redb table as a single blob; loaded into memory on database open
-- **Feature flag:** `--features vector-hnsw` keeps the base WASM bundle lean; flat search remains the default and is used automatically for small collections
-- **API:** fully backward-compatible — same `createVectorIndex` / `findNearest` calls, new `indexType` option:
-
-```ts
-await col.createVectorIndex('embedding', {
-  dimensions: 384,
-  metric: 'cosine',
-  indexType: 'hnsw',       // 'flat' (default) | 'hnsw'
-  hnswM: 16,               // connectivity — higher = better recall, more memory
-  hnswEfConstruction: 200, // build-time quality
-})
-```
-
-- **Auto-upgrade:** `taladb upgrade-vector-index <file> <collection> <field>` CLI command promotes a flat index to HNSW in-place without re-inserting documents
-- **Target performance:** <5 ms `findNearest` on 100 K 384-dim vectors on a mid-range device
-
----
-
-## 3 · Query engine
-
-Features that almost every real application needs before it can ship.
-
-### Cursor / pagination
-
-`find(filter, { skip: 0, limit: 20, sort: { createdAt: -1 } })` — stable, index-aware pagination without loading the entire result set into memory. Blocking for any app with a list view.
-
-### Nested field queries
-
-Dot-notation access to nested object fields — `{ 'address.city': 'London' }` — without requiring the caller to flatten documents before inserting.
-
-### Compound indexes
-
-Index a tuple of fields `(lastName, firstName)` so that queries with equality on `lastName` and a range on `firstName` use a single B-tree scan instead of two separate index scans with an in-memory join.
-
-### Aggregation pipeline
-
-A lightweight `aggregate()` method supporting `$group`, `$sum`, `$avg`, `$min`, `$max`, `$count`, and `$sort` — enough to power dashboards and analytics views without moving data out of the database.
-
-### Projection
-
-`find(filter, { fields: ['name', 'email'] })` — return only specified fields, reducing deserialization cost for wide documents with many fields.
-
-### `$regex` filter
-
-Pattern matching against string fields using a compiled regex. Evaluated as a post-filter (no index support) but useful for search and validation.
-
----
-
-## 4 · Developer experience
+## 1 · Developer experience
 
 Better DX drives adoption and reduces time-to-production.
 
@@ -115,7 +37,7 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 ---
 
-## 5 · Sync
+## 2 · Sync
 
 Multi-device and collaborative data sync — the next frontier for local-first apps.
 
@@ -133,7 +55,7 @@ A reference sync server (`taladb-sync-server`) that accepts snapshot diffs over 
 
 ---
 
-## 6 · Storage
+## 3 · Storage
 
 Internal improvements that improve efficiency and interoperability.
 
@@ -147,7 +69,7 @@ Allow the caller to swap `postcard` for `MessagePack` or `CBOR` via a `Codec` tr
 
 ---
 
-## 7 · Platform
+## 4 · Platform
 
 Expanding the runtimes TalaDB can target.
 
@@ -169,7 +91,7 @@ Compile `taladb-core` to WASI (`wasm32-wasip1`) so it can run inside WASI runtim
 
 ---
 
-## 8 · Security
+## 5 · Security
 
 Hardening for apps that handle sensitive data.
 

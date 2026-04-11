@@ -105,8 +105,23 @@ impl Document {
         Document { id, fields }
     }
 
+    /// Return the value at `key`, supporting dot-notation for nested objects.
+    ///
+    /// `"name"` returns the top-level `name` field.
+    /// `"address.city"` traverses into a nested `Value::Object`.
+    /// Deep paths like `"a.b.c"` are resolved recursively.
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.fields.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        if let Some(dot) = key.find('.') {
+            let (head, tail) = (&key[..dot], &key[dot + 1..]);
+            let parent = self
+                .fields
+                .iter()
+                .find(|(k, _)| k == head)
+                .map(|(_, v)| v)?;
+            value_get_nested(parent, tail)
+        } else {
+            self.fields.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        }
     }
 
     pub fn set(&mut self, key: impl Into<String>, value: Value) {
@@ -127,7 +142,26 @@ impl Document {
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        self.fields.iter().any(|(k, _)| k == key)
+        self.get(key).is_some()
+    }
+}
+
+/// Traverse a `Value::Object` using a dot-separated path.
+pub fn value_get_nested<'a>(val: &'a Value, path: &str) -> Option<&'a Value> {
+    if let Some(dot) = path.find('.') {
+        let (head, tail) = (&path[..dot], &path[dot + 1..]);
+        match val {
+            Value::Object(fields) => {
+                let child = fields.iter().find(|(k, _)| k == head).map(|(_, v)| v)?;
+                value_get_nested(child, tail)
+            }
+            _ => None,
+        }
+    } else {
+        match val {
+            Value::Object(fields) => fields.iter().find(|(k, _)| k == path).map(|(_, v)| v),
+            _ => None,
+        }
     }
 }
 
