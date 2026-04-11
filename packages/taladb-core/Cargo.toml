@@ -22,6 +22,9 @@ sha2             = { version = "0.10", optional = true }
 # HNSW approximate nearest-neighbor index — opt-in via `vector-hnsw` feature.
 # Pure Rust, WASM-compatible, MIT license.
 instant-distance = { version = "0.6", optional = true }
+# Config parsing — YAML and JSON config file support.
+serde_json = "1.0"
+serde_yaml = "0.9"
 
 [features]
 encryption   = ["dep:aes-gcm", "dep:rand", "dep:pbkdf2", "dep:hmac", "dep:sha2"]

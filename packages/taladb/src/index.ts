@@ -1,4 +1,6 @@
 import type { Collection, Document, TalaDB } from './types';
+import { loadConfig, validateConfig } from './config';
+import type { TalaDbConfig, SyncConfig } from './config';
 
 // Re-export all public types for consumers (export…from satisfies S7763)
 export type {
@@ -13,6 +15,8 @@ export type {
   VectorIndexOptions,
   VectorSearchResult,
 } from './types';
+
+export type { TalaDbConfig, SyncConfig } from './config';
 
 // ============================================================
 // Platform detection + dynamic import
@@ -463,18 +467,45 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
 // Public entry point
 // ============================================================
 
+/** Options for `openDB`. */
+export interface OpenDBOptions {
+  /**
+   * Explicit path to a `taladb.config.yml` / `taladb.config.json` file.
+   * If omitted, TalaDB auto-discovers the file from `process.cwd()` on Node.js.
+   * Ignored on browser and React Native (sync is silently disabled there).
+   */
+  configPath?: string;
+  /**
+   * Inline config object. Takes precedence over any config file when provided.
+   * Useful for passing config programmatically without a config file on disk.
+   */
+  config?: TalaDbConfig;
+}
+
 /**
  * Open a TalaDB database.
  *
- * @param dbName  Name of the database file (used for OPFS and native file paths).
- *                Ignored for in-memory databases.
+ * @param dbName   Name of the database file (used for OPFS and native file paths).
+ * @param options  Optional config. Pass `{ config }` for inline sync settings or
+ *                 `{ configPath }` to load from a specific file.
  *
  * @example
  * const db = await openDB('myapp.db');
- * const users = db.collection<User>('users');
- * const id = await users.insert({ name: 'Alice', age: 30 });
+ *
+ * @example with inline sync config
+ * const db = await openDB('myapp.db', {
+ *   config: { sync: { enabled: true, endpoint: 'https://api.example.com/events' } },
+ * });
  */
-export async function openDB(dbName = 'taladb.db'): Promise<TalaDB> {
+export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Promise<TalaDB> {
+  // Phase 1: load + validate config. Not yet used for sync behaviour —
+  // the HTTP adapter is wired in Phase 3.
+  if (options?.config !== undefined) {
+    validateConfig(options.config);
+  } else {
+    await loadConfig(options?.configPath);
+  }
+
   const platform = detectPlatform();
   switch (platform) {
     case 'browser':      return createBrowserDB(dbName);

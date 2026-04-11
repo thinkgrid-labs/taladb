@@ -46,6 +46,9 @@ pub enum TalaDbError {
 
     #[error("invalid operation: {0}")]
     InvalidOperation(String),
+
+    #[error("config error: {0}")]
+    Config(String),
 }
 
 impl From<redb::DatabaseError> for TalaDbError {

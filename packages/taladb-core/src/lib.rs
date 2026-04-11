@@ -1,5 +1,6 @@
 pub mod aggregate;
 pub mod collection;
+pub mod config;
 pub mod crypto;
 pub mod document;
 pub mod engine;
@@ -13,6 +14,7 @@ pub mod vector;
 pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
+pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
 pub use collection::{Collection, CollectionIndexInfo, Update};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
