@@ -19,29 +19,7 @@ Better DX drives adoption and reduces time-to-production.
 
 First-party `useCollection`, `useFind`, `useFindOne`, and `useTalaDB` hooks backed by `useSyncExternalStore` for zero-tearing live query snapshots in concurrent React. Works in React (browser + Node.js) and React Native with the same API. See the [React guide](/guide/react).
 
-### `taladb studio` — local web UI
-
-A browser-based GUI (served by `taladb-cli`) for browsing collections, running ad-hoc queries, inspecting indexes, and visualising query plans — similar to MongoDB Compass but for local files.
-
-### Zod / Valibot schema validation
-
-An optional `schema` option on `collection()` that validates documents with a Zod or Valibot schema before insert and after find, providing runtime type safety without a compile step.
-
-### `taladb generate` — TypeScript type generation
-
-Inspect a live database and emit TypeScript interfaces for each collection, inferred from the stored documents. Useful for projects that don't start with a schema.
-
-### VS Code extension
-
-Syntax highlighting for TalaDB filter expressions in JSON, inline document previews, and a collection browser panel in the VS Code sidebar.
-
----
-
-## 2 · Sync
-
-Multi-device and collaborative data sync — the next frontier for local-first apps.
-
-### HTTP push sync (`taladb.config.yml`) ⭐ **Priority**
+### HTTP push sync (`taladb.config.yml`) — *next*
 
 A lightweight, zero-dependency sync adapter that pushes local mutations to any REST API you already own. Configure once in `taladb.config.yml` (or `.json`) at the project root:
 
@@ -105,6 +83,28 @@ taladb sync --dry-run    # preview without sending
 - Native NoSQL adapters (`sync.adapter: mongodb | firestore | dynamodb`) with direct connection strings, removing the need for an intermediate API
 - Bi-directional pull: `taladb sync --pull` fetches from the remote and merges locally
 - Per-collection sync config (sync some collections, skip others)
+
+### `taladb studio` — local web UI
+
+A browser-based GUI (served by `taladb-cli`) for browsing collections, running ad-hoc queries, inspecting indexes, and visualising query plans — similar to MongoDB Compass but for local files.
+
+### Zod / Valibot schema validation
+
+An optional `schema` option on `collection()` that validates documents with a Zod or Valibot schema before insert and after find, providing runtime type safety without a compile step.
+
+### `taladb generate` — TypeScript type generation
+
+Inspect a live database and emit TypeScript interfaces for each collection, inferred from the stored documents. Useful for projects that don't start with a schema.
+
+### VS Code extension
+
+Syntax highlighting for TalaDB filter expressions in JSON, inline document previews, and a collection browser panel in the VS Code sidebar.
+
+---
+
+## 2 · Advanced sync
+
+Multi-device and collaborative data sync beyond simple API push.
 
 ### Conflict-free sync with CRDTs
 
