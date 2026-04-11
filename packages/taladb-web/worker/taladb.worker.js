@@ -51,7 +51,7 @@
  *
  * Multi-tab live queries (BroadcastChannel)
  * -----------------------------------------
- * When a write op (insert/insertMany/update*/delete*) commits, the worker
+ * When a write op (insert/insertMany/updateOne/updateMany/deleteOne/deleteMany) commits, the worker
  * posts a `"taladb:changed"` message on a BroadcastChannel named
  * `"taladb:<dbName>"`.  Other tabs listening on the same channel re-trigger
  * their active `subscribe()` pollers immediately, bypassing the 300 ms tick.
@@ -70,6 +70,27 @@
 
 /** @type {import('../pkg/taladb_web').WorkerDB | null} */
 let db = null;
+
+/**
+ * WorkerDB constructor — hoisted to module scope so snapshot reloads in
+ * IDB-fallback mode can call WorkerDB.openWithSnapshot without re-importing.
+ * @type {typeof import('../pkg/taladb_web').WorkerDB | null}
+ */
+let WorkerDB = null;
+
+/**
+ * Set to true by the BroadcastChannel listener (fallback mode) when the
+ * primary tab commits a write. Cleared at the start of the next dispatch.
+ * @type {boolean}
+ */
+let snapshotDirty = false;
+
+/**
+ * Resolve function set when a fallback tab is waiting for the primary tab to
+ * export a snapshot via BroadcastChannel. Cleared once resolved or timed out.
+ * @type {(() => void) | null}
+ */
+let pendingSnapshotResolve = null;
 
 /**
  * Deduplicates concurrent init calls for the same dbName within one worker.
@@ -174,7 +195,9 @@ async function idbSaveSnapshot(dbName, bytes) {
  */
 function onWriteCommitted() {
   broadcastChannel?.postMessage('taladb:changed');
-  if (idbFallback && db && activeDbName) {
+  // Always flush a snapshot to IDB after every write — this keeps other tabs'
+  // IDB-fallback instances in sync via BroadcastChannel + snapshotDirty reload.
+  if (db && activeDbName) {
     try {
       const bytes = db.exportSnapshot();
       idbSaveSnapshot(activeDbName, bytes).catch(() => {});
@@ -201,6 +224,16 @@ self.onmessage = async (e) => {
 // ---------------------------------------------------------------------------
 
 async function dispatch(op, args) {
+  // In IDB-fallback mode, reload the snapshot before each op when the primary
+  // tab has signalled a write via BroadcastChannel. This keeps reads fresh.
+  if (idbFallback && snapshotDirty && op !== 'init' && db && activeDbName && WorkerDB) {
+    snapshotDirty = false;
+    try {
+      const fresh = await idbLoadSnapshot(activeDbName);
+      if (fresh) db = WorkerDB.openWithSnapshot(fresh);
+    } catch { /* ignore reload errors — stale read is acceptable */ }
+  }
+
   if (op === 'init') {
     const { dbName } = args;
 
@@ -334,11 +367,31 @@ async function doInit(dbName) {
   const wasm = await import('../pkg/taladb_web.js');
   await wasm.default();
 
-  const { WorkerDB } = wasm;
+  // Hoist to module scope so snapshot reloads in dispatch() can use it.
+  WorkerDB = wasm.WorkerDB;
 
   // Open the BroadcastChannel now that we know the db name.
   if (typeof BroadcastChannel !== 'undefined') {
     broadcastChannel = new BroadcastChannel(`taladb:${dbName}`);
+    broadcastChannel.onmessage = async (e) => {
+      if (e.data === 'taladb:changed' && idbFallback) {
+        // Fallback tab: primary tab wrote — reload snapshot before next read.
+        snapshotDirty = true;
+      } else if (e.data === 'taladb:request-snapshot' && !idbFallback && db && activeDbName) {
+        // Primary (OPFS) tab: a new tab asked for a snapshot — export and save it.
+        try {
+          const bytes = db.exportSnapshot();
+          await idbSaveSnapshot(activeDbName, bytes);
+          broadcastChannel.postMessage('taladb:snapshot-ready');
+          log('Exported snapshot for waiting tab');
+        } catch { /* ignore */ }
+      } else if (e.data === 'taladb:snapshot-ready' && pendingSnapshotResolve) {
+        // Fallback tab: primary tab finished saving — wake up the waiting doInit.
+        const resolve = pendingSnapshotResolve;
+        pendingSnapshotResolve = null;
+        resolve();
+      }
+    };
     log('BroadcastChannel opened:', `taladb:${dbName}`);
   }
 
@@ -369,12 +422,43 @@ async function doInit(dbName) {
     return;
   }
 
-  // Acquire an exclusive lock on the database file.
-  // If another tab's worker already holds it, this call blocks until that
-  // worker calls close() or the tab is terminated (lock auto-released).
+  // Try to acquire the exclusive OPFS lock immediately (ifAvailable).
+  // If another tab already holds it, fall back to IDB snapshot right away so
+  // this tab is immediately usable instead of blocking until the other tab closes.
+  // The primary (OPFS) tab flushes a snapshot to IDB after every write, and
+  // this tab's BroadcastChannel listener sets snapshotDirty so dispatch()
+  // reloads the snapshot before the next read — keeping data fresh across tabs.
   const lockName = `taladb:${fileName}`;
   await new Promise((resolve, reject) => {
-    navigator.locks.request(lockName, async () => {
+    navigator.locks.request(lockName, { ifAvailable: true }, async (lock) => {
+      if (lock === null) {
+        // Lock is held by another tab — use IDB snapshot so this tab loads immediately.
+        warn('OPFS lock held by another tab — falling back to IndexedDB snapshot (live-sync via BroadcastChannel)');
+        let snapshot = await idbLoadSnapshot(dbName);
+
+        if (!snapshot && broadcastChannel) {
+          // No IDB snapshot yet — ask the primary tab to export one now.
+          log('No IDB snapshot — requesting one from the primary tab...');
+          const gotIt = await new Promise(res => {
+            pendingSnapshotResolve = res;
+            setTimeout(() => { pendingSnapshotResolve = null; res(false); }, 2000);
+            broadcastChannel.postMessage('taladb:request-snapshot');
+          });
+          if (gotIt !== false) snapshot = await idbLoadSnapshot(dbName);
+        }
+
+        db = WorkerDB.openWithSnapshot(snapshot ?? null);
+        idbFallback = true;
+        if (snapshot) {
+          log(`Restored from IDB snapshot (${snapshot.byteLength} bytes)`);
+        } else {
+          log('No IDB snapshot yet — starting with empty in-memory database');
+        }
+        resolve();
+        return; // Do not hold the lock; returning releases it back to the queue.
+      }
+
+      // Acquired the lock — use OPFS.
       try {
         const syncHandle = await fileHandle.createSyncAccessHandle();
         db = WorkerDB.openWithOpfs(syncHandle);

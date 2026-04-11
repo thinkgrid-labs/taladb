@@ -133,9 +133,12 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
       count: async (filter?) => col.count(filter ?? null),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createFtsIndex: async (field) => col.createFtsIndex(field),
+      dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) =>
-        col.createVectorIndex(field, options.dimensions, options.metric ?? null),
+        col.createVectorIndex(field, options.dimensions, options.metric ?? null, options.indexType ?? null, options.hnswM ?? null, options.hnswEfConstruction ?? null),
       dropVectorIndex: async (field) => col.dropVectorIndex(field),
+      upgradeVectorIndex: async (field) => col.upgradeVectorIndex(field),
       findNearest: async (field, vector, topK, filter?) => {
         const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
         return raw;
@@ -230,16 +233,28 @@ async function createBrowserDB(dbName: string): Promise<TalaDB> {
       dropIndex: (field) =>
         proxy.send<void>('dropIndex', { collection: name, field }),
 
+      createFtsIndex: (field) =>
+        proxy.send<void>('createFtsIndex', { collection: name, field }),
+
+      dropFtsIndex: (field) =>
+        proxy.send<void>('dropFtsIndex', { collection: name, field }),
+
       createVectorIndex: (field, options) =>
         proxy.send<void>('createVectorIndex', {
           collection: name,
           field,
           dimensions: options.dimensions,
           metric: options.metric,
+          indexType: options.indexType,
+          hnswM: options.hnswM,
+          hnswEfConstruction: options.hnswEfConstruction,
         }),
 
       dropVectorIndex: (field) =>
         proxy.send<void>('dropVectorIndex', { collection: name, field }),
+
+      upgradeVectorIndex: (field) =>
+        proxy.send<void>('upgradeVectorIndex', { collection: name, field }),
 
       findNearest: async (field, vector, topK, filter?) => {
         const json = await proxy.send<string>('findNearest', {
@@ -323,9 +338,12 @@ async function createNodeDB(dbName: string): Promise<TalaDB> {
       count: async (filter?) => col.count(filter ?? null),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createFtsIndex: async (field) => col.createFtsIndex(field),
+      dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) =>
-        col.createVectorIndex(field, options.dimensions, options.metric ?? null),
+        col.createVectorIndex(field, options.dimensions, options.metric ?? null, options.indexType ?? null, options.hnswM ?? null, options.hnswEfConstruction ?? null),
       dropVectorIndex: async (field) => col.dropVectorIndex(field),
+      upgradeVectorIndex: async (field) => col.upgradeVectorIndex(field),
       findNearest: async (field, vector, topK, filter?) => {
         const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
         return raw;
@@ -358,8 +376,11 @@ interface NativeCollection {
   count(filter: Record<string, unknown>): number;
   createIndex(field: string): void;
   dropIndex(field: string): void;
-  createVectorIndex(field: string, dimensions: number, metric: string | null): void;
+  createFtsIndex(field: string): void;
+  dropFtsIndex(field: string): void;
+  createVectorIndex(field: string, dimensions: number, metric: string | null, indexType: string | null, hnswM: number | null, hnswEfConstruction: number | null): void;
   dropVectorIndex(field: string): void;
+  upgradeVectorIndex(field: string): void;
   findNearest(field: string, query: number[], topK: number, filter: Record<string, unknown> | null): { document: Record<string, unknown>; score: number }[];
 }
 
@@ -395,9 +416,12 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
       count: async (filter?) => col.count(filter ?? {}),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createFtsIndex: async (field) => col.createFtsIndex(field),
+      dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) =>
-        col.createVectorIndex(field, options.dimensions, options.metric ?? null),
+        col.createVectorIndex(field, options.dimensions, options.metric ?? null, options.indexType ?? null, options.hnswM ?? null, options.hnswEfConstruction ?? null),
       dropVectorIndex: async (field) => col.dropVectorIndex(field),
+      upgradeVectorIndex: async (field) => col.upgradeVectorIndex(field),
       findNearest: async (field, vector, topK, filter?) => {
         const raw = col.findNearest(field, vector, topK, filter ?? null);
         return raw as { document: T; score: number }[];

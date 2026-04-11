@@ -12,6 +12,17 @@ export interface VectorIndexOptions {
   dimensions: number;
   /** Similarity metric. Defaults to `"cosine"`. */
   metric?: VectorMetric;
+  /**
+   * Index algorithm. Defaults to `"flat"` (exact brute-force).
+   * Use `"hnsw"` for approximate nearest-neighbour search — much faster on
+   * large collections at the cost of occasional missed results.
+   * Requires the `vector-hnsw` feature to be compiled in.
+   */
+  indexType?: 'flat' | 'hnsw';
+  /** HNSW connectivity parameter M (default 16). Higher = better recall, more memory. */
+  hnswM?: number;
+  /** HNSW build-time quality parameter ef_construction (default 200). */
+  hnswEfConstruction?: number;
 }
 
 /** A single result returned by `Collection.findNearest`. */
@@ -87,6 +98,18 @@ export interface Collection<T extends Document = Document> {
   createIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   dropIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   /**
+   * Create a full-text search index on a string field.
+   *
+   * Enables fast `{ field: { $contains: 'token' } }` queries using an
+   * inverted token index instead of a full collection scan.
+   *
+   * @example
+   * await notes.createFtsIndex('body');
+   */
+  createFtsIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+  /** Drop a full-text search index. */
+  dropFtsIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+  /**
    * Create a vector index on a numeric-array field.
    *
    * After creation, `findNearest` can search this field and new inserts/updates
@@ -101,6 +124,14 @@ export interface Collection<T extends Document = Document> {
   ): Promise<void>;
   /** Drop a vector index. */
   dropVectorIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+  /**
+   * Upgrade a flat vector index to HNSW in-place.
+   *
+   * After calling this, `findNearest` uses approximate nearest-neighbour
+   * search which is significantly faster on large collections.
+   * Requires the `vector-hnsw` feature to be compiled in; no-op otherwise.
+   */
+  upgradeVectorIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   /**
    * Find the `topK` most similar documents to `vector` using a vector index.
    *
