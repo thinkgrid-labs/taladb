@@ -15,7 +15,7 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 Better DX drives adoption and reduces time-to-production.
 
-### React hooks package (`@taladb/react`)
+### React hooks package (`@taladb/react`) — *in progress*
 
 First-party `useCollection`, `useWatch`, `useFind`, and `useFindOne` hooks that integrate with React's `useSyncExternalStore` for zero-tearing live query snapshots in concurrent React. The primary audience is React developers — this is the highest-leverage DX investment.
 
@@ -40,6 +40,71 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 ## 2 · Sync
 
 Multi-device and collaborative data sync — the next frontier for local-first apps.
+
+### HTTP push sync (`taladb.config.yml`) ⭐ **Priority**
+
+A lightweight, zero-dependency sync adapter that pushes local mutations to any REST API you already own. Configure once in `taladb.config.yml` (or `.json`) at the project root:
+
+```yaml
+sync:
+  enabled: false          # opt-in, default off
+  endpoint: https://api.example.com/taladb/events
+  headers:
+    Authorization: Bearer <token>
+  # optional per-event overrides
+  # insert_endpoint: ...
+  # update_endpoint: ...
+  # delete_endpoint: ...
+```
+
+When `enabled: true`, TalaDB wraps every write in a post-commit hook and fires an HTTP `POST` to the configured endpoint. The payload shape differs per event — only the changed data is sent, never the full document on updates:
+
+**insert** — full document (it's all new):
+```json
+{
+  "_taladb_event": "insert",
+  "collection": "articles",
+  "id": "01J...",
+  "document": { "title": "Hello", "locale": "en" },
+  "timestamp": 1712800000000
+}
+```
+
+**update** — only the fields that changed (`changes` is the diff, not the full document):
+```json
+{
+  "_taladb_event": "update",
+  "collection": "articles",
+  "id": "01J...",
+  "changes": { "title": "Hello World" },
+  "timestamp": 1712800000000
+}
+```
+
+**delete** — id only, no document payload:
+```json
+{
+  "_taladb_event": "delete",
+  "collection": "articles",
+  "id": "01J...",
+  "timestamp": 1712800000000
+}
+```
+
+Your backend receives the event and decides what to do — write to Postgres, forward to Firestore, index in Elasticsearch, anything. TalaDB stays local-first; the sync is fire-and-forget with configurable retry on failure (default: 3 attempts, exponential backoff).
+
+**CLI sync command** — push the full local database to the configured endpoint in one shot, useful for initial seeding or recovery after downtime:
+
+```bash
+taladb sync              # push all collections
+taladb sync articles     # push a single collection
+taladb sync --dry-run    # preview without sending
+```
+
+**Future extensions** of this feature (not in scope for initial release):
+- Native NoSQL adapters (`sync.adapter: mongodb | firestore | dynamodb`) with direct connection strings, removing the need for an intermediate API
+- Bi-directional pull: `taladb sync --pull` fetches from the remote and merges locally
+- Per-collection sync config (sync some collections, skip others)
 
 ### Conflict-free sync with CRDTs
 

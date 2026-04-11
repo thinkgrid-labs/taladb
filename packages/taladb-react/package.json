@@ -1,0 +1,60 @@
+{
+  "name": "@taladb/react",
+  "version": "0.4.0",
+  "description": "React hooks for TalaDB — useFind, useFindOne, and useCollection for React and React Native",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepublishOnly": "npm run build",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "database",
+    "local-first",
+    "react",
+    "react-native",
+    "hooks",
+    "offline",
+    "vector",
+    "live-queries"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thinkgrid-labs/taladb.git",
+    "directory": "packages/taladb-react"
+  },
+  "homepage": "https://thinkgrid-labs.github.io/taladb/guide/react",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/taladb/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "taladb": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "react": "^18.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.0"
+  }
+}
