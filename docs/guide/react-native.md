@@ -1,90 +1,28 @@
 ---
 title: React Native Guide
-description: Integrate TalaDB into React Native apps using a JSI HostObject and C FFI. Synchronous Rust engine with no bridge overhead on iOS and Android.
+description: Use TalaDB in React Native apps for local-first document and vector storage with no server required.
 ---
 
 # React Native
 
-TalaDB integrates with React Native through a [JSI (JavaScript Interface)](https://reactnative.dev/docs/the-new-architecture/landing-page) HostObject. Unlike a bridge-based module, JSI allows synchronous, zero-serialisation calls from JavaScript directly into the Rust engine — no JSON serialisation on the hot path, no async roundtrip for reads.
+TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path.
 
-## Architecture
-
-```
-React Native (JS thread)
-        │  JSI direct call (synchronous)
-        ▼
-TalaDBHostObject  (C++ HostObject — cpp/TalaDBHostObject.cpp)
-        │  C FFI
-        ▼
-taladb-ffi  (Rust cdylib — no_mangle extern "C")
-        │
-        ▼
-taladb-core (Rust) + redb (file in app Documents dir)
-```
-
-The HostObject is installed into the JSI runtime once at app startup by the native TurboModule. After that, all JavaScript calls go directly through JSI without touching the bridge.
-
-## Status
-
-::: warning Alpha — integration in progress
-The React Native integration has a complete C FFI layer (`taladb-ffi`), C++ HostObject scaffold, and iOS / Android TurboModule stubs. Full end-to-end integration (Xcode build phases, Gradle AAR packaging) is in progress. The API documented here reflects the intended final shape.
+::: warning Beta — in progress
+The React Native package is functional but full end-to-end setup (CocoaPods, Gradle AAR) is still being finalised. The API below is stable and reflects the final shape. Track progress on [GitHub](https://github.com/thinkgrid-labs/taladb).
 :::
 
-## Prerequisites
+## Requirements
 
-- React Native 0.73+ (New Architecture enabled)
-- Expo SDK 50+ (if using Expo)
-- Xcode 15+ (iOS)
-- Android NDK r26+ (Android)
-- Rust toolchain with iOS / Android targets installed:
-
-```bash
-rustup target add aarch64-apple-ios x86_64-apple-ios   # iOS
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android  # Android
-```
+- React Native **0.73+** with New Architecture enabled
+- Expo SDK **50+** (if using Expo)
+- Xcode 15+ for iOS builds
+- Android NDK r26+ for Android builds
 
 ## Installation
-
-There are two ways to install TalaDB in a React Native project depending on whether you share code with other platforms.
-
-### Option A — Shared codebase (RN + Web or RN + Node.js)
 
 ```bash
 pnpm add taladb @taladb/react-native
 ```
-
-Use `openDB` from `taladb`. The unified package detects React Native automatically and delegates to `@taladb/react-native` under the hood. All calls use a consistent async API — the same code compiles for browser and Node.js too:
-
-```ts
-import { openDB } from 'taladb'
-
-const db = await openDB('myapp.db')
-const users = db.collection('users')
-await users.insert({ name: 'Alice' })
-```
-
-### Option B — Standalone (React Native only) {#standalone-installation}
-
-```bash
-pnpm add @taladb/react-native
-```
-
-Import directly from `@taladb/react-native`. Because calls go through JSI, they are **synchronous** — no `await` required after `initialize`:
-
-```ts
-import { TalaDBModule, openDB } from '@taladb/react-native'
-
-// Call once at app startup
-await TalaDBModule.initialize('myapp.db')
-
-// After that — fully synchronous
-const db = openDB('myapp.db')
-const users = db.collection('users')
-const id    = users.insert({ name: 'Alice' })   // no await
-const found = users.find({ name: 'Alice' })     // no await
-```
-
-Use this option when you have no shared code requirements and want the simplest possible setup with one fewer dependency.
 
 ### iOS
 
@@ -92,55 +30,43 @@ Use this option when you have no shared code requirements and want the simplest 
 cd ios && pod install
 ```
 
-The pod install step picks up `@taladb/react-native.podspec`, which includes the pre-compiled `libtaladb.a` universal static library and the C++ HostObject sources.
-
 ### Android
 
-The Gradle build system automatically links `libtaladb.so` for the supported ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`).
+No extra steps — Gradle links the native library automatically.
 
-## Enabling the New Architecture
+### Enable the New Architecture
 
-TalaDB's JSI integration requires the New Architecture. In `android/gradle.properties`:
+TalaDB requires the New Architecture for its JSI integration.
 
+**`android/gradle.properties`**
 ```properties
 newArchEnabled=true
 ```
 
-In `ios/Podfile`:
-
+**`ios/Podfile`**
 ```ruby
 use_framework! :static
 ```
 
-## Initialising the database
+## Quick start
 
-Call `TalaDBModule.initialize` as early as possible in your app's entry point — before any component tries to use the database.
+Call `TalaDBModule.initialize` once at app startup — before any component tries to use the database.
 
 ```ts
-// App.tsx  (or index.js)
+// App.tsx
 import { TalaDBModule } from '@taladb/react-native'
-
-await TalaDBModule.initialize('myapp.db')
-```
-
-This call:
-1. Resolves the absolute path for `myapp.db` inside the app's Documents directory (iOS) or files directory (Android).
-2. Opens (or creates) the redb database at that path.
-3. Installs the `__TalaDB__` JSI HostObject into the JS runtime.
-
-The database path is sandboxed to the app's private storage — no special permissions are required.
-
-## Using the database
-
-After `initialize`, use `openDB` from `taladb` exactly as you would in a browser or Node.js app:
-
-```ts
 import { openDB } from 'taladb'
 
+await TalaDBModule.initialize('myapp.db')
+
 const db = await openDB('myapp.db')
+const users = db.collection('users')
+
+await users.insert({ name: 'Alice', createdAt: Date.now() })
+const all = await users.find()
 ```
 
-The `taladb` package detects React Native by the presence of `globalThis.nativeCallSyncHook` and routes calls through the JSI HostObject instead of WASM or the native module.
+That's it. The `taladb` package detects React Native automatically — the same code you write for the browser or Node.js works here too.
 
 ## Full example
 
@@ -193,64 +119,9 @@ export default function App() {
 
 ## Vector search
 
-On-device vector search is a natural fit for React Native — embeddings generated by a local ML model (Core ML on iOS, TensorFlow Lite on Android) can be stored and searched without any server.
-
-### Create a vector index
+TalaDB supports on-device semantic search — store embeddings from a local ML model (Core ML, TensorFlow Lite) and search them without any server.
 
 ```ts
-interface Document {
-  _id?: string
-  title: string
-  content: string
-  category: string
-  embedding: number[]
-}
-
-const docs = db.collection<Document>('docs')
-
-// Call once at startup alongside other index setup
-await docs.createVectorIndex('embedding', { dimensions: 384 })
-```
-
-### Insert with embedding
-
-Compute the embedding with whatever on-device ML library your app uses, then pass it as a plain `number[]`:
-
-```ts
-// embedding comes from your on-device ML model
-const embedding = await myModel.embed(content)
-
-await docs.insert({ title, content, category: 'faq', embedding })
-```
-
-### Semantic search
-
-```ts
-const queryVec = await myModel.embed(userQuery)
-const results = await docs.findNearest('embedding', queryVec, 5)
-
-results.forEach(({ document, score }) => {
-  console.log(score.toFixed(3), document.title)
-})
-```
-
-### Hybrid search
-
-```ts
-// Only search within the 'faq' category
-const results = await docs.findNearest('embedding', queryVec, 5, {
-  category: 'faq',
-})
-```
-
-### Full React Native example with vector search
-
-```tsx
-// SearchScreen.tsx
-import React, { useState } from 'react'
-import { View, TextInput, FlatList, Text, StyleSheet } from 'react-native'
-import { openDB, type VectorSearchResult } from 'taladb'
-
 interface Article {
   _id?: string
   title: string
@@ -258,49 +129,35 @@ interface Article {
   embedding: number[]
 }
 
-const db = await openDB('myapp.db')
 const articles = db.collection<Article>('articles')
 await articles.createVectorIndex('embedding', { dimensions: 384 })
 
-export function SearchScreen() {
-  const [results, setResults] = useState<VectorSearchResult<Article>[]>([])
+// Insert with embedding from your on-device model
+const embedding = await myModel.embed(content)
+await articles.insert({ title, body: content, embedding })
 
-  async function handleSearch(query: string) {
-    if (!query.trim()) return
-    const queryVec = await myModel.embed(query)   // your on-device model
-    const hits = await articles.findNearest('embedding', queryVec, 10)
-    setResults(hits)
-  }
+// Semantic search
+const queryVec = await myModel.embed(userQuery)
+const results = await articles.findNearest('embedding', queryVec, 5)
 
-  return (
-    <View style={styles.container}>
-      <TextInput
-        placeholder="Search..."
-        onChangeText={handleSearch}
-        style={styles.input}
-      />
-      <FlatList
-        data={results}
-        keyExtractor={(item) => item.document._id!}
-        renderItem={({ item }) => (
-          <View style={styles.row}>
-            <Text style={styles.score}>{item.score.toFixed(2)}</Text>
-            <Text style={styles.title}>{item.document.title}</Text>
-          </View>
-        )}
-      />
-    </View>
-  )
-}
+results.forEach(({ document, score }) => {
+  console.log(score.toFixed(3), document.title)
+})
 
-const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16 },
-  input: { borderWidth: 1, borderRadius: 8, padding: 12, marginBottom: 12 },
-  row: { flexDirection: 'row', gap: 8, paddingVertical: 8 },
-  score: { color: '#888', width: 40 },
-  title: { flex: 1 },
+// Hybrid: combine vector ranking with a metadata filter
+const filtered = await articles.findNearest('embedding', queryVec, 5, {
+  category: 'faq',
 })
 ```
+
+## Where data is stored
+
+| Platform | Location |
+|---|---|
+| iOS | `NSDocumentDirectory` (iCloud-excluded by default) |
+| Android | `Context.getFilesDir()` (app-private, no permissions needed) |
+
+No special permissions are required on either platform.
 
 ## Migrations
 
@@ -309,7 +166,7 @@ const db = await openDB('myapp.db', {
   migrations: [
     {
       version: 1,
-      description: 'Create notes index',
+      description: 'Add notes index',
       up: async (db) => {
         await db.collection('notes').createIndex('createdAt')
       },
@@ -318,74 +175,20 @@ const db = await openDB('myapp.db', {
 })
 ```
 
-## Data persistence and location
-
-| Platform | Location |
-|---|---|
-| iOS | `NSDocumentDirectory` (iCloud-excluded by default) |
-| Android | `Context.getFilesDir()` (app-private, no permissions needed) |
-
-Data is not backed up to iCloud or Google Drive by default. To enable backup, configure `NSFileProtection` (iOS) or Android Backup rules as appropriate for your app.
-
-## Exporting and restoring snapshots
-
-```ts
-const bytes = await db.exportSnapshot()
-// Transfer bytes over your sync layer, then restore on another device:
-const db2 = await Database.restoreFromSnapshot(bytes)
-```
-
-## Live queries
-
-```ts
-const handle = db.collection<Note>('notes').watch({})
-
-async function streamUpdates() {
-  for await (const snapshot of handle) {
-    setItems(snapshot)
-  }
-}
-
-streamUpdates()
-```
-
-## Building the Rust libraries
-
-### iOS
-
-```bash
-cd packages/@taladb/react-native/rust
-
-# Build for device and simulator
-cargo build --release --target aarch64-apple-ios
-cargo build --release --target x86_64-apple-ios
-
-# Create a universal static library
-lipo -create \
-  ../../target/aarch64-apple-ios/release/libtaladb_ffi.a \
-  ../../target/x86_64-apple-ios/release/libtaladb_ffi.a \
-  -output ios/libtaladb.a
-```
-
-### Android
-
-```bash
-cd packages/@taladb/react-native/rust
-
-cargo build --release --target aarch64-linux-android
-cargo build --release --target armv7-linux-androideabi
-cargo build --release --target x86_64-linux-android
-```
-
-The Gradle build picks up the `.so` files from `android/src/main/jniLibs/`.
-
 ## Troubleshooting
 
 **`__TalaDB__ JSI HostObject not found`**
-You called `openDB` before `TalaDBModule.initialize` completed. Move `initialize` to the earliest possible point in your app startup and await it before rendering any component that accesses the database.
+`openDB` was called before `TalaDBModule.initialize` completed. Move `initialize` to the very top of your app entry point and `await` it before any database access.
 
 **`New Architecture is not enabled`**
-Set `newArchEnabled=true` in `android/gradle.properties` and ensure `use_framework! :static` is in your `ios/Podfile`.
+Set `newArchEnabled=true` in `android/gradle.properties` and add `use_framework! :static` to your `ios/Podfile`.
 
-**Rust build errors on iOS**
-Make sure the iOS targets are installed: `rustup target add aarch64-apple-ios x86_64-apple-ios` and that Xcode's command-line tools are active: `xcode-select --install`.
+**Pod install fails on iOS**
+Make sure Xcode command-line tools are active: `xcode-select --install`. Then re-run `pod install`.
+
+## Current limitations
+
+- **CocoaPods and Gradle packaging** — the native build pipeline is still being finalised. Pre-built binaries (`libtaladb.a` for iOS, `libtaladb.so` for Android) are not yet published to npm. To use TalaDB in React Native today you need to build the Rust libraries from source (see the [Contributing guide](https://github.com/thinkgrid-labs/taladb/blob/main/CONTRIBUTING.md)).
+- **Expo Go** — not supported. You must use a custom dev client (`expo prebuild`).
+- **HNSW vector index** — available and fully supported on React Native (runs natively on device threads).
+- **Live queries (`subscribe`)** — polling-based on React Native; native file-watch push is planned for a future release.
