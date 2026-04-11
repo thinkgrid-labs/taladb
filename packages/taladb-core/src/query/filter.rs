@@ -34,6 +34,10 @@ pub enum Filter {
     /// Full-text search: field contains all tokens from the query string.
     /// Requires a full-text index created with `Collection::create_fts_index`.
     Contains(String, String),
+    /// Regex match on a string field. Pattern is compiled on each call; consider
+    /// `Filter::Contains` for repeated token searches.
+    /// Example: `Filter::Regex("email".into(), r"@example\.com$".into())`
+    Regex(String, String),
 }
 
 impl Filter {
@@ -121,6 +125,17 @@ impl Filter {
                     query_tokens
                         .iter()
                         .all(|qt| doc_tokens.iter().any(|dt| dt == qt))
+                } else {
+                    false
+                }
+            }
+
+            // Regex post-filter — compiled on each invocation, always a full scan.
+            Filter::Regex(field, pattern) => {
+                if let Some(Value::Str(text)) = doc.get(field) {
+                    regex::Regex::new(pattern)
+                        .map(|re| re.is_match(text))
+                        .unwrap_or(false)
                 } else {
                     false
                 }

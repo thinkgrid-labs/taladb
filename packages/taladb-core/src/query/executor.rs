@@ -7,7 +7,7 @@ use crate::document::{Document, Value};
 use crate::engine::ReadTxn;
 use crate::error::TalaDbError;
 use crate::fts::{fts_table_name, fts_token_range, tokenize, ulid_from_fts_key};
-use crate::index::{docs_table_name, index_table_name, ulid_from_index_key};
+use crate::index::{compound_table_name, docs_table_name, index_table_name, ulid_from_index_key};
 use crate::query::filter::Filter;
 use crate::query::planner::QueryPlan;
 
@@ -83,6 +83,18 @@ pub fn execute(
                 .reduce(|a, b| a.into_iter().filter(|u| b.contains(u)).collect())
                 .unwrap_or_default();
             let ulids: Vec<Ulid> = intersection.into_iter().map(Ulid::from_bytes).collect();
+            fetch_by_ulids(txn, collection, ulids)?
+        }
+
+        QueryPlan::CompoundIndexEq { fields, start, end } => {
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            let table = compound_table_name(collection, &field_refs);
+            let ulids = table_range_scan(
+                txn,
+                &table,
+                Bound::Included(start.as_slice()),
+                Bound::Included(end.as_slice()),
+            )?;
             fetch_by_ulids(txn, collection, ulids)?
         }
 
@@ -167,6 +179,17 @@ fn collect_ulids(
             }
             Ok(result)
         }
+        QueryPlan::CompoundIndexEq { fields, start, end } => {
+            let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            let table = compound_table_name(collection, &field_refs);
+            let ulids = table_range_scan(
+                txn,
+                &table,
+                Bound::Included(start.as_slice()),
+                Bound::Included(end.as_slice()),
+            )?;
+            Ok(ulids.into_iter().map(|u| u.to_bytes()).collect())
+        }
         _ => {
             // For non-index plans, fall back to executing and extracting ids
             let docs = execute(plan, &Filter::All, txn, collection)?;
@@ -202,7 +225,16 @@ fn index_range_scan(
     end: Bound<&[u8]>,
 ) -> Result<Vec<Ulid>, TalaDbError> {
     let table = index_table_name(collection, field);
-    let entries = txn.range(&table, start, end)?;
+    table_range_scan(txn, &table, start, end)
+}
+
+fn table_range_scan(
+    txn: &dyn ReadTxn,
+    table: &str,
+    start: Bound<&[u8]>,
+    end: Bound<&[u8]>,
+) -> Result<Vec<Ulid>, TalaDbError> {
+    let entries = txn.range(table, start, end)?;
     let ulids = entries
         .into_iter()
         .filter_map(|(k, _)| ulid_from_index_key(&k))

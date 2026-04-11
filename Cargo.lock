@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "hmac",
@@ -1251,6 +1251,7 @@ dependencies = [
  "postcard",
  "rand 0.8.5",
  "redb",
+ "regex",
  "serde",
  "sha2",
  "tempfile",
@@ -1260,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-ffi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde_json",
  "taladb-core",
@@ -1268,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-node"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "napi",
  "napi-build",
@@ -1280,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-web"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
