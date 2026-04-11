@@ -252,7 +252,7 @@ jobs:
         run: ls dist/index.mjs dist/index.js dist/index.d.ts
 
   # ---------------------------------------------------------------------------
-  # Build — @taladb/react hooks package (tsup)
+  # Test + Build — @taladb/react hooks package
   # ---------------------------------------------------------------------------
   build-taladb-react:
     name: Build — @taladb/react (TS)
@@ -273,6 +273,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install
+
+      - name: Unit + integration tests
+        working-directory: packages/taladb-react
+        run: pnpm test
 
       - name: Build
         working-directory: packages/taladb-react
