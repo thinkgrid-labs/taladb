@@ -80,7 +80,7 @@ export default defineConfig({
       { text: "Roadmap", link: "/roadmap" },
       { text: "Live Demo", link: "https://taladb-playground.vercel.app/" },
       {
-        text: "v0.4.0",
+        text: "v0.5.0",
         items: [
           {
             text: "Changelog",
@@ -110,6 +110,12 @@ export default defineConfig({
           { text: "Node.js", link: "/guide/node" },
           { text: "React Native", link: "/guide/react-native" },
           { text: "CLI Dev Tools", link: "/guide/cli" },
+        ],
+      },
+      {
+        text: "Packages",
+        items: [
+          { text: "React Hooks (@taladb/react)", link: "/guide/react" },
         ],
       },
       {
