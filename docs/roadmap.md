@@ -15,9 +15,9 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 Better DX drives adoption and reduces time-to-production.
 
-### React hooks package (`@taladb/react`) — *in progress*
+### ~~React hooks package (`@taladb/react`)~~ — *shipped*
 
-First-party `useCollection`, `useWatch`, `useFind`, and `useFindOne` hooks that integrate with React's `useSyncExternalStore` for zero-tearing live query snapshots in concurrent React. The primary audience is React developers — this is the highest-leverage DX investment.
+First-party `useCollection`, `useFind`, `useFindOne`, and `useTalaDB` hooks backed by `useSyncExternalStore` for zero-tearing live query snapshots in concurrent React. Works in React (browser + Node.js) and React Native with the same API. See the [React guide](/guide/react).
 
 ### `taladb studio` — local web UI
 
