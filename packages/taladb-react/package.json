@@ -1,7 +1,7 @@
 {
-  "name": "taladb",
+  "name": "@taladb/react",
   "version": "0.5.0",
-  "description": "Local-first document and vector database for React, React Native, and Node.js",
+  "description": "React hooks for TalaDB — useFind, useFindOne, and useCollection for React and React Native",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -26,36 +26,39 @@
   "keywords": [
     "database",
     "local-first",
-    "offline",
-    "wasm",
+    "react",
     "react-native",
+    "hooks",
+    "offline",
     "vector",
-    "vector-search",
-    "embeddings",
-    "semantic-search",
-    "ai",
-    "hybrid-search"
+    "live-queries"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/thinkgrid-labs/taladb.git",
-    "directory": "packages/taladb"
+    "directory": "packages/taladb-react"
   },
-  "homepage": "https://thinkgrid-labs.github.io/taladb/",
+  "homepage": "https://thinkgrid-labs.github.io/taladb/guide/react",
   "bugs": {
     "url": "https://github.com/thinkgrid-labs/taladb/issues"
   },
   "engines": {
     "node": ">=18"
   },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "taladb": "workspace:*"
+  },
   "devDependencies": {
+    "@testing-library/react": "^16.0.0",
+    "@types/react": "^18.0.0",
+    "jsdom": "^26.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "taladb": "workspace:*",
     "tsup": "^8.0.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.0"
-  },
-  "optionalDependencies": {
-    "@taladb/web": "workspace:*",
-    "@taladb/node": "workspace:*"
   }
 }

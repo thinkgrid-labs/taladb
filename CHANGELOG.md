@@ -5,6 +5,25 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-12
+
+### Added
+- **`@taladb/react` — React hooks package** — first-party hooks for live-updating queries in React and React Native:
+  - `TalaDBProvider` / `useTalaDB` — context provider for the `TalaDB` instance
+  - `useCollection<T>(name)` — returns a stable, memoised `Collection<T>` from context; safe to pass directly to `useFind` / `useFindOne` without wrapping in `useMemo`
+  - `useFind<T>(collection, filter?)` — subscribes to a live query; returns `{ data: T[], loading: boolean }` and re-renders automatically on every matching write
+  - `useFindOne<T>(collection, filter)` — same as `useFind` but returns the first matching document (`data: T | null`)
+  - All hooks are backed by `useSyncExternalStore` for zero-tearing snapshots in concurrent React
+  - Inline filter objects (e.g. `{ active: true }`) are serialised to a string key internally — no re-subscription on every render
+  - Works in React (browser + Node.js) and React Native with identical API; no platform-specific code required
+  - Full TypeScript generics — `data` is correctly typed as `T[]` / `T | null` from the document interface
+  - Install: `pnpm add taladb @taladb/web @taladb/react` (browser) or `pnpm add taladb @taladb/react-native @taladb/react` (React Native)
+
+### Infrastructure
+- CI `ts-check` job now type-checks `@taladb/react` alongside `taladb`
+- CI `build-taladb-react` job runs unit + integration tests (52 cases) then builds and verifies `dist/` before publish
+- Release workflow publishes `@taladb/react` to npm as part of the standard release pipeline
+
 ## [0.4.0] - 2026-04-11
 
 ### Added
@@ -83,7 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
 
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.1...v0.4.0
 [0.2.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.1.0...v0.2.0

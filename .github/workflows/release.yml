@@ -361,13 +361,46 @@ jobs:
           path: packages/taladb/dist/
 
   # ---------------------------------------------------------------------------
+  # Build — @taladb/react hooks package (tsup)
+  # ---------------------------------------------------------------------------
+  build-taladb-react:
+    name: Build — @taladb/react (TS)
+    runs-on: ubuntu-latest
+    needs: [rust-check, ts-check]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install
+
+      - name: Build
+        working-directory: packages/taladb-react
+        run: |
+          pnpm exec tsup
+          ls dist/index.mjs dist/index.js dist/index.d.ts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-taladb-react
+          path: packages/taladb-react/dist/
+
+  # ---------------------------------------------------------------------------
   # Publish npm packages
-  # Publishes: taladb, @taladb/web, @taladb/node, @taladb/react-native
+  # Publishes: taladb, @taladb/web, @taladb/node, @taladb/react-native, @taladb/react
   # ---------------------------------------------------------------------------
   publish-npm:
     name: Publish — npm
     runs-on: ubuntu-latest
-    needs: [build-wasm, build-node, build-cli, build-rn-ios, build-rn-android, build-taladb]
+    needs: [build-wasm, build-node, build-cli, build-rn-ios, build-rn-android, build-taladb, build-taladb-react]
     # To require manual approval before publishing, create an environment named
     # "npm-publish" in Settings → Environments and enable required reviewers.
 
@@ -448,6 +481,19 @@ jobs:
 
       - name: Publish @taladb/react-native
         working-directory: packages/taladb-react-native
+        run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # -- @taladb/react -------------------------------------------------------
+      - name: Download @taladb/react dist
+        uses: actions/download-artifact@v4
+        with:
+          name: release-taladb-react
+          path: packages/taladb-react/dist
+
+      - name: Publish @taladb/react
+        working-directory: packages/taladb-react
         run: pnpm publish --no-git-checks --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
