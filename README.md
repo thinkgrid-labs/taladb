@@ -255,7 +255,12 @@ Contributions are welcome! TalaDB is MIT-licensed and fully open source.
 
 Please open an issue first for large features or architectural changes.
 
-## Contributors
+## Contributing
+
+TalaDB is built by and for the community. Whether you're fixing a bug, adding a new query operator, or improving documentation, your help is welcome!
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and our development workflow.
+
 
 | Name | Contact |
 |---|---|
