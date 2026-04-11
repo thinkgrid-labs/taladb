@@ -6,8 +6,8 @@
  * reference across renders unless db or name changes.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
-import React from 'react'
+import { renderHook, act } from '@testing-library/react'
+import React, { useState } from 'react'
 import { TalaDBProvider } from '../../src/context'
 import { useCollection } from '../../src/useCollection'
 import { createMockDB } from '../helpers/mockCollection'
@@ -72,17 +72,20 @@ describe('useCollection', () => {
     const { db: db1 } = createMockDB()
     const { db: db2 } = createMockDB()
 
-    const { result, rerender } = renderHook(
-      ({ db }: { db: typeof db1 }) => useCollection('notes'),
-      {
-        wrapper: ({ db, children }: { db: typeof db1; children: React.ReactNode }) => (
-          <TalaDBProvider db={db}>{children}</TalaDBProvider>
-        ),
-        initialProps: { db: db1 },
-      },
-    )
+    // @testing-library/react doesn't forward rerender props to the wrapper —
+    // use a stateful wrapper instead so the db can actually change.
+    let setDb!: (db: typeof db1) => void
+    const Wrapper = ({ children }: { children: React.ReactNode }) => {
+      const [db, _set] = useState<typeof db1>(db1)
+      setDb = _set
+      return <TalaDBProvider db={db}>{children}</TalaDBProvider>
+    }
+
+    const { result } = renderHook(() => useCollection('notes'), { wrapper: Wrapper })
     const first = result.current
-    rerender({ db: db2 })
+
+    act(() => setDb(db2))
+
     expect(result.current).not.toBe(first)
   })
 
