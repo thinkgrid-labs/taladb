@@ -421,6 +421,10 @@ fn parse_field_filter(field: &str, expr: &serde_json::Value) -> Option<Filter> {
                 Filter::Nin(field.to_string(), arr)
             }
             "$exists" => Filter::Exists(field.to_string(), val.as_bool().unwrap_or(true)),
+            "$contains" => Filter::Contains(
+                field.to_string(),
+                val.as_str().unwrap_or("").to_string(),
+            ),
             _ => return None,
         };
         filters.push(f);

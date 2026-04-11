@@ -43,6 +43,7 @@
  * dropIndex     { collection, field }
  * createFtsIndex    { collection, field }
  * dropFtsIndex      { collection, field }
+ * listIndexes       { collection }  → JSON { btree, fts, vector }
  * createVectorIndex { collection, field, dimensions, metric?, indexType?, hnswM?, hnswEfConstruction? }
  * dropVectorIndex   { collection, field }
  * upgradeVectorIndex { collection, field }
@@ -315,6 +316,9 @@ async function dispatch(op, args) {
     case 'dropFtsIndex':
       db.dropFtsIndex(args.collection, args.field);
       return null;
+
+    case 'listIndexes':
+      return db.listIndexes(args.collection);
 
     case 'createVectorIndex':
       db.createVectorIndex(

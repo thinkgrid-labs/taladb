@@ -286,6 +286,23 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Returns a JSON string `{ btree: string[], fts: string[], vector: string[] }`
+    /// listing all indexes on the given collection.
+    #[wasm_bindgen(js_name = listIndexes)]
+    pub fn list_indexes(&self, collection: &str) -> Result<String, JsValue> {
+        let info = self
+            .db
+            .collection(collection)
+            .list_indexes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let json = serde_json::json!({
+            "btree": info.btree,
+            "fts": info.fts,
+            "vector": info.vector,
+        });
+        Ok(json.to_string())
+    }
+
     /// Find nearest neighbours. Returns a JSON string of `[{ document, score }]`.
     #[wasm_bindgen(js_name = findNearest)]
     pub fn find_nearest(
@@ -443,6 +460,10 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
                     val.as_array()?.iter().map(json_to_core_value).collect(),
                 ),
                 "$exists" => Filter::Exists(field.clone(), val.as_bool().unwrap_or(true)),
+                "$contains" => Filter::Contains(
+                    field.clone(),
+                    val.as_str().unwrap_or("").to_string(),
+                ),
                 _ => return None,
             };
             filters.push(f);

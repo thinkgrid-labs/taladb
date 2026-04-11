@@ -25,6 +25,16 @@ export interface VectorIndexOptions {
   hnswEfConstruction?: number;
 }
 
+/** Describes the indexes that exist on a collection. */
+export interface CollectionIndexInfo {
+  /** B-tree indexes (created with `createIndex`). */
+  btree: string[];
+  /** Full-text search indexes (created with `createFtsIndex`). */
+  fts: string[];
+  /** Vector indexes (created with `createVectorIndex`). */
+  vector: string[];
+}
+
 /** A single result returned by `Collection.findNearest`. */
 export interface VectorSearchResult<T extends Document = Document> {
   /** The matched document. */
@@ -109,6 +119,13 @@ export interface Collection<T extends Document = Document> {
   createFtsIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   /** Drop a full-text search index. */
   dropFtsIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
+  /**
+   * Return the indexes that currently exist on this collection.
+   *
+   * @example
+   * const { btree, fts, vector } = await notes.listIndexes();
+   */
+  listIndexes(): Promise<CollectionIndexInfo>;
   /**
    * Create a vector index on a numeric-array field.
    *

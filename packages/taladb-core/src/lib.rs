@@ -13,7 +13,7 @@ pub mod vector;
 pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
-pub use collection::{Collection, Update};
+pub use collection::{Collection, CollectionIndexInfo, Update};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;

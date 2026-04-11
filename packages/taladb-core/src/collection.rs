@@ -35,6 +35,13 @@ struct CachedIndexes {
 
 /// An update operation on a document.
 #[derive(Debug, Clone)]
+pub struct CollectionIndexInfo {
+    pub btree: Vec<String>,
+    pub fts: Vec<String>,
+    pub vector: Vec<String>,
+}
+
+#[derive(Clone)]
 pub enum Update {
     /// $set — set or replace field values
     Set(Vec<(String, Value)>),
@@ -188,8 +195,9 @@ impl Collection {
         let meta_key = format!("{}::{}", self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
+        // Idempotent: no-op if already exists
         if wtxn.get(META_FTS_TABLE, meta_key.as_bytes())?.is_some() {
-            return Err(TalaDbError::IndexExists(format!("fts:{}", meta_key)));
+            return Ok(());
         }
 
         let def = FtsDef {
@@ -649,6 +657,14 @@ impl Collection {
             }
         }
         Ok(results)
+    }
+
+    /// Return a description of all indexes on this collection.
+    pub fn list_indexes(&self) -> Result<CollectionIndexInfo, TalaDbError> {
+        let btree = self.load_indexes()?.into_iter().map(|d| d.field).collect();
+        let fts = self.load_fts_indexes()?.into_iter().map(|d| d.field).collect();
+        let vector = self.load_vector_indexes()?.into_iter().map(|d| d.field).collect();
+        Ok(CollectionIndexInfo { btree, fts, vector })
     }
 
     fn load_vector_indexes(&self) -> Result<Vec<VectorDef>, TalaDbError> {
