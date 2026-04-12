@@ -272,7 +272,7 @@ MIT © [thinkgrid-labs](https://github.com/thinkgrid-labs)
 
 ## Sponsors
 
-If you find TalaDB useful, please consider [sponsoring the project](https://github.com/sponsors/thinkgrid-labs). Your support helps us maintain the project and develop new features.
+If you find TalaDB useful, please consider [sponsoring the project](https://github.com/sponsors/thinkgrid-labs). Your support helps me maintain the project and develop new features.
 
 
 ---
