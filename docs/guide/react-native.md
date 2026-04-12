@@ -7,8 +7,8 @@ description: Use TalaDB in React Native apps for local-first document and vector
 
 TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path.
 
-::: warning Beta — in progress
-The React Native package is functional but full end-to-end setup (CocoaPods, Gradle AAR) is still being finalised. The API below is stable and reflects the final shape. Track progress on [GitHub](https://github.com/thinkgrid-labs/taladb).
+::: info Beta
+The React Native package is published and installable. The API is stable and reflects the final shape. Track progress on [GitHub](https://github.com/thinkgrid-labs/taladb).
 :::
 
 ## Requirements
@@ -67,6 +67,47 @@ const all = await users.find()
 ```
 
 That's it. The `taladb` package detects React Native automatically — the same code you write for the browser or Node.js works here too.
+
+## HTTP push sync
+
+Pass a sync config as the second argument to `TalaDBModule.initialize` to automatically push mutation events to a remote endpoint after every write:
+
+```ts
+// App.tsx
+import { TalaDBModule } from '@taladb/react-native'
+import { openDB } from 'taladb'
+
+await TalaDBModule.initialize('myapp.db', JSON.stringify({
+  sync: {
+    enabled: true,
+    endpoint: 'https://api.example.com/taladb-events',
+    headers: { Authorization: `Bearer ${myToken}` },
+    exclude_fields: ['embedding'],  // omit large vector fields
+  },
+}))
+
+const db = await openDB('myapp.db')
+// Every write now fires an HTTP event in the background
+```
+
+After every committed write, TalaDB spawns a background Rust thread and POSTs the event payload to the configured endpoint with up to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). The write path is never blocked.
+
+Per-event endpoint overrides are supported:
+
+```ts
+await TalaDBModule.initialize('myapp.db', JSON.stringify({
+  sync: {
+    enabled: true,
+    endpoint: 'https://api.example.com/events',
+    insert_endpoint: 'https://api.example.com/events/insert',
+    update_endpoint: 'https://api.example.com/events/update',
+    delete_endpoint: 'https://api.example.com/events/delete',
+    headers: { Authorization: 'Bearer YOUR_TOKEN' },
+  },
+}))
+```
+
+See the [HTTP Push Sync guide](/guide/http-sync) for the full config reference, payload shapes, and retry behaviour.
 
 ## Full example
 
@@ -188,7 +229,5 @@ Make sure Xcode command-line tools are active: `xcode-select --install`. Then re
 
 ## Current limitations
 
-- **CocoaPods and Gradle packaging** — the native build pipeline is still being finalised. Pre-built binaries (`libtaladb.a` for iOS, `libtaladb.so` for Android) are not yet published to npm. To use TalaDB in React Native today you need to build the Rust libraries from source (see the [Contributing guide](https://github.com/thinkgrid-labs/taladb/blob/main/CONTRIBUTING.md)).
 - **Expo Go** — not supported. You must use a custom dev client (`expo prebuild`).
-- **HNSW vector index** — available and fully supported on React Native (runs natively on device threads).
 - **Live queries (`subscribe`)** — polling-based on React Native; native file-watch push is planned for a future release.

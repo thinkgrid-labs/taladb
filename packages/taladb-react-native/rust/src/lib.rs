@@ -6,7 +6,7 @@
 //! - Strings out: `*mut c_char` — UTF-8, null-terminated, heap-allocated;
 //!   **caller must free with `taladb_free_string`**.
 //! - Handles: `*mut TalaDbHandle` — opaque pointer; create with
-//!   `taladb_open`, destroy with `taladb_close`.
+//!   `taladb_open` / `taladb_open_with_config`, destroy with `taladb_close`.
 //! - Errors: string functions return `NULL` on error;
 //!   integer functions return `-1` on error.
 //!
@@ -19,8 +19,8 @@
 //! - Raw pointer arguments must be either null or point to valid, aligned,
 //!   live memory for the duration of the call.
 //! - `*const c_char` arguments must be null-terminated UTF-8 C strings.
-//! - `*mut TalaDbHandle` must have been obtained from `taladb_open` and not
-//!   yet passed to `taladb_close`.
+//! - `*mut TalaDbHandle` must have been obtained from `taladb_open` /
+//!   `taladb_open_with_config` and not yet passed to `taladb_close`.
 //! - `*mut c_char` return values must be freed with `taladb_free_string`.
 
 // Safety contract is documented at the module level above.
@@ -30,8 +30,9 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::Path;
+use std::sync::Arc;
 
-use taladb_core::{Database, Filter, Update, Value};
+use taladb_core::{Database, Filter, HttpSyncHook, SyncHook, TalaDbConfig, Update, Value};
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -62,6 +63,19 @@ pub extern "C" fn taladb_last_error() -> *const c_char {
 
 pub struct TalaDbHandle {
     db: Database,
+    sync_hook: Option<Arc<dyn SyncHook>>,
+}
+
+impl TalaDbHandle {
+    /// Get a collection, attaching the sync hook when one is configured.
+    fn collection(&self, name: &str) -> taladb_core::Collection {
+        let col = self.db.collection(name);
+        if let Some(hook) = &self.sync_hook {
+            col.with_sync_hook(Arc::clone(hook))
+        } else {
+            col
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +93,50 @@ pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
         Err(_) => return std::ptr::null_mut(),
     };
     match Database::open(Path::new(path_str)) {
-        Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db })),
+        Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db, sync_hook: None })),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Open (or create) a TalaDB database at `path` with HTTP push sync config.
+///
+/// `config_json` — JSON-serialised `TalaDbConfig`, or NULL to open without sync.
+///
+/// Returns an opaque handle, or NULL on failure.
+/// The handle must be freed with `taladb_close`.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_open_with_config(
+    path: *const c_char,
+    config_json: *const c_char,
+) -> *mut TalaDbHandle {
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let sync_hook: Option<Arc<dyn SyncHook>> = if !config_json.is_null() {
+        match unsafe { CStr::from_ptr(config_json) }.to_str() {
+            Ok(json_str) => match serde_json::from_str::<TalaDbConfig>(json_str) {
+                Ok(config) => {
+                    if config.sync.enabled {
+                        Some(Arc::new(HttpSyncHook::new(config.sync)) as Arc<dyn SyncHook>)
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    set_last_error(format!("invalid config JSON: {e}"));
+                    return std::ptr::null_mut();
+                }
+            },
+            Err(_) => return std::ptr::null_mut(),
+        }
+    } else {
+        None
+    };
+
+    match Database::open(Path::new(path_str)) {
+        Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db, sync_hook })),
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -113,7 +170,7 @@ pub unsafe extern "C" fn taladb_insert(
     collection: *const c_char,
     doc_json: *const c_char,
 ) -> *mut c_char {
-    let (db, col_name, json) = match parse_args(handle, collection, doc_json) {
+    let (h, col_name, json) = match parse_handle_args(handle, collection, doc_json) {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
@@ -121,7 +178,7 @@ pub unsafe extern "C" fn taladb_insert(
         Some(f) => f,
         None => return std::ptr::null_mut(),
     };
-    match db.collection(&col_name).insert(fields) {
+    match h.collection(&col_name).insert(fields) {
         Ok(id) => to_cstring(id.to_string()),
         Err(e) => {
             set_last_error(e.to_string());
@@ -139,7 +196,7 @@ pub unsafe extern "C" fn taladb_insert_many(
     collection: *const c_char,
     docs_json: *const c_char,
 ) -> *mut c_char {
-    let (db, col_name, json) = match parse_args(handle, collection, docs_json) {
+    let (h, col_name, json) = match parse_handle_args(handle, collection, docs_json) {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
@@ -151,7 +208,7 @@ pub unsafe extern "C" fn taladb_insert_many(
         .iter()
         .filter_map(|v| json_to_fields(&v.to_string()))
         .collect();
-    match db.collection(&col_name).insert_many(items) {
+    match h.collection(&col_name).insert_many(items) {
         Ok(ids) => {
             let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
             to_cstring(serde_json::to_string(&id_strs).unwrap_or_default())
@@ -177,7 +234,7 @@ pub unsafe extern "C" fn taladb_find(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> *mut c_char {
-    let (db, col_name, json) = match parse_args(handle, collection, filter_json) {
+    let (db, col_name, json) = match parse_db_args(handle, collection, filter_json) {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
@@ -202,7 +259,7 @@ pub unsafe extern "C" fn taladb_find_one(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> *mut c_char {
-    let (db, col_name, json) = match parse_args(handle, collection, filter_json) {
+    let (db, col_name, json) = match parse_db_args(handle, collection, filter_json) {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
@@ -238,7 +295,7 @@ pub unsafe extern "C" fn taladb_update_one(
         (Some(h), Some(col), Some(fs), Some(us)) => {
             let filter = parse_filter(&fs);
             match parse_update(&us) {
-                Some(update) => match h.db.collection(&col).update_one(filter, update) {
+                Some(update) => match h.collection(&col).update_one(filter, update) {
                     Ok(true) => 1,
                     Ok(false) => 0,
                     Err(e) => {
@@ -270,7 +327,7 @@ pub unsafe extern "C" fn taladb_update_many(
         (Some(h), Some(col), Some(fs), Some(us)) => {
             let filter = parse_filter(&fs);
             match parse_update(&us) {
-                Some(update) => match h.db.collection(&col).update_many(filter, update) {
+                Some(update) => match h.collection(&col).update_many(filter, update) {
                     Ok(n) => n as i32,
                     Err(e) => {
                         set_last_error(e.to_string());
@@ -296,11 +353,11 @@ pub unsafe extern "C" fn taladb_delete_one(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> i32 {
-    let (db, col_name, json) = match parse_args(handle, collection, filter_json) {
+    let (h, col_name, json) = match parse_handle_args(handle, collection, filter_json) {
         Some(t) => t,
         None => return -1,
     };
-    match db.collection(&col_name).delete_one(parse_filter(&json)) {
+    match h.collection(&col_name).delete_one(parse_filter(&json)) {
         Ok(true) => 1,
         Ok(false) => 0,
         Err(e) => {
@@ -318,11 +375,11 @@ pub unsafe extern "C" fn taladb_delete_many(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> i32 {
-    let (db, col_name, json) = match parse_args(handle, collection, filter_json) {
+    let (h, col_name, json) = match parse_handle_args(handle, collection, filter_json) {
         Some(t) => t,
         None => return -1,
     };
-    match db.collection(&col_name).delete_many(parse_filter(&json)) {
+    match h.collection(&col_name).delete_many(parse_filter(&json)) {
         Ok(n) => n as i32,
         Err(e) => {
             set_last_error(e.to_string());
@@ -343,7 +400,7 @@ pub unsafe extern "C" fn taladb_count(
     collection: *const c_char,
     filter_json: *const c_char,
 ) -> i32 {
-    let (db, col_name, json) = match parse_args(handle, collection, filter_json) {
+    let (db, col_name, json) = match parse_db_args(handle, collection, filter_json) {
         Some(t) => t,
         None => return -1,
     };
@@ -453,9 +510,22 @@ fn to_cstring(s: String) -> *mut c_char {
     }
 }
 
-/// Convenience: validate handle + parse two C string args.
-/// Returns a reference to the inner `Database` (not the wrapper) for ergonomic use.
-fn parse_args<'a>(
+/// Convenience for write-path functions: returns `(&TalaDbHandle, col_name, extra_str)`.
+fn parse_handle_args<'a>(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    extra: *const c_char,
+) -> Option<(&'a TalaDbHandle, String, String)> {
+    Some((
+        ptr_to_ref(handle)?,
+        cstr_to_string(collection)?,
+        cstr_to_string(extra)?,
+    ))
+}
+
+/// Convenience for read-path functions: returns `(&Database, col_name, extra_str)`.
+/// Read-path operations don't need the sync hook.
+fn parse_db_args<'a>(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
     extra: *const c_char,

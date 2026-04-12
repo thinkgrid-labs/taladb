@@ -89,10 +89,8 @@ fn nested_field_non_object_parent_returns_no_match() {
     let col = db.collection("non_obj");
 
     // "address" is a string, not an object — dot lookup should not panic
-    col.insert(vec![
-        ("address".into(), Value::Str("flat string".into())),
-    ])
-    .unwrap();
+    col.insert(vec![("address".into(), Value::Str("flat string".into()))])
+        .unwrap();
 
     let results = col
         .find(Filter::Eq(
@@ -145,9 +143,7 @@ fn nested_field_exists_filter() {
     .unwrap();
     col.insert(vec![("other".into(), Value::Int(1))]).unwrap();
 
-    let results = col
-        .find(Filter::Exists("meta.score".into(), true))
-        .unwrap();
+    let results = col.find(Filter::Exists("meta.score".into(), true)).unwrap();
     assert_eq!(results.len(), 1);
 
     let absent = col
@@ -242,19 +238,19 @@ fn regex_anchors_and_character_classes() {
     let db = db();
     let col = db.collection("greet");
 
-    col.insert(vec![("code".into(), Value::Str("ABC-123".into()))]).unwrap();
-    col.insert(vec![("code".into(), Value::Str("abc-456".into()))]).unwrap();
-    col.insert(vec![("code".into(), Value::Str("ABC-XYZ".into()))]).unwrap();
+    col.insert(vec![("code".into(), Value::Str("ABC-123".into()))])
+        .unwrap();
+    col.insert(vec![("code".into(), Value::Str("abc-456".into()))])
+        .unwrap();
+    col.insert(vec![("code".into(), Value::Str("ABC-XYZ".into()))])
+        .unwrap();
 
     // Match codes that are uppercase letters followed by digits
     let results = col
         .find(Filter::Regex("code".into(), r"^[A-Z]+-\d+$".into()))
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("code"),
-        Some(&Value::Str("ABC-123".into()))
-    );
+    assert_eq!(results[0].get("code"), Some(&Value::Str("ABC-123".into())));
 }
 
 #[test]
@@ -264,9 +260,7 @@ fn regex_on_non_string_field_returns_empty() {
 
     col.insert(vec![("n".into(), Value::Int(42))]).unwrap();
 
-    let results = col
-        .find(Filter::Regex("n".into(), r"42".into()))
-        .unwrap();
+    let results = col.find(Filter::Regex("n".into(), r"42".into())).unwrap();
     assert!(results.is_empty());
 }
 
@@ -428,7 +422,10 @@ fn multi_field_sort() {
         })
         .collect();
     // dept asc → eng (80,70 desc), hr (90,60 desc)
-    assert_eq!(pairs, vec![("eng", 80), ("eng", 70), ("hr", 90), ("hr", 60)]);
+    assert_eq!(
+        pairs,
+        vec![("eng", 80), ("eng", 70), ("hr", 90), ("hr", 60)]
+    );
 }
 
 #[test]
@@ -491,7 +488,10 @@ fn pagination_with_filter() {
         fields: None,
     };
     let results = col
-        .find_with_options(Filter::Eq("status".into(), Value::Str("active".into())), opts)
+        .find_with_options(
+            Filter::Eq("status".into(), Value::Str("active".into())),
+            opts,
+        )
         .unwrap();
     let ns: Vec<i64> = results
         .iter()
@@ -738,7 +738,8 @@ fn compound_index_doc_missing_field_not_indexed() {
     col.create_compound_index(&["a", "b"]).unwrap();
 
     // This doc is missing field "b" — should not be in the index
-    col.insert(vec![("a".into(), Value::Str("only_a".into()))]).unwrap();
+    col.insert(vec![("a".into(), Value::Str("only_a".into()))])
+        .unwrap();
 
     // The doc should still be findable via full scan on field "a"
     let results = col
@@ -1096,10 +1097,7 @@ fn aggregate_match_uses_secondary_index() {
 
     let results = col
         .aggregate(vec![
-            Stage::Match(Filter::Eq(
-                "status".into(),
-                Value::Str("active".into()),
-            )),
+            Stage::Match(Filter::Eq("status".into(), Value::Str("active".into()))),
             Stage::Group {
                 key: GroupKey::Null,
                 accumulators: vec![("total".into(), Accumulator::Sum("n".into()))],

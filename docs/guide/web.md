@@ -12,10 +12,10 @@ TalaDB runs in the browser as a WebAssembly module compiled from the same Rust c
 | Feature | Chrome | Firefox | Safari |
 |---|---|---|---|
 | WASM (in-memory) | 79+ | 78+ | 14+ |
-| OPFS (persistent) | 86+ | 111+ | 15.2+ |
-| Full persistence | 86+ | 111+ | 16.4+ |
+| OPFS (fastest persistence) | 86+ | 111+ | 15.2+ |
+| IndexedDB fallback (persistence without OPFS) | 79+ | 78+ | 14+ |
 
-On browsers without OPFS support, TalaDB falls back to an in-memory database automatically. Data is not persisted across page reloads in that case.
+On browsers without OPFS, TalaDB automatically falls back to an IndexedDB-backed database. Data still persists across page reloads — writes are a bit slower because each one flushes a snapshot to IndexedDB.
 
 ## Installation
 
@@ -61,6 +61,54 @@ const all = await users.find()
 ```
 
 That's all the setup you need. `openDB` detects the browser automatically, opens a persistent OPFS database named `myapp.db`, and returns a collection API identical to Node.js and React Native.
+
+## HTTP push sync
+
+Pass a `config` option to `openDB` to push mutation events to a remote endpoint after every write:
+
+```ts
+import { openDB } from 'taladb'
+
+const db = await openDB('myapp.db', {
+  config: {
+    sync: {
+      enabled: true,
+      endpoint: 'https://api.example.com/taladb-events',
+      headers: { Authorization: `Bearer ${myToken}` },
+      exclude_fields: ['embedding'],  // omit large vector fields
+    },
+  },
+})
+
+// Every write now fires an HTTP event in the background
+const users = db.collection('users')
+await users.insert({ name: 'Alice', role: 'admin' })
+```
+
+After every committed write, TalaDB fires a background `fetch` on the JS microtask queue and POSTs the event payload to the configured endpoint with up to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). Writes are never blocked.
+
+::: warning Tab lifetime
+In-flight sync requests are subject to normal browser fetch constraints. If the user closes the tab during a retry sequence, any remaining attempts are lost. Sync is best-effort by design.
+:::
+
+Per-event endpoint overrides are supported:
+
+```ts
+const db = await openDB('myapp.db', {
+  config: {
+    sync: {
+      enabled: true,
+      endpoint: 'https://api.example.com/events',
+      insert_endpoint: 'https://api.example.com/events/insert',
+      update_endpoint: 'https://api.example.com/events/update',
+      delete_endpoint: 'https://api.example.com/events/delete',
+      headers: { Authorization: 'Bearer YOUR_TOKEN' },
+    },
+  },
+})
+```
+
+See the [HTTP Push Sync guide](/guide/http-sync) for the full config reference, payload shapes, and retry behaviour.
 
 ## Defining your schema
 
@@ -300,5 +348,4 @@ await db.close()
 ## Current limitations
 
 - **HNSW vector index** — not available in the browser. The HNSW algorithm uses `rayon` for parallelism which requires native threads. Calling `createVectorIndex({ indexType: 'hnsw' })` or `upgradeVectorIndex()` in the browser throws a clear error. Flat (brute-force) vector search works fine for collections up to ~100k vectors.
-- **Multi-tab writes** — only the first tab to open the database gets OPFS write access. Additional tabs open a live read replica synced via `BroadcastChannel`. Writes from any tab are reflected across all tabs automatically.
-- **In-memory fallback** — on browsers without OPFS (or when OPFS is unavailable), data is stored in memory only and lost on page reload.
+- **Multi-tab writes** — only the first tab to open the database holds the exclusive OPFS file lock (via the Web Locks API). Additional tabs fall back to an IndexedDB-backed in-memory copy that stays fresh as the primary tab writes. Writes from secondary tabs are local only — they are not synced back to the primary tab or to OPFS.

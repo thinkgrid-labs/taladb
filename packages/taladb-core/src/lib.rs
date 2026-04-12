@@ -1,10 +1,13 @@
 pub mod aggregate;
 pub mod collection;
+pub mod config;
 pub mod crypto;
 pub mod document;
 pub mod engine;
 pub mod error;
 pub mod fts;
+#[cfg(feature = "sync-http")]
+pub mod http_sync;
 pub mod index;
 pub mod migration;
 pub mod query;
@@ -14,12 +17,16 @@ pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
 pub use collection::{Collection, CollectionIndexInfo, Update};
+pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
+#[cfg(feature = "sync-http")]
+pub use http_sync::HttpSyncHook;
 pub use migration::{run_migrations, Migration};
 pub use query::options::{FindOptions, SortDirection, SortSpec};
 pub use query::Filter;
+pub use sync::{NoopSyncHook, SyncEvent, SyncHook};
 pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 
 use std::path::Path;

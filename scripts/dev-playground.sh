@@ -28,6 +28,9 @@ rm -f "$REPO/packages/taladb-web/pkg/.gitignore"
 echo "==> Building TypeScript (taladb)..."
 (cd "$REPO/packages/taladb" && pnpm exec tsup)
 
+echo "==> Building React hooks (@taladb/react)..."
+(cd "$REPO/packages/taladb-react" && pnpm exec tsup)
+
 echo "==> Patching playground node_modules..."
 
 # @taladb/web — copy pkg/ and worker/
@@ -37,11 +40,20 @@ cp -r "$REPO/packages/taladb-web/pkg"    "$WEB_NM/pkg"
 rm -rf "$WEB_NM/worker"
 cp -r "$REPO/packages/taladb-web/worker" "$WEB_NM/worker"
 
-# taladb — copy src/ and dist/
+# taladb — copy src/, dist/, and package.json (package.json carries the
+# `exports` field with the `browser` condition for index.browser.mjs)
 TALADB_NM="$PLAYGROUND/node_modules/taladb"
 rm -rf "$TALADB_NM/dist" "$TALADB_NM/src"
-cp -r "$REPO/packages/taladb/dist" "$TALADB_NM/dist"
-cp -r "$REPO/packages/taladb/src"  "$TALADB_NM/src"
+cp -r "$REPO/packages/taladb/dist"        "$TALADB_NM/dist"
+cp -r "$REPO/packages/taladb/src"         "$TALADB_NM/src"
+cp    "$REPO/packages/taladb/package.json" "$TALADB_NM/package.json"
+
+# @taladb/react — copy dist/ and package.json
+REACT_NM="$PLAYGROUND/node_modules/@taladb/react"
+mkdir -p "$REACT_NM"
+rm -rf "$REACT_NM/dist"
+cp -r "$REPO/packages/taladb-react/dist"        "$REACT_NM/dist"
+cp    "$REPO/packages/taladb-react/package.json" "$REACT_NM/package.json"
 
 echo ""
 echo "Done. Run the playground:"

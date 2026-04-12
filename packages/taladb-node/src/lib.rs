@@ -1,6 +1,10 @@
 use napi_derive::napi;
 use serde_json::Value as JsonValue;
-use taladb_core::{Collection, Database, Filter, HnswOptions, TalaDbError, Update, Value, VectorMetric};
+use std::sync::Arc;
+use taladb_core::{
+    Collection, Database, Filter, HnswOptions, HttpSyncHook, TalaDbConfig, TalaDbError, Update,
+    Value, VectorMetric,
+};
 
 fn err_to_napi(e: TalaDbError) -> napi::Error {
     let code = match &e {
@@ -19,6 +23,7 @@ fn err_to_napi(e: TalaDbError) -> napi::Error {
         TalaDbError::VectorIndexNotFound(_) => "VectorIndexNotFound",
         TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
         TalaDbError::InvalidOperation(_) => "InvalidOperation",
+        TalaDbError::Config(_) => "Config",
     };
     napi::Error::from_reason(format!("{}: {}", code, e))
 }
@@ -272,6 +277,7 @@ fn parse_hnsw_opts(
 #[napi]
 pub struct TalaDBNode {
     inner: Database,
+    sync_hook: Option<Arc<dyn taladb_core::SyncHook>>,
 }
 
 #[napi]
@@ -280,23 +286,65 @@ impl TalaDBNode {
     #[napi(factory)]
     pub fn open_in_memory() -> napi::Result<Self> {
         let db = Database::open_in_memory().map_err(err_to_napi)?;
-        Ok(TalaDBNode { inner: db })
+        Ok(TalaDBNode {
+            inner: db,
+            sync_hook: None,
+        })
     }
 
     /// Open a file-backed database at the given path.
+    ///
+    /// Pass an optional JSON-serialised `TalaDbConfig` as `config_json` to
+    /// activate HTTP push sync. When `sync.enabled` is `true` and the
+    /// `sync-http` feature is compiled in, an `HttpSyncHook` is attached to
+    /// every collection returned by `collection()`.
     #[napi(factory)]
-    pub fn open(path: String) -> napi::Result<Self> {
+    pub fn open(path: String, config_json: Option<String>) -> napi::Result<Self> {
         let db = Database::open(std::path::Path::new(&path)).map_err(err_to_napi)?;
-        Ok(TalaDBNode { inner: db })
+        let sync_hook = build_sync_hook(config_json)?;
+        Ok(TalaDBNode {
+            inner: db,
+            sync_hook,
+        })
     }
 
-    /// Get a collection by name.
+    /// Get a collection by name. If an HTTP sync hook is configured it is
+    /// automatically attached to the returned collection.
     #[napi]
     pub fn collection(&self, name: String) -> CollectionNode {
         let col = self.inner.collection(&name);
+        let col = match &self.sync_hook {
+            Some(hook) => col.with_sync_hook(Arc::clone(hook)),
+            None => col,
+        };
         CollectionNode { inner: col }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sync hook builder
+// ---------------------------------------------------------------------------
+
+/// Parse an optional JSON config string and build an `HttpSyncHook` when
+/// `sync.enabled = true`. Returns `None` when config is absent or disabled.
+fn build_sync_hook(
+    config_json: Option<String>,
+) -> napi::Result<Option<Arc<dyn taladb_core::SyncHook>>> {
+    if let Some(json) = config_json {
+        let config: TalaDbConfig = serde_json::from_str(&json)
+            .map_err(|e| napi::Error::from_reason(format!("invalid config JSON: {e}")))?;
+        config.validate().map_err(err_to_napi)?;
+        if config.sync.enabled {
+            let hook: Arc<dyn taladb_core::SyncHook> = Arc::new(HttpSyncHook::new(config.sync));
+            return Ok(Some(hook));
+        }
+    }
+    Ok(None)
+}
+
+// ---------------------------------------------------------------------------
+// CollectionNode
+// ---------------------------------------------------------------------------
 
 #[napi]
 pub struct CollectionNode {
@@ -423,9 +471,7 @@ impl CollectionNode {
     /// No-op when the feature is disabled or the index is flat-only.
     #[napi(js_name = "upgradeVectorIndex")]
     pub fn upgrade_vector_index(&self, field: String) -> napi::Result<()> {
-        self.inner
-            .upgrade_vector_index(&field)
-            .map_err(err_to_napi)
+        self.inner.upgrade_vector_index(&field).map_err(err_to_napi)
     }
 
     /// Find the `top_k` nearest documents to `query`.

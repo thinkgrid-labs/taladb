@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build the Rust C FFI crate for iOS targets and lipo into a fat static lib.
+# Build the Rust C FFI crate for iOS targets and produce:
+#   ios/TalaDBFfi.xcframework  — used by the podspec (Xcode 12+)
+#   ios/libtaladb_ffi.a        — fat static lib (fallback for manual linking)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
