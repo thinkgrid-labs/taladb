@@ -101,8 +101,8 @@ export async function loadConfig(configPath?: string): Promise<TalaDbConfig> {
     return {};
   }
 
-  const { join, extname } = await import('node:path');
-  const { readFile, access } = await import('node:fs/promises');
+  const { join, extname } = await import(/* @vite-ignore */ 'node:path');
+  const { readFile, access } = await import(/* @vite-ignore */ 'node:fs/promises');
 
   async function parseFile(filePath: string): Promise<TalaDbConfig> {
     const content = await readFile(filePath, 'utf8');
@@ -113,7 +113,7 @@ export async function loadConfig(configPath?: string): Promise<TalaDbConfig> {
       raw = JSON.parse(content);
     } else if (ext === '.yml' || ext === '.yaml') {
       // Dynamic import so the js-yaml parse cost is only paid when needed.
-      const yaml = await import('js-yaml');
+      const yaml = await import(/* @vite-ignore */ 'js-yaml');
       raw = yaml.load(content);
     } else {
       throw new Error(
