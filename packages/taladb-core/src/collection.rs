@@ -7,7 +7,6 @@ use crate::aggregate::{execute_pipeline, Stage};
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
-use crate::sync::{SyncEvent, SyncHook};
 use crate::fts::{encode_fts_key, fts_table_name, tokenize, FtsDef};
 use crate::index::{
     compound_meta_key, compound_table_name, docs_table_name, encode_compound_key, encode_index_key,
@@ -18,6 +17,7 @@ use crate::query::executor::execute;
 use crate::query::filter::Filter;
 use crate::query::options::{project_document, sort_documents, FindOptions};
 use crate::query::planner::plan_full;
+use crate::sync::{SyncEvent, SyncHook};
 #[cfg(feature = "vector-hnsw")]
 use crate::vector::{build_hnsw, search_hnsw, SharedHnswCache};
 use crate::vector::{
@@ -673,8 +673,16 @@ impl Collection {
     /// Return a description of all indexes on this collection.
     pub fn list_indexes(&self) -> Result<CollectionIndexInfo, TalaDbError> {
         let btree = self.load_indexes()?.into_iter().map(|d| d.field).collect();
-        let fts = self.load_fts_indexes()?.into_iter().map(|d| d.field).collect();
-        let vector = self.load_vector_indexes()?.into_iter().map(|d| d.field).collect();
+        let fts = self
+            .load_fts_indexes()?
+            .into_iter()
+            .map(|d| d.field)
+            .collect();
+        let vector = self
+            .load_vector_indexes()?
+            .into_iter()
+            .map(|d| d.field)
+            .collect();
         Ok(CollectionIndexInfo { btree, fts, vector })
     }
 
@@ -1391,7 +1399,9 @@ mod tests {
 
     fn hooked(db: &Database, name: &str) -> (Collection, Arc<RecordingSyncHook>) {
         let hook = Arc::new(RecordingSyncHook::new());
-        let col = db.collection(name).with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
+        let col = db
+            .collection(name)
+            .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
         (col, hook)
     }
 
@@ -1401,11 +1411,17 @@ mod tests {
     fn insert_fires_insert_event() {
         let db = db();
         let (col, hook) = hooked(&db, "items");
-        let id = col.insert(vec![("name".into(), Value::Str("Alice".into()))]).unwrap();
+        let id = col
+            .insert(vec![("name".into(), Value::Str("Alice".into()))])
+            .unwrap();
         let events = hook.take();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            SyncEvent::Insert { collection, id: eid, document } => {
+            SyncEvent::Insert {
+                collection,
+                id: eid,
+                document,
+            } => {
                 assert_eq!(collection, "items");
                 assert_eq!(eid, &id.to_string());
                 assert_eq!(document.get("name"), Some(&Value::Str("Alice".into())));
@@ -1466,7 +1482,11 @@ mod tests {
         let events = hook.take();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            SyncEvent::Update { collection, changes, .. } => {
+            SyncEvent::Update {
+                collection,
+                changes,
+                ..
+            } => {
                 assert_eq!(collection, "items");
                 // Only the changed field
                 assert_eq!(changes.get("score"), Some(&Value::Int(20)));
@@ -1523,8 +1543,14 @@ mod tests {
         let db = db();
         let (col, hook) = hooked(&db, "items");
         col.insert_many(vec![
-            vec![("active".into(), Value::Bool(true)), ("v".into(), Value::Int(1))],
-            vec![("active".into(), Value::Bool(true)), ("v".into(), Value::Int(2))],
+            vec![
+                ("active".into(), Value::Bool(true)),
+                ("v".into(), Value::Int(1)),
+            ],
+            vec![
+                ("active".into(), Value::Bool(true)),
+                ("v".into(), Value::Int(2)),
+            ],
         ])
         .unwrap();
         hook.take();
@@ -1559,12 +1585,16 @@ mod tests {
         let id = col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
         hook.take();
 
-        col.delete_one(Filter::Eq("x".into(), Value::Int(1))).unwrap();
+        col.delete_one(Filter::Eq("x".into(), Value::Int(1)))
+            .unwrap();
 
         let events = hook.take();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            SyncEvent::Delete { collection, id: eid } => {
+            SyncEvent::Delete {
+                collection,
+                id: eid,
+            } => {
                 assert_eq!(collection, "items");
                 assert_eq!(eid, &id.to_string());
             }
@@ -1576,7 +1606,8 @@ mod tests {
     fn delete_one_no_match_fires_no_event() {
         let db = db();
         let (col, hook) = hooked(&db, "items");
-        col.delete_one(Filter::Eq("x".into(), Value::Int(999))).unwrap();
+        col.delete_one(Filter::Eq("x".into(), Value::Int(999)))
+            .unwrap();
         assert_eq!(hook.len(), 0);
     }
 

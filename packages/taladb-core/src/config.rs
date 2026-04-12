@@ -62,6 +62,16 @@ pub struct SyncConfig {
 
     /// Override the endpoint for `delete` events only.
     pub delete_endpoint: Option<String>,
+
+    /// Document fields to omit from every outgoing sync payload.
+    ///
+    /// Useful for stripping large computed fields such as embedding vectors
+    /// that the remote endpoint doesn't need and shouldn't pay to transmit.
+    ///
+    /// Fields listed here are silently ignored if they are absent from the
+    /// document — no error is raised.
+    #[serde(default)]
+    pub exclude_fields: Vec<String>,
 }
 
 /// Top-level TalaDB configuration (from `taladb.config.yml` / `taladb.config.json`).
@@ -112,10 +122,7 @@ impl TalaDbConfig {
 /// cannot be parsed, or fails validation.
 pub fn load_from_path(path: &Path) -> Result<TalaDbConfig, TalaDbError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
-        TalaDbError::Config(format!(
-            "failed to read config at {}: {e}",
-            path.display()
-        ))
+        TalaDbError::Config(format!("failed to read config at {}: {e}", path.display()))
     })?;
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -198,8 +205,14 @@ sync:
             cfg.sync.endpoint.as_deref(),
             Some("https://api.example.com/hook")
         );
-        assert_eq!(cfg.sync.headers.get("Authorization").map(String::as_str), Some("Bearer token123"));
-        assert_eq!(cfg.sync.headers.get("X-Custom").map(String::as_str), Some("value"));
+        assert_eq!(
+            cfg.sync.headers.get("Authorization").map(String::as_str),
+            Some("Bearer token123")
+        );
+        assert_eq!(
+            cfg.sync.headers.get("X-Custom").map(String::as_str),
+            Some("value")
+        );
     }
 
     #[test]
@@ -251,7 +264,10 @@ sync:
         )
         .unwrap();
         let cfg = load_auto(dir.path()).unwrap();
-        assert_eq!(cfg.sync.endpoint.as_deref(), Some("https://yml.example.com"));
+        assert_eq!(
+            cfg.sync.endpoint.as_deref(),
+            Some("https://yml.example.com")
+        );
     }
 
     #[test]
@@ -329,5 +345,36 @@ sync:
         let f = write_tmp("sync:\n  enabled: true\n", "toml");
         let err = load_from_path(f.path()).unwrap_err();
         assert!(err.to_string().contains("unsupported config extension"));
+    }
+
+    #[test]
+    fn parses_exclude_fields() {
+        let f = write_tmp(
+            r#"
+sync:
+  enabled: true
+  endpoint: "https://api.example.com/events"
+  exclude_fields:
+    - embedding
+    - clip_vector
+    - internal_score
+"#,
+            "yml",
+        );
+        let cfg = load_from_path(f.path()).unwrap();
+        assert_eq!(
+            cfg.sync.exclude_fields,
+            vec!["embedding", "clip_vector", "internal_score"]
+        );
+    }
+
+    #[test]
+    fn exclude_fields_defaults_to_empty() {
+        let f = write_tmp(
+            "sync:\n  enabled: true\n  endpoint: \"https://api.example.com\"\n",
+            "yml",
+        );
+        let cfg = load_from_path(f.path()).unwrap();
+        assert!(cfg.sync.exclude_fields.is_empty());
     }
 }

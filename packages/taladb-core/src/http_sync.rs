@@ -101,7 +101,7 @@ impl SyncHook for HttpSyncHook {
         let Some(endpoint) = self.endpoint_for(&event) else {
             return;
         };
-        let payload = event_to_payload(event);
+        let payload = event_to_payload(event, &self.config.exclude_fields);
         let headers = self.config.headers.clone();
 
         // The reqwest::blocking::Client is created inside the spawned thread.
@@ -125,7 +125,7 @@ impl SyncHook for HttpSyncHook {
 // Payload builder
 // ---------------------------------------------------------------------------
 
-pub(crate) fn event_to_payload(event: SyncEvent) -> JsonValue {
+pub(crate) fn event_to_payload(event: SyncEvent, exclude: &[String]) -> JsonValue {
     let ts = now_ms();
     match event {
         SyncEvent::Insert {
@@ -136,7 +136,7 @@ pub(crate) fn event_to_payload(event: SyncEvent) -> JsonValue {
             "_taladb_event": "insert",
             "collection": collection,
             "id": id,
-            "document": doc_fields_to_json(&document),
+            "document": doc_fields_to_json(&document, exclude),
             "timestamp": ts,
         }),
         SyncEvent::Update {
@@ -147,7 +147,7 @@ pub(crate) fn event_to_payload(event: SyncEvent) -> JsonValue {
             "_taladb_event": "update",
             "collection": collection,
             "id": id,
-            "changes": map_to_json(&changes),
+            "changes": map_to_json(&changes, exclude),
             "timestamp": ts,
         }),
         SyncEvent::Delete { collection, id } => json!({
@@ -159,19 +159,25 @@ pub(crate) fn event_to_payload(event: SyncEvent) -> JsonValue {
     }
 }
 
-/// Convert a document's fields (not including `_id`) to a JSON object.
-fn doc_fields_to_json(doc: &Document) -> JsonValue {
+/// Convert a document's fields (not including `_id`) to a JSON object,
+/// omitting any field listed in `exclude`.
+fn doc_fields_to_json(doc: &Document, exclude: &[String]) -> JsonValue {
     let mut obj = Map::new();
     for (k, v) in &doc.fields {
-        obj.insert(k.clone(), value_to_json(v));
+        if !exclude.contains(k) {
+            obj.insert(k.clone(), value_to_json(v));
+        }
     }
     JsonValue::Object(obj)
 }
 
-fn map_to_json(fields: &HashMap<String, Value>) -> JsonValue {
+/// Convert a field map to a JSON object, omitting any field listed in `exclude`.
+fn map_to_json(fields: &HashMap<String, Value>, exclude: &[String]) -> JsonValue {
     let mut obj = Map::new();
     for (k, v) in fields {
-        obj.insert(k.clone(), value_to_json(v));
+        if !exclude.contains(k) {
+            obj.insert(k.clone(), value_to_json(v));
+        }
     }
     JsonValue::Object(obj)
 }
@@ -249,9 +255,9 @@ fn fire_with_retry(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-    use std::sync::Arc;
     use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -286,7 +292,7 @@ mod tests {
             id: doc.id.to_string(),
             document: doc,
         };
-        let p = event_to_payload(event);
+        let p = event_to_payload(event, &[]);
         assert_eq!(p["_taladb_event"], "insert");
         assert_eq!(p["collection"], "users");
         assert_eq!(p["document"]["name"], "Alice");
@@ -308,7 +314,7 @@ mod tests {
             .into_iter()
             .collect(),
         };
-        let p = event_to_payload(event);
+        let p = event_to_payload(event, &[]);
         assert_eq!(p["_taladb_event"], "update");
         assert_eq!(p["changes"]["age"], 31);
         assert!(p["changes"]["old_field"].is_null());
@@ -323,12 +329,98 @@ mod tests {
             collection: "items".into(),
             id: "xyz".into(),
         };
-        let p = event_to_payload(event);
+        let p = event_to_payload(event, &[]);
         assert_eq!(p["_taladb_event"], "delete");
         assert_eq!(p["collection"], "items");
         assert_eq!(p["id"], "xyz");
         assert!(p.get("document").is_none());
         assert!(p.get("changes").is_none());
+    }
+
+    // ── exclude_fields ───────────────────────────────────────────────────────
+
+    #[test]
+    fn exclude_fields_stripped_from_insert() {
+        use crate::document::Document;
+        use crate::sync::SyncEvent;
+
+        let doc = Document::new(vec![
+            ("title".into(), Value::Str("Hello".into())),
+            ("embedding".into(), Value::Array(vec![Value::Float(0.1), Value::Float(0.2)])),
+            ("score".into(), Value::Float(0.99)),
+        ]);
+        let event = SyncEvent::Insert {
+            collection: "articles".into(),
+            id: doc.id.to_string(),
+            document: doc,
+        };
+        let exclude = vec!["embedding".to_string(), "score".to_string()];
+        let p = event_to_payload(event, &exclude);
+
+        // Excluded fields absent.
+        assert!(p["document"].get("embedding").is_none());
+        assert!(p["document"].get("score").is_none());
+        // Non-excluded field present.
+        assert_eq!(p["document"]["title"], "Hello");
+    }
+
+    #[test]
+    fn exclude_fields_stripped_from_update_changes() {
+        use crate::sync::SyncEvent;
+
+        let event = SyncEvent::Update {
+            collection: "articles".into(),
+            id: "abc".into(),
+            changes: [
+                ("title".into(), Value::Str("New title".into())),
+                ("embedding".into(), Value::Array(vec![Value::Float(0.5)])),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let exclude = vec!["embedding".to_string()];
+        let p = event_to_payload(event, &exclude);
+
+        assert!(p["changes"].get("embedding").is_none());
+        assert_eq!(p["changes"]["title"], "New title");
+    }
+
+    #[test]
+    fn exclude_unknown_fields_is_noop() {
+        use crate::document::Document;
+        use crate::sync::SyncEvent;
+
+        let doc = Document::new(vec![("name".into(), Value::Str("Alice".into()))]);
+        let event = SyncEvent::Insert {
+            collection: "users".into(),
+            id: doc.id.to_string(),
+            document: doc,
+        };
+        // Excluding a field that doesn't exist in the document is silently ignored.
+        let exclude = vec!["nonexistent_field".to_string()];
+        let p = event_to_payload(event, &exclude);
+
+        assert_eq!(p["document"]["name"], "Alice");
+    }
+
+    #[test]
+    fn empty_exclude_list_includes_all_fields() {
+        use crate::document::Document;
+        use crate::sync::SyncEvent;
+
+        let doc = Document::new(vec![
+            ("name".into(), Value::Str("Bob".into())),
+            ("embedding".into(), Value::Array(vec![Value::Float(1.0)])),
+        ]);
+        let event = SyncEvent::Insert {
+            collection: "users".into(),
+            id: doc.id.to_string(),
+            document: doc,
+        };
+        let p = event_to_payload(event, &[]);
+
+        assert_eq!(p["document"]["name"], "Bob");
+        assert!(p["document"]["embedding"].is_array());
     }
 
     // ── value_to_json ────────────────────────────────────────────────────────
@@ -395,7 +487,8 @@ mod tests {
             .collection("users")
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
-        col.insert(vec![("name".into(), Value::Str("Alice".into()))]).unwrap();
+        col.insert(vec![("name".into(), Value::Str("Alice".into()))])
+            .unwrap();
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -578,7 +671,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(800)).await;
 
         let reqs = server.received_requests().await.unwrap();
-        assert!(reqs.len() >= 2, "expected at least 2 attempts, got {}", reqs.len());
+        assert!(
+            reqs.len() >= 2,
+            "expected at least 2 attempts, got {}",
+            reqs.len()
+        );
     }
 
     #[tokio::test]

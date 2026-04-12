@@ -31,6 +31,16 @@ export interface SyncConfig {
   update_endpoint?: string;
   /** Override the endpoint for `delete` events only. */
   delete_endpoint?: string;
+  /**
+   * Document fields to omit from every outgoing sync payload.
+   *
+   * Useful for stripping large computed fields such as embedding vectors
+   * that the remote endpoint doesn't need.
+   *
+   * @example
+   * exclude_fields: ['embedding', 'clip_vector']
+   */
+  exclude_fields?: string[];
 }
 
 /** Top-level TalaDB configuration. */

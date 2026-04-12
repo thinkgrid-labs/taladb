@@ -1,7 +1,10 @@
 use napi_derive::napi;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use taladb_core::{Collection, Database, Filter, HnswOptions, HttpSyncHook, TalaDbConfig, TalaDbError, Update, Value, VectorMetric};
+use taladb_core::{
+    Collection, Database, Filter, HnswOptions, HttpSyncHook, TalaDbConfig, TalaDbError, Update,
+    Value, VectorMetric,
+};
 
 fn err_to_napi(e: TalaDbError) -> napi::Error {
     let code = match &e {
@@ -283,7 +286,10 @@ impl TalaDBNode {
     #[napi(factory)]
     pub fn open_in_memory() -> napi::Result<Self> {
         let db = Database::open_in_memory().map_err(err_to_napi)?;
-        Ok(TalaDBNode { inner: db, sync_hook: None })
+        Ok(TalaDBNode {
+            inner: db,
+            sync_hook: None,
+        })
     }
 
     /// Open a file-backed database at the given path.
@@ -296,7 +302,10 @@ impl TalaDBNode {
     pub fn open(path: String, config_json: Option<String>) -> napi::Result<Self> {
         let db = Database::open(std::path::Path::new(&path)).map_err(err_to_napi)?;
         let sync_hook = build_sync_hook(config_json)?;
-        Ok(TalaDBNode { inner: db, sync_hook })
+        Ok(TalaDBNode {
+            inner: db,
+            sync_hook,
+        })
     }
 
     /// Get a collection by name. If an HTTP sync hook is configured it is
@@ -326,8 +335,7 @@ fn build_sync_hook(
             .map_err(|e| napi::Error::from_reason(format!("invalid config JSON: {e}")))?;
         config.validate().map_err(err_to_napi)?;
         if config.sync.enabled {
-            let hook: Arc<dyn taladb_core::SyncHook> =
-                Arc::new(HttpSyncHook::new(config.sync));
+            let hook: Arc<dyn taladb_core::SyncHook> = Arc::new(HttpSyncHook::new(config.sync));
             return Ok(Some(hook));
         }
     }
@@ -463,9 +471,7 @@ impl CollectionNode {
     /// No-op when the feature is disabled or the index is flat-only.
     #[napi(js_name = "upgradeVectorIndex")]
     pub fn upgrade_vector_index(&self, field: String) -> napi::Result<()> {
-        self.inner
-            .upgrade_vector_index(&field)
-            .map_err(err_to_napi)
+        self.inner.upgrade_vector_index(&field).map_err(err_to_napi)
     }
 
     /// Find the `top_k` nearest documents to `query`.

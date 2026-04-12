@@ -356,9 +356,7 @@ fn cmd_upgrade_vector_index(file: &PathBuf, collection: &str, field: &str) -> Re
                 file
             )
         })?;
-    eprintln!(
-        "HNSW graph for '{collection}::{field}' rebuilt successfully."
-    );
+    eprintln!("HNSW graph for '{collection}::{field}' rebuilt successfully.");
     Ok(())
 }
 
@@ -393,9 +391,7 @@ fn cmd_sync(
         .insert_endpoint
         .as_deref()
         .or(cfg.sync.endpoint.as_deref())
-        .ok_or_else(|| {
-            anyhow::anyhow!("sync.endpoint is required when sync.enabled: true")
-        })?
+        .ok_or_else(|| anyhow::anyhow!("sync.endpoint is required when sync.enabled: true"))?
         .to_string();
 
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
@@ -436,7 +432,7 @@ fn cmd_sync(
 
         for (idx, doc) in docs.iter().enumerate() {
             let n = idx + 1;
-            let payload = sync_payload(col_name, doc, now_ms);
+            let payload = sync_payload(col_name, doc, now_ms, &cfg.sync.exclude_fields);
 
             if dry_run {
                 println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -466,11 +462,18 @@ fn cmd_sync(
     Ok(())
 }
 
-/// Build the `insert` event payload for a single document.
-fn sync_payload(collection: &str, doc: &Document, timestamp: u64) -> serde_json::Value {
+/// Build the `insert` event payload for a single document, omitting any field
+/// listed in `exclude`.
+fn sync_payload(
+    collection: &str,
+    doc: &Document,
+    timestamp: u64,
+    exclude: &[String],
+) -> serde_json::Value {
     let document: serde_json::Map<String, serde_json::Value> = doc
         .fields
         .iter()
+        .filter(|(k, _)| !exclude.contains(k))
         .map(|(k, v)| (k.clone(), value_to_json(v)))
         .collect();
 
@@ -635,7 +638,7 @@ mod tests {
             fields: vec![("name".into(), Value::Str("Alice".into()))],
         };
         let ts = 1_700_000_000_000u64;
-        let payload = sync_payload("users", &doc, ts);
+        let payload = sync_payload("users", &doc, ts, &[]);
 
         assert_eq!(payload["_taladb_event"], "insert");
         assert_eq!(payload["collection"], "users");
@@ -643,6 +646,27 @@ mod tests {
         assert_eq!(payload["timestamp"], ts);
         assert!(payload["document"].is_object());
         assert_eq!(payload["document"]["name"], "Alice");
+    }
+
+    #[test]
+    fn sync_payload_exclude_fields_stripped() {
+        use taladb_core::Document;
+
+        let doc = Document {
+            id: ulid::Ulid::new(),
+            fields: vec![
+                ("title".into(), Value::Str("Post".into())),
+                (
+                    "embedding".into(),
+                    Value::Array(vec![Value::Float(0.1), Value::Float(0.9)]),
+                ),
+            ],
+        };
+        let exclude = vec!["embedding".to_string()];
+        let payload = sync_payload("posts", &doc, 0, &exclude);
+
+        assert_eq!(payload["document"]["title"], "Post");
+        assert!(payload["document"].get("embedding").is_none());
     }
 
     // -- dry-run: returns Ok and fires no HTTP requests --
@@ -655,8 +679,13 @@ mod tests {
         let cfg_path = write_config(dir.path(), &server.uri());
 
         tokio::task::spawn_blocking(move || {
-            cmd_sync(&db_path, Some("items"), /*dry_run=*/ true, Some(&cfg_path))
-                .expect("cmd_sync dry-run should succeed");
+            cmd_sync(
+                &db_path,
+                Some("items"),
+                /*dry_run=*/ true,
+                Some(&cfg_path),
+            )
+            .expect("cmd_sync dry-run should succeed");
         })
         .await
         .unwrap();
@@ -735,7 +764,10 @@ mod tests {
         let cfg_path = dir.path().join("taladb.config.yml");
         std::fs::write(
             &cfg_path,
-            format!("sync:\n  enabled: false\n  endpoint: \"{}\"\n", server.uri()),
+            format!(
+                "sync:\n  enabled: false\n  endpoint: \"{}\"\n",
+                server.uri()
+            ),
         )
         .unwrap();
 
@@ -779,8 +811,7 @@ mod tests {
         let cfg_path = write_config(dir.path(), &endpoint);
 
         tokio::task::spawn_blocking(move || {
-            cmd_sync(&db_path, None, false, Some(&cfg_path))
-                .expect("cmd_sync should succeed");
+            cmd_sync(&db_path, None, false, Some(&cfg_path)).expect("cmd_sync should succeed");
         })
         .await
         .unwrap();

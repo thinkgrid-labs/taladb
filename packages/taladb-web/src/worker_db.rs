@@ -460,10 +460,9 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
                     val.as_array()?.iter().map(json_to_core_value).collect(),
                 ),
                 "$exists" => Filter::Exists(field.clone(), val.as_bool().unwrap_or(true)),
-                "$contains" => Filter::Contains(
-                    field.clone(),
-                    val.as_str().unwrap_or("").to_string(),
-                ),
+                "$contains" => {
+                    Filter::Contains(field.clone(), val.as_str().unwrap_or("").to_string())
+                }
                 _ => return None,
             };
             filters.push(f);
