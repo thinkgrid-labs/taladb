@@ -27,6 +27,7 @@
 //! order (the higher ULID wins), ensuring a deterministic total order across
 //! any number of replicas without coordination.
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,92 @@ use ulid::Ulid;
 use crate::document::{Document, Value};
 use crate::error::TalaDbError;
 use crate::query::filter::Filter;
+
+// ---------------------------------------------------------------------------
+// Mutation hook types (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// A post-commit mutation event emitted after every successful write.
+///
+/// Only changed data is included — `Insert` carries the full document,
+/// `Update` carries only the fields that changed (removed fields use
+/// `Value::Null` as a tombstone), and `Delete` carries only the id.
+#[derive(Debug, Clone)]
+pub enum SyncEvent {
+    Insert {
+        collection: String,
+        id: String,
+        document: Document,
+    },
+    Update {
+        collection: String,
+        id: String,
+        /// Changed fields only. A field set to `Value::Null` was removed.
+        changes: HashMap<String, Value>,
+    },
+    Delete {
+        collection: String,
+        id: String,
+    },
+}
+
+/// Receiver for post-commit mutation events.
+///
+/// Implementations **must be non-blocking**. Long-running work (HTTP requests,
+/// disk I/O) must be offloaded to a background thread or async task inside
+/// `on_event` — the call happens on the writer thread after commit returns.
+///
+/// `Arc<dyn SyncHook>` is stored inside `Collection` so one hook instance can
+/// be shared across many collections.
+pub trait SyncHook: Send + Sync {
+    fn on_event(&self, event: SyncEvent);
+}
+
+/// No-operation sync hook. Default when sync is disabled — zero overhead.
+pub struct NoopSyncHook;
+
+impl SyncHook for NoopSyncHook {
+    #[inline]
+    fn on_event(&self, _event: SyncEvent) {}
+}
+
+// ---------------------------------------------------------------------------
+// Test helper — RecordingSyncHook
+// ---------------------------------------------------------------------------
+
+/// Captures every event for use in unit tests.
+///
+/// Available only when `cfg(test)`.
+#[cfg(test)]
+pub struct RecordingSyncHook {
+    events: std::sync::Mutex<Vec<SyncEvent>>,
+}
+
+#[cfg(test)]
+impl RecordingSyncHook {
+    pub fn new() -> Self {
+        RecordingSyncHook {
+            events: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Drain and return all recorded events in the order they were received.
+    pub fn take(&self) -> Vec<SyncEvent> {
+        self.events.lock().unwrap().drain(..).collect()
+    }
+
+    /// Number of events recorded so far without draining.
+    pub fn len(&self) -> usize {
+        self.events.lock().unwrap().len()
+    }
+}
+
+#[cfg(test)]
+impl SyncHook for RecordingSyncHook {
+    fn on_event(&self, event: SyncEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Changeset types

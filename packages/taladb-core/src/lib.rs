@@ -15,6 +15,7 @@ pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
 pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
+pub use sync::{NoopSyncHook, SyncEvent, SyncHook};
 pub use collection::{Collection, CollectionIndexInfo, Update};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};

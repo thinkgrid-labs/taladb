@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
@@ -6,6 +7,7 @@ use crate::aggregate::{execute_pipeline, Stage};
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
+use crate::sync::{SyncEvent, SyncHook};
 use crate::fts::{encode_fts_key, fts_table_name, tokenize, FtsDef};
 use crate::index::{
     compound_meta_key, compound_table_name, docs_table_name, encode_compound_key, encode_index_key,
@@ -59,6 +61,7 @@ pub struct Collection {
     pub(crate) name: String,
     backend: Arc<dyn StorageBackend>,
     index_cache: Mutex<Option<CachedIndexes>>,
+    sync_hook: Option<Arc<dyn SyncHook>>,
     #[cfg(feature = "vector-hnsw")]
     hnsw_cache: SharedHnswCache,
 }
@@ -69,9 +72,17 @@ impl Collection {
             name: name.into(),
             backend,
             index_cache: Mutex::new(None),
+            sync_hook: None,
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: crate::vector::new_shared_cache(),
         }
+    }
+
+    /// Attach a sync hook that receives a [`SyncEvent`] after every successful
+    /// write commit.  Pass `Arc::new(NoopSyncHook)` to disable (default).
+    pub fn with_sync_hook(mut self, hook: Arc<dyn SyncHook>) -> Self {
+        self.sync_hook = Some(hook);
+        self
     }
 
     /// Attach a shared HNSW cache (called by `Database::collection()` so all
@@ -837,6 +848,13 @@ impl Collection {
         )?;
         let id = doc.id;
         wtxn.commit()?;
+        if let Some(hook) = &self.sync_hook {
+            hook.on_event(SyncEvent::Insert {
+                collection: self.name.clone(),
+                id: id.to_string(),
+                document: doc,
+            });
+        }
         Ok(id)
     }
 
@@ -864,6 +882,15 @@ impl Collection {
             ids.push(doc.id);
         }
         wtxn.commit()?;
+        if let Some(hook) = &self.sync_hook {
+            for doc in &docs {
+                hook.on_event(SyncEvent::Insert {
+                    collection: self.name.clone(),
+                    id: doc.id.to_string(),
+                    document: doc.clone(),
+                });
+            }
+        }
         Ok(ids)
     }
 
@@ -981,6 +1008,13 @@ impl Collection {
             wtxn.as_mut(),
         )?;
         wtxn.commit()?;
+        if let Some(hook) = &self.sync_hook {
+            hook.on_event(SyncEvent::Insert {
+                collection: self.name.clone(),
+                id: id.to_string(),
+                document: doc,
+            });
+        }
         Ok(id)
     }
 
@@ -1021,6 +1055,12 @@ impl Collection {
                     wtxn.as_mut(),
                 )?;
                 wtxn.commit()?;
+                if let Some(hook) = &self.sync_hook {
+                    hook.on_event(SyncEvent::Delete {
+                        collection: self.name.clone(),
+                        id: id.to_string(),
+                    });
+                }
                 Ok(true)
             }
         }
@@ -1042,6 +1082,11 @@ impl Collection {
         if let Some(old_doc) = candidates.drain(..).next() {
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, update)?;
+            let changes = if self.sync_hook.is_some() {
+                diff_documents(&old_doc, &new_doc)
+            } else {
+                HashMap::new()
+            };
             let mut wtxn = self.backend.begin_write()?;
             self.write_doc_and_indexes_with_compound(
                 &new_doc,
@@ -1053,6 +1098,13 @@ impl Collection {
                 wtxn.as_mut(),
             )?;
             wtxn.commit()?;
+            if let Some(hook) = &self.sync_hook {
+                hook.on_event(SyncEvent::Update {
+                    collection: self.name.clone(),
+                    id: old_doc.id.to_string(),
+                    changes,
+                });
+            }
             return Ok(true);
         }
         Ok(false)
@@ -1072,10 +1124,23 @@ impl Collection {
         drop(rtxn);
 
         let mut count = 0u64;
+        let has_hook = self.sync_hook.is_some();
+        let mut events: Vec<SyncEvent> = if has_hook {
+            Vec::with_capacity(candidates.len())
+        } else {
+            Vec::new()
+        };
         let mut wtxn = self.backend.begin_write()?;
         for old_doc in &candidates {
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, update.clone())?;
+            if has_hook {
+                events.push(SyncEvent::Update {
+                    collection: self.name.clone(),
+                    id: old_doc.id.to_string(),
+                    changes: diff_documents(old_doc, &new_doc),
+                });
+            }
             self.write_doc_and_indexes_with_compound(
                 &new_doc,
                 Some(old_doc),
@@ -1088,6 +1153,11 @@ impl Collection {
             count += 1;
         }
         wtxn.commit()?;
+        if let Some(hook) = &self.sync_hook {
+            for event in events {
+                hook.on_event(event);
+            }
+        }
         Ok(count)
     }
 
@@ -1105,6 +1175,7 @@ impl Collection {
         drop(rtxn);
 
         if let Some(doc) = candidates.drain(..).next() {
+            let doc_id = doc.id.to_string();
             let mut wtxn = self.backend.begin_write()?;
             self.delete_doc_and_indexes_with_compound(
                 &doc,
@@ -1115,6 +1186,12 @@ impl Collection {
                 wtxn.as_mut(),
             )?;
             wtxn.commit()?;
+            if let Some(hook) = &self.sync_hook {
+                hook.on_event(SyncEvent::Delete {
+                    collection: self.name.clone(),
+                    id: doc_id,
+                });
+            }
             return Ok(true);
         }
         Ok(false)
@@ -1147,6 +1224,14 @@ impl Collection {
             count += 1;
         }
         wtxn.commit()?;
+        if let Some(hook) = &self.sync_hook {
+            for doc in &candidates {
+                hook.on_event(SyncEvent::Delete {
+                    collection: self.name.clone(),
+                    id: doc.id.to_string(),
+                });
+            }
+        }
         Ok(count)
     }
 
@@ -1257,4 +1342,319 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
         }
     }
     Ok(())
+}
+
+/// Compute the diff between `old` and `new`, returning only the changed fields.
+///
+/// - A field present in `new` but not in `old` → included with the new value.
+/// - A field present in both but with a different value → included with the new value.
+/// - A field present in `old` but absent from `new` → included with `Value::Null`
+///   (tombstone, signals deletion).
+/// - Unchanged fields are not included.
+fn diff_documents(old: &Document, new: &Document) -> HashMap<String, Value> {
+    let mut changes = HashMap::new();
+    for (k, new_val) in &new.fields {
+        match old.get(k) {
+            None => {
+                changes.insert(k.clone(), new_val.clone());
+            }
+            Some(old_val) if old_val != new_val => {
+                changes.insert(k.clone(), new_val.clone());
+            }
+            _ => {}
+        }
+    }
+    // Fields removed from old doc
+    for (k, _) in &old.fields {
+        if new.get(k).is_none() {
+            changes.insert(k.clone(), Value::Null);
+        }
+    }
+    changes
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::sync::RecordingSyncHook;
+    use crate::Database;
+
+    fn db() -> Database {
+        Database::open_in_memory().unwrap()
+    }
+
+    fn hooked(db: &Database, name: &str) -> (Collection, Arc<RecordingSyncHook>) {
+        let hook = Arc::new(RecordingSyncHook::new());
+        let col = db.collection(name).with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
+        (col, hook)
+    }
+
+    // ── insert ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn insert_fires_insert_event() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        let id = col.insert(vec![("name".into(), Value::Str("Alice".into()))]).unwrap();
+        let events = hook.take();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            SyncEvent::Insert { collection, id: eid, document } => {
+                assert_eq!(collection, "items");
+                assert_eq!(eid, &id.to_string());
+                assert_eq!(document.get("name"), Some(&Value::Str("Alice".into())));
+            }
+            other => panic!("expected Insert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_hook_insert_no_panic() {
+        let db = db();
+        let col = db.collection("items");
+        assert!(col.insert(vec![("x".into(), Value::Int(1))]).is_ok());
+    }
+
+    // ── insert_many ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn insert_many_fires_one_event_per_doc() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        let ids = col
+            .insert_many(vec![
+                vec![("n".into(), Value::Int(1))],
+                vec![("n".into(), Value::Int(2))],
+                vec![("n".into(), Value::Int(3))],
+            ])
+            .unwrap();
+        let events = hook.take();
+        assert_eq!(events.len(), 3);
+        for (i, event) in events.iter().enumerate() {
+            match event {
+                SyncEvent::Insert { id, .. } => assert_eq!(id, &ids[i].to_string()),
+                other => panic!("expected Insert, got {other:?}"),
+            }
+        }
+    }
+
+    // ── update_one ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn update_one_fires_update_event_with_delta() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        col.insert(vec![
+            ("name".into(), Value::Str("Alice".into())),
+            ("score".into(), Value::Int(10)),
+        ])
+        .unwrap();
+        hook.take(); // discard Insert event
+
+        col.update_one(
+            Filter::Eq("name".into(), Value::Str("Alice".into())),
+            Update::Set(vec![("score".into(), Value::Int(20))]),
+        )
+        .unwrap();
+
+        let events = hook.take();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            SyncEvent::Update { collection, changes, .. } => {
+                assert_eq!(collection, "items");
+                // Only the changed field
+                assert_eq!(changes.get("score"), Some(&Value::Int(20)));
+                // Unchanged field not present
+                assert!(!changes.contains_key("name"));
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_one_no_match_fires_no_event() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        col.update_one(
+            Filter::Eq("missing".into(), Value::Bool(true)),
+            Update::Set(vec![("x".into(), Value::Int(1))]),
+        )
+        .unwrap();
+        assert_eq!(hook.len(), 0);
+    }
+
+    #[test]
+    fn update_diff_includes_removed_field_as_null() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        col.insert(vec![
+            ("a".into(), Value::Int(1)),
+            ("b".into(), Value::Int(2)),
+        ])
+        .unwrap();
+        hook.take();
+
+        col.update_one(
+            Filter::Eq("a".into(), Value::Int(1)),
+            Update::Unset(vec!["b".into()]),
+        )
+        .unwrap();
+
+        let events = hook.take();
+        match &events[0] {
+            SyncEvent::Update { changes, .. } => {
+                assert_eq!(changes.get("b"), Some(&Value::Null));
+                assert!(!changes.contains_key("a"));
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    // ── update_many ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn update_many_fires_one_event_per_doc() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        col.insert_many(vec![
+            vec![("active".into(), Value::Bool(true)), ("v".into(), Value::Int(1))],
+            vec![("active".into(), Value::Bool(true)), ("v".into(), Value::Int(2))],
+        ])
+        .unwrap();
+        hook.take();
+
+        let n = col
+            .update_many(
+                Filter::Eq("active".into(), Value::Bool(true)),
+                Update::Set(vec![("active".into(), Value::Bool(false))]),
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+
+        let events = hook.take();
+        assert_eq!(events.len(), 2);
+        for event in &events {
+            match event {
+                SyncEvent::Update { changes, .. } => {
+                    assert_eq!(changes.get("active"), Some(&Value::Bool(false)));
+                    assert!(!changes.contains_key("v"));
+                }
+                other => panic!("expected Update, got {other:?}"),
+            }
+        }
+    }
+
+    // ── delete_one ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_one_fires_delete_event() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        let id = col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
+        hook.take();
+
+        col.delete_one(Filter::Eq("x".into(), Value::Int(1))).unwrap();
+
+        let events = hook.take();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            SyncEvent::Delete { collection, id: eid } => {
+                assert_eq!(collection, "items");
+                assert_eq!(eid, &id.to_string());
+            }
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_one_no_match_fires_no_event() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        col.delete_one(Filter::Eq("x".into(), Value::Int(999))).unwrap();
+        assert_eq!(hook.len(), 0);
+    }
+
+    // ── delete_many ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_many_fires_one_event_per_doc() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        col.insert_many(vec![
+            vec![("tag".into(), Value::Str("old".into()))],
+            vec![("tag".into(), Value::Str("old".into()))],
+            vec![("tag".into(), Value::Str("new".into()))],
+        ])
+        .unwrap();
+        hook.take();
+
+        let n = col
+            .delete_many(Filter::Eq("tag".into(), Value::Str("old".into())))
+            .unwrap();
+        assert_eq!(n, 2);
+
+        let events = hook.take();
+        assert_eq!(events.len(), 2);
+        for event in &events {
+            assert!(matches!(event, SyncEvent::Delete { .. }));
+        }
+    }
+
+    // ── delete_by_id ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_by_id_fires_delete_event() {
+        let db = db();
+        let (col, hook) = hooked(&db, "items");
+        let id = col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
+        hook.take();
+
+        col.delete_by_id(id).unwrap();
+
+        let events = hook.take();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            SyncEvent::Delete { id: eid, .. } => assert_eq!(eid, &id.to_string()),
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    // ── diff_documents ───────────────────────────────────────────────────────
+
+    #[test]
+    fn diff_unchanged_doc_is_empty() {
+        let doc = Document::new(vec![("a".into(), Value::Int(1))]);
+        let diff = diff_documents(&doc, &doc);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn diff_new_field_included() {
+        let old = Document::new(vec![("a".into(), Value::Int(1))]);
+        let new = Document::new(vec![
+            ("a".into(), Value::Int(1)),
+            ("b".into(), Value::Int(2)),
+        ]);
+        let diff = diff_documents(&old, &new);
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff.get("b"), Some(&Value::Int(2)));
+    }
+
+    #[test]
+    fn diff_removed_field_is_null_tombstone() {
+        let old = Document::new(vec![
+            ("a".into(), Value::Int(1)),
+            ("b".into(), Value::Int(2)),
+        ]);
+        let new = Document::new(vec![("a".into(), Value::Int(1))]);
+        let diff = diff_documents(&old, &new);
+        assert_eq!(diff.get("b"), Some(&Value::Null));
+        assert!(!diff.contains_key("a"));
+    }
 }
