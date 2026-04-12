@@ -102,6 +102,9 @@ const initPromises = new Map();
 /** The dbName that was successfully initialised (or is being initialised). */
 let activeDbName = null;
 
+/** The configJson passed during init (stored so snapshot reloads can use it). */
+let activeConfigJson = null;
+
 const isDev = typeof location !== 'undefined' && (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
 const log = isDev ? console.log.bind(console, '[TalaDB Worker]') : () => {};
 const warn = isDev ? console.warn.bind(console, '[TalaDB Worker]') : () => {};
@@ -231,12 +234,16 @@ async function dispatch(op, args) {
     snapshotDirty = false;
     try {
       const fresh = await idbLoadSnapshot(activeDbName);
-      if (fresh) db = WorkerDB.openWithSnapshot(fresh);
+      if (fresh) {
+        db = activeConfigJson
+          ? WorkerDB.openWithConfigAndSnapshot(fresh, activeConfigJson)
+          : WorkerDB.openWithSnapshot(fresh);
+      }
     } catch { /* ignore reload errors — stale read is acceptable */ }
   }
 
   if (op === 'init') {
-    const { dbName } = args;
+    const { dbName, configJson } = args;
 
     if (activeDbName !== null && activeDbName !== dbName) {
       throw new Error(
@@ -247,7 +254,8 @@ async function dispatch(op, args) {
 
     if (!initPromises.has(dbName)) {
       activeDbName = dbName;
-      initPromises.set(dbName, doInit(dbName));
+      activeConfigJson = configJson ?? null;
+      initPromises.set(dbName, doInit(dbName, configJson ?? null));
     }
     await initPromises.get(dbName);
     return null;
@@ -367,7 +375,7 @@ async function dispatch(op, args) {
 // Initialisation — load WASM, acquire lock, open OPFS file
 // ---------------------------------------------------------------------------
 
-async function doInit(dbName) {
+async function doInit(dbName, configJson) {
   const wasm = await import('../pkg/taladb_web.js');
   await wasm.default();
 
@@ -399,11 +407,23 @@ async function doInit(dbName) {
     log('BroadcastChannel opened:', `taladb:${dbName}`);
   }
 
+  // Helpers to open DB with or without sync config.
+  // Uses the config-aware constructors when configJson is provided so that
+  // HTTP push sync is wired up from the first write.
+  function openWithSnapshot(snapshot) {
+    if (configJson) return WorkerDB.openWithConfigAndSnapshot(snapshot, configJson);
+    return WorkerDB.openWithSnapshot(snapshot);
+  }
+  function openWithOpfs(syncHandle) {
+    if (configJson) return WorkerDB.openWithConfigAndOpfs(syncHandle, configJson);
+    return WorkerDB.openWithOpfs(syncHandle);
+  }
+
   const opfsAvailable = await checkOpfs();
   if (!opfsAvailable) {
     warn('OPFS unavailable — falling back to IndexedDB-backed in-memory');
     const snapshot = await idbLoadSnapshot(dbName);
-    db = WorkerDB.openWithSnapshot(snapshot);
+    db = openWithSnapshot(snapshot);
     idbFallback = true;
     if (snapshot) {
       log(`Restored from IndexedDB snapshot (${snapshot.byteLength} bytes)`);
@@ -421,7 +441,7 @@ async function doInit(dbName) {
     // Web Locks not available — open directly (single-tab safe only).
     warn('Web Locks unavailable — multi-tab write safety disabled');
     const syncHandle = await fileHandle.createSyncAccessHandle();
-    db = WorkerDB.openWithOpfs(syncHandle);
+    db = openWithOpfs(syncHandle);
     log(`Opened "${fileName}" via OPFS`);
     return;
   }
@@ -451,7 +471,7 @@ async function doInit(dbName) {
           if (gotIt !== false) snapshot = await idbLoadSnapshot(dbName);
         }
 
-        db = WorkerDB.openWithSnapshot(snapshot ?? null);
+        db = openWithSnapshot(snapshot ?? null);
         idbFallback = true;
         if (snapshot) {
           log(`Restored from IDB snapshot (${snapshot.byteLength} bytes)`);
@@ -465,7 +485,7 @@ async function doInit(dbName) {
       // Acquired the lock — use OPFS.
       try {
         const syncHandle = await fileHandle.createSyncAccessHandle();
-        db = WorkerDB.openWithOpfs(syncHandle);
+        db = openWithOpfs(syncHandle);
         log(`Opened "${fileName}" via OPFS (Web Locks)`);
         resolve(); // signal doInit complete — caller can proceed
 

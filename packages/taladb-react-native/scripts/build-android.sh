@@ -8,8 +8,8 @@ PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUST_DIR="$PACKAGE_DIR/rust"
 JNI_LIBS="$PACKAGE_DIR/android/src/main/jniLibs"
 
-ABIS=("arm64-v8a" "armeabi-v7a" "x86_64" "x86")
-TRIPLES=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android" "i686-linux-android")
+ABIS=("arm64-v8a" "armeabi-v7a" "x86_64")
+TRIPLES=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
 
 # Ensure Rust targets are installed
 for triple in "${TRIPLES[@]}"; do

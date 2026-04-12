@@ -175,6 +175,31 @@ await products.find({ price: { $lte: 99.99 }, inStock: true })
 await products.updateOne({ name: 'Widget' }, { $set: { price: 49.99 } })
 ```
 
+## HTTP push sync
+
+After every committed write, TalaDB fires a background HTTP POST to a configured endpoint — no infrastructure required on TalaDB's side. Works with any existing REST API, webhook receiver, or analytics pipeline.
+
+```yaml
+# taladb.config.yml
+sync:
+  enabled: true
+  endpoint: "https://api.example.com/events"
+  headers:
+    Authorization: "Bearer my-token"
+  exclude_fields:
+    - embedding   # strip large vectors from the payload
+```
+
+The background thread is completely detached from the write path. **No transaction is ever delayed or blocked by sync.** Payload shapes:
+
+- **insert** — `{ _taladb_event, collection, id, document, timestamp }`
+- **update** — `{ _taladb_event, collection, id, changes, timestamp }` (delta only — changed fields)
+- **delete** — `{ _taladb_event, collection, id, timestamp }`
+
+Retries up to 3 times with 200 / 400 / 800 ms backoff on 5xx or network errors. The `taladb sync` CLI command pushes the full local state for initial seeding or recovery.
+
+See the [HTTP Push Sync guide](/guide/http-sync) for full documentation.
+
 ## CLI dev tools
 
 Download the pre-built `taladb-cli` binary for your platform from the [GitHub Releases page](https://github.com/thinkgrid-labs/taladb/releases):

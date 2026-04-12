@@ -3,11 +3,10 @@
  *
  * Build setup (Xcode / CocoaPods)
  * --------------------------------
- *  1. Run `cargo build --target aarch64-apple-ios --release` (device) and
- *     `cargo build --target x86_64-apple-ios --release` (simulator), then
- *     `lipo` them into a universal `libtaladb_ffi.a`.
- *  2. The podspec links the fat archive and adds `cpp/` to the header search
- *     paths — both are handled automatically when using the podspec.
+ *  1. Run `scripts/build-ios.sh` (or the release CI) to produce
+ *     `ios/TalaDBFfi.xcframework` — device (arm64) + simulator (arm64 + x86_64).
+ *  2. The podspec declares `vendored_frameworks` pointing to that xcframework.
+ *     Headers and link flags are handled automatically by CocoaPods.
  *
  * Runtime flow
  * ------------
@@ -53,13 +52,19 @@ RCT_EXPORT_MODULE(TalaDB)
 // ---- Class method: open DB and install the JSI HostObject ----------------
 
 + (void)installInRuntime:(facebook::jsi::Runtime &)rt
-                  dbPath:(NSString *)path {
+                  dbPath:(NSString *)path
+              configJson:(NSString * _Nullable)configJson {
     if (gHandle) {
         taladb_close(gHandle);
         gHandle = nullptr;
     }
 
-    gHandle = taladb_open(path.UTF8String);
+    if (configJson != nil) {
+        gHandle = taladb_open_with_config(path.UTF8String, configJson.UTF8String);
+    } else {
+        gHandle = taladb_open(path.UTF8String);
+    }
+
     if (!gHandle) {
         NSLog(@"[TalaDB] Failed to open database at %@", path);
         return;
@@ -72,6 +77,7 @@ RCT_EXPORT_MODULE(TalaDB)
 // ---- initialize(dbName) → Promise<void>  ---------------------------------
 
 RCT_EXPORT_METHOD(initialize:(NSString *)dbName
+                  configJson:(NSString * _Nullable)configJson
                   resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
     @try {
@@ -86,9 +92,9 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
         }
 
         // Install the HostObject on the JS thread
-        bridge.jsCallInvoker->invokeAsync([bridge, dbPath]() {
+        bridge.jsCallInvoker->invokeAsync([bridge, dbPath, configJson]() {
             auto &rt = *(Runtime *)bridge.runtime;
-            [TalaDB installInRuntime:rt dbPath:dbPath];
+            [TalaDB installInRuntime:rt dbPath:dbPath configJson:configJson];
         });
 
         resolve(nil);

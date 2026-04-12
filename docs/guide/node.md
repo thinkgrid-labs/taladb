@@ -32,6 +32,23 @@ const all = await users.find()
 
 `openDB` detects Node.js automatically and routes calls through the native module. The database file is created if it does not exist. Parent directories must exist.
 
+## HTTP push sync
+
+Add a `taladb.config.yml` to your project root to automatically push mutation events to a remote endpoint after every write:
+
+```yaml
+# taladb.config.yml
+sync:
+  enabled: true
+  endpoint: "https://api.example.com/taladb-events"
+  headers:
+    Authorization: "Bearer YOUR_TOKEN"
+  exclude_fields:
+    - embedding   # omit large vector fields from payloads
+```
+
+`openDB` auto-discovers the file — no code changes needed. See the [HTTP Push Sync guide](/guide/http-sync) for the full config reference, payload shapes, retry behaviour, and limitations.
+
 ## Basic CRUD
 
 ```ts

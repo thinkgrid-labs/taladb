@@ -346,7 +346,10 @@ mod tests {
 
         let doc = Document::new(vec![
             ("title".into(), Value::Str("Hello".into())),
-            ("embedding".into(), Value::Array(vec![Value::Float(0.1), Value::Float(0.2)])),
+            (
+                "embedding".into(),
+                Value::Array(vec![Value::Float(0.1), Value::Float(0.2)]),
+            ),
             ("score".into(), Value::Float(0.99)),
         ]);
         let event = SyncEvent::Insert {

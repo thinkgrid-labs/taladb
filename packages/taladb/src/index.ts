@@ -167,7 +167,7 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
   };
 }
 
-async function createBrowserDB(dbName: string): Promise<TalaDB> {
+async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<TalaDB> {
   // createSyncAccessHandle (required for OPFS persistence) is only available
   // in Dedicated Workers per the WHATWG spec — not SharedWorkers. We use a
   // DedicatedWorker so each tab gets its own isolated worker + file handle.
@@ -175,8 +175,10 @@ async function createBrowserDB(dbName: string): Promise<TalaDB> {
   const worker = new Worker(workerUrl, { type: 'module', name: 'taladb' });
   const proxy = new WorkerProxy(worker);
 
-  // Initialize the worker (opens OPFS file or falls back to IDB-backed in-memory)
-  await proxy.send('init', { dbName });
+  // Initialize the worker (opens OPFS file or falls back to IDB-backed in-memory).
+  // Pass configJson so the worker can wire up HTTP push sync from the first write.
+  const configJson = config !== undefined ? JSON.stringify(config) : undefined;
+  await proxy.send('init', { dbName, configJson });
 
   // BroadcastChannel: when another tab's worker commits a write it posts
   // "taladb:changed".  We immediately nudge every active subscribe() poller
@@ -473,7 +475,9 @@ export interface OpenDBOptions {
   /**
    * Explicit path to a `taladb.config.yml` / `taladb.config.json` file.
    * If omitted, TalaDB auto-discovers the file from `process.cwd()` on Node.js.
-   * Ignored on browser and React Native (sync is silently disabled there).
+   * Ignored on browser and React Native — those platforms do not support
+   * file-based config discovery. Pass `config` inline instead, or on React Native
+   * pass `JSON.stringify(config)` as the second argument to `TalaDBModule.initialize`.
    */
   configPath?: string;
   /**
@@ -509,7 +513,7 @@ export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Pro
 
   const platform = detectPlatform();
   switch (platform) {
-    case 'browser':      return createBrowserDB(dbName);
+    case 'browser':      return createBrowserDB(dbName, resolvedConfig);
     case 'react-native': return createNativeDB(dbName);
     case 'node':         return createNodeDB(dbName, resolvedConfig);
   }

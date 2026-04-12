@@ -24,8 +24,15 @@ import NativeTalaDB from './NativeTalaDB';
 // ---------------------------------------------------------------------------
 
 export const TalaDBModule = {
-  /** Open (or create) the database. Call once at app startup. */
-  initialize: (dbName: string) => NativeTalaDB.initialize(dbName),
+  /**
+   * Open (or create) the database. Call once at app startup.
+   *
+   * @param configJson  Optional JSON-serialised `TalaDbConfig` for HTTP push
+   *                    sync. Example: `JSON.stringify({ sync: { enabled: true,
+   *                    endpoint: 'https://api.example.com/events' } })`.
+   */
+  initialize: (dbName: string, configJson?: string) =>
+    NativeTalaDB.initialize(dbName, configJson),
   /** Close the database gracefully. */
   close: () => NativeTalaDB.close(),
 };

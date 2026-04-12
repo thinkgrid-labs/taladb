@@ -62,6 +62,54 @@ const all = await users.find()
 
 That's all the setup you need. `openDB` detects the browser automatically, opens a persistent OPFS database named `myapp.db`, and returns a collection API identical to Node.js and React Native.
 
+## HTTP push sync
+
+Pass a `config` option to `openDB` to push mutation events to a remote endpoint after every write:
+
+```ts
+import { openDB } from 'taladb'
+
+const db = await openDB('myapp.db', {
+  config: {
+    sync: {
+      enabled: true,
+      endpoint: 'https://api.example.com/taladb-events',
+      headers: { Authorization: `Bearer ${myToken}` },
+      exclude_fields: ['embedding'],  // omit large vector fields
+    },
+  },
+})
+
+// Every write now fires an HTTP event in the background
+const users = db.collection('users')
+await users.insert({ name: 'Alice', role: 'admin' })
+```
+
+After every committed write, TalaDB fires a background `fetch` on the JS microtask queue and POSTs the event payload to the configured endpoint with up to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). Writes are never blocked.
+
+::: warning Tab lifetime
+In-flight sync requests are subject to normal browser fetch constraints. If the user closes the tab during a retry sequence, any remaining attempts are lost. Sync is best-effort by design.
+:::
+
+Per-event endpoint overrides are supported:
+
+```ts
+const db = await openDB('myapp.db', {
+  config: {
+    sync: {
+      enabled: true,
+      endpoint: 'https://api.example.com/events',
+      insert_endpoint: 'https://api.example.com/events/insert',
+      update_endpoint: 'https://api.example.com/events/update',
+      delete_endpoint: 'https://api.example.com/events/delete',
+      headers: { Authorization: 'Bearer YOUR_TOKEN' },
+    },
+  },
+})
+```
+
+See the [HTTP Push Sync guide](/guide/http-sync) for the full config reference, payload shapes, and retry behaviour.
+
 ## Defining your schema
 
 TalaDB is schemaless, but TypeScript generics let you describe the shape of each collection:

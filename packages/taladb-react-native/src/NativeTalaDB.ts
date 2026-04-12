@@ -12,8 +12,11 @@ export interface Spec extends TurboModule {
   /**
    * Open (or create) a TalaDB database file at the platform default path.
    * Must be called once at app startup before using `collection()`.
+   *
+   * @param configJson  Optional JSON-serialised `TalaDbConfig`. Pass to enable
+   *                    HTTP push sync. When omitted, sync is disabled.
    */
-  initialize(dbName: string): Promise<void>;
+  initialize(dbName: string, configJson?: string): Promise<void>;
 
   /** Close the database and flush all pending writes. */
   close(): Promise<void>;

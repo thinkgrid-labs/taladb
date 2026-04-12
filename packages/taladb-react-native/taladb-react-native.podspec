@@ -18,27 +18,24 @@ Pod::Spec.new do |s|
   s.source_files  = "ios/**/*.{h,m,mm}", "cpp/**/*.{h,cpp}"
 
   # ---------------------------------------------------------------------------
-  # Pre-built Rust static library
+  # Pre-built Rust XCFramework
   # ---------------------------------------------------------------------------
-  # Build with:
-  #   cargo build --target aarch64-apple-ios          --release   (device)
-  #   cargo build --target x86_64-apple-ios           --release   (simulator Intel)
-  #   cargo build --target aarch64-apple-ios-sim      --release   (simulator Apple Silicon)
-  #   lipo device + sim → ios/libtaladb_ffi.a (fat / xcframework)
-  #
-  # The podspec expects the lipo'd archive at ios/libtaladb_ffi.a.
-  s.vendored_libraries = "ios/libtaladb_ffi.a"
+  # Built by scripts/build-ios.sh (or the release CI):
+  #   cargo build --target aarch64-apple-ios        --release  (device)
+  #   cargo build --target aarch64-apple-ios-sim    --release  (Apple Silicon simulator)
+  #   cargo build --target x86_64-apple-ios         --release  (Intel simulator)
+  #   lipo sim slices → fat sim lib
+  #   xcodebuild -create-xcframework → ios/TalaDBFfi.xcframework
+  s.vendored_frameworks = "ios/TalaDBFfi.xcframework"
 
   # ---------------------------------------------------------------------------
   # Compiler settings
   # ---------------------------------------------------------------------------
   s.pod_target_xcconfig = {
-    "CLANG_CXX_LANGUAGE_STANDARD"   => "c++17",
-    "OTHER_CPLUSPLUSFLAGS"           => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1",
-    "HEADER_SEARCH_PATHS"            => "$(PODS_ROOT)/Headers/Public/React-Core $(PODS_ROOT)/Headers/Public/React-RCTFabric",
-    "LIBRARY_SEARCH_PATHS"           => "$(PODS_ROOT)/../ios",
-    # Suppress linker warnings from the Rust archive
-    "OTHER_LDFLAGS"                  => "-lc++ -lz",
+    "CLANG_CXX_LANGUAGE_STANDARD" => "c++17",
+    "OTHER_CPLUSPLUSFLAGS"        => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1",
+    "HEADER_SEARCH_PATHS"         => "$(PODS_ROOT)/Headers/Public/React-Core $(PODS_ROOT)/Headers/Public/React-RCTFabric",
+    "OTHER_LDFLAGS"               => "-lc++ -lz",
   }
 
   # ---------------------------------------------------------------------------

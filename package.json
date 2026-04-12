@@ -1,7 +1,7 @@
 {
   "name": "taladb-workspace",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "sync-version": "node scripts/sync-version.js",
@@ -10,6 +10,7 @@
     "build:taladb": "pnpm --filter taladb build",
     "build:web": "pnpm --filter @taladb/web build",
     "build:node": "pnpm --filter @taladb/node build",
+    "build:react-native": "pnpm --filter @taladb/react-native build",
     "test": "cargo test --workspace && pnpm run -r test",
     "test:rust": "cargo test --workspace",
     "test:web": "wasm-pack test packages/taladb-web --headless --chrome",
