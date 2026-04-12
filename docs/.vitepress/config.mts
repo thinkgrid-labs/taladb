@@ -46,6 +46,9 @@ export default defineConfig({
   },
 
   head: [
+    // Google Analytics
+    ["script", { async: "", src: "https://www.googletagmanager.com/gtag/js?id=G-SWTD98L8XR" }],
+    ["script", {}, "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-SWTD98L8XR');"],
     [
       "link",
       { rel: "icon", href: "/taladb/favicon.png", type: "image/png" },
