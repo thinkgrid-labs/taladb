@@ -7,22 +7,25 @@
 //! All methods accept/return JSON strings so the JS worker script only needs
 //! `JSON.stringify` / `JSON.parse` — no complex serialisation on the JS side.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use serde_json::{json, Map, Value as JsonValue};
 use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
-use taladb_core::config::SyncConfig;
 use taladb_core::engine::RedbBackend;
-use taladb_core::{
-    Database, Document, Filter, HnswOptions, SyncEvent, SyncHook, TalaDbConfig, Update, Value,
-    VectorMetric,
-};
+use taladb_core::{Database, Filter, HnswOptions, Update, Value, VectorMetric};
 
-use crate::storage::opfs_backend::OpfsBackend;
 use crate::doc_to_json;
+use crate::storage::opfs_backend::OpfsBackend;
+
+#[cfg(target_arch = "wasm32")]
+use std::collections::HashMap;
+#[cfg(target_arch = "wasm32")]
+use std::sync::Arc;
+#[cfg(target_arch = "wasm32")]
+use serde_json::{json, Map, Value as JsonValue};
+#[cfg(target_arch = "wasm32")]
+use taladb_core::config::SyncConfig;
+#[cfg(target_arch = "wasm32")]
+use taladb_core::{Document, SyncEvent, SyncHook, TalaDbConfig};
 
 // ---------------------------------------------------------------------------
 // WasmSyncHook — HTTP push sync for the browser (WASM) platform
