@@ -256,7 +256,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,x86_64-apple-ios
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
       - uses: actions/cache@v4
         with:
@@ -271,19 +271,29 @@ jobs:
         working-directory: packages/taladb-react-native/rust
         run: |
           cargo build --release --target aarch64-apple-ios
+          cargo build --release --target aarch64-apple-ios-sim
           cargo build --release --target x86_64-apple-ios
 
-      - name: Create universal static library
+      - name: Create simulator fat library and xcframework
         run: |
+          # Merge Apple Silicon + Intel simulator slices into one sim fat lib
           lipo -create \
-            target/aarch64-apple-ios/release/libtaladb_ffi.a \
+            target/aarch64-apple-ios-sim/release/libtaladb_ffi.a \
             target/x86_64-apple-ios/release/libtaladb_ffi.a \
-            -output packages/taladb-react-native/ios/libtaladb.a
+            -output /tmp/libtaladb_ffi_sim.a
+
+          # Build XCFramework (device slice + universal simulator slice)
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libtaladb_ffi.a \
+            -headers packages/taladb-react-native/cpp \
+            -library /tmp/libtaladb_ffi_sim.a \
+            -headers packages/taladb-react-native/cpp \
+            -output packages/taladb-react-native/ios/TalaDBFfi.xcframework
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-rn-ios
-          path: packages/taladb-react-native/ios/libtaladb.a
+          path: packages/taladb-react-native/ios/TalaDBFfi.xcframework
 
   # ---------------------------------------------------------------------------
   # Build React Native Android shared libraries (arm64-v8a, armeabi-v7a, x86_64)
@@ -300,20 +310,24 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
-      - uses: actions/cache@v4
+      - name: Cache cargo registry, build, and cargo-ndk binary
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin/cargo-ndk
             target
           key: ${{ runner.os }}-cargo-rn-android-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-rn-android-
 
       - name: Install Android NDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;27.2.12479018"
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+        run: cargo install cargo-ndk --locked
 
       - name: Build Android targets
         working-directory: packages/taladb-react-native/rust
@@ -467,11 +481,11 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # -- @taladb/react-native ------------------------------------------------
-      - name: Download React Native iOS library
+      - name: Download React Native iOS xcframework
         uses: actions/download-artifact@v4
         with:
           name: release-rn-ios
-          path: packages/taladb-react-native/ios
+          path: packages/taladb-react-native/ios/TalaDBFfi.xcframework
 
       - name: Download React Native Android libraries
         uses: actions/download-artifact@v4

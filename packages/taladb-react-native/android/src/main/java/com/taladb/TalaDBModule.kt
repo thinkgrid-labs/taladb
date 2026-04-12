@@ -23,7 +23,6 @@ package com.taladb
 
 import com.facebook.react.bridge.*
 import com.facebook.react.module.annotations.ReactModule
-import com.facebook.react.turbomodule.core.CallInvokerHolderImpl
 
 @ReactModule(name = TalaDBModule.NAME)
 class TalaDBModule(private val reactContext: ReactApplicationContext) :
@@ -33,9 +32,11 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
         const val NAME = "TalaDB"
 
         init {
-            // libtaladb_ffi.so is built by CMakeLists.txt (see android/).
-            // It bundles both the C++ JSI HostObject and the Rust FFI crate.
+            // libtaladb_ffi.so is the pre-built Rust crate (jniLibs/).
+            // libtaladb_jsi.so wraps the C++ JSI HostObject and links taladb_ffi.
+            // Load ffi first so the dynamic linker can resolve it when jsi loads.
             System.loadLibrary("taladb_ffi")
+            System.loadLibrary("taladb_jsi")
         }
     }
 
@@ -50,24 +51,23 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
      * JSI runtime identified by [jsContextNativePtr].
      * Called once from [initialize].
      */
-    private external fun nativeInstall(jsContextNativePtr: Long, dbPath: String)
+    private external fun nativeInstall(jsContextNativePtr: Long, dbPath: String, configJson: String?)
 
     // -----------------------------------------------------------------------
-    // TurboModule: initialize(dbName) → Promise<void>
+    // TurboModule: initialize(dbName, configJson?) → Promise<void>
     // -----------------------------------------------------------------------
 
-    override fun initialize(dbName: String, promise: Promise) {
+    override fun initialize(dbName: String, configJson: String?, promise: Promise) {
         try {
             val dbPath = reactContext.filesDir.absolutePath + "/$dbName"
 
-            val jsCallInvokerHolder = reactContext.catalystInstance
-                .jsCallInvokerHolder as CallInvokerHolderImpl
-            val jsContextPtr = jsCallInvokerHolder.nativeCallInvoker
+            // javaScriptContextHolder.get() returns the raw jsi::Runtime* pointer.
+            val jsContextPtr = reactContext.javaScriptContextHolder!!.get()
 
             // Install on the JS thread
             reactContext.runOnJSQueueThread {
                 try {
-                    nativeInstall(jsContextPtr, dbPath)
+                    nativeInstall(jsContextPtr, dbPath, configJson)
                     promise.resolve(null)
                 } catch (e: Exception) {
                     promise.reject("TALADB_INSTALL_ERROR", e.message, e)

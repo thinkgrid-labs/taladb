@@ -37,6 +37,14 @@ typedef struct TalaDbHandle TalaDbHandle;
 /** Open (or create) a database at the given file-system path. */
 TalaDbHandle *taladb_open(const char *path);
 
+/**
+ * Open (or create) a database with HTTP push sync configuration.
+ *
+ * config_json — JSON-serialised TalaDbConfig, or NULL to open without sync.
+ * Returns an opaque handle (same semantics as taladb_open), or NULL on failure.
+ */
+TalaDbHandle *taladb_open_with_config(const char *path, const char *config_json);
+
 /** Flush and close the database, freeing the handle. */
 void taladb_close(TalaDbHandle *handle);
 

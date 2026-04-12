@@ -1,6 +1,6 @@
 {
   "name": "taladb",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Local-first document and vector database for React, React Native, and Node.js",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -8,6 +8,7 @@
   "sideEffects": false,
   "exports": {
     ".": {
+      "browser": "./dist/index.browser.mjs",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
@@ -49,7 +50,12 @@
   "engines": {
     "node": ">=18"
   },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.0"

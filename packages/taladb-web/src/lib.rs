@@ -6,7 +6,9 @@ pub use worker_db::WorkerDB;
 use std::sync::Arc;
 
 use serde_wasm_bindgen::{from_value, to_value};
-use taladb_core::{Collection, Database, Filter, HnswOptions, TalaDbError, Update, Value, VectorMetric};
+use taladb_core::{
+    Collection, Database, Filter, HnswOptions, TalaDbError, Update, Value, VectorMetric,
+};
 use wasm_bindgen::prelude::*;
 
 pub use storage::opfs::{is_opfs_available, opfs_delete_snapshot, opfs_load_snapshot};
@@ -29,6 +31,7 @@ fn err_to_js(e: TalaDbError) -> JsValue {
         TalaDbError::VectorIndexNotFound(_) => "VectorIndexNotFound",
         TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
         TalaDbError::InvalidOperation(_) => "InvalidOperation",
+        TalaDbError::Config(_) => "Config",
     };
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &"error".into(), &JsValue::from_str(&msg));
@@ -421,10 +424,9 @@ fn parse_field_filter(field: &str, expr: &serde_json::Value) -> Option<Filter> {
                 Filter::Nin(field.to_string(), arr)
             }
             "$exists" => Filter::Exists(field.to_string(), val.as_bool().unwrap_or(true)),
-            "$contains" => Filter::Contains(
-                field.to_string(),
-                val.as_str().unwrap_or("").to_string(),
-            ),
+            "$contains" => {
+                Filter::Contains(field.to_string(), val.as_str().unwrap_or("").to_string())
+            }
             _ => return None,
         };
         filters.push(f);

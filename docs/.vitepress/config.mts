@@ -46,6 +46,9 @@ export default defineConfig({
   },
 
   head: [
+    // Google Analytics
+    ["script", { async: "", src: "https://www.googletagmanager.com/gtag/js?id=G-SWTD98L8XR" }],
+    ["script", {}, "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-SWTD98L8XR');"],
     [
       "link",
       { rel: "icon", href: "/taladb/favicon.png", type: "image/png" },
@@ -80,7 +83,7 @@ export default defineConfig({
       { text: "Roadmap", link: "/roadmap" },
       { text: "Live Demo", link: "https://taladb-playground.vercel.app/" },
       {
-        text: "v0.5.0",
+        text: "v0.6.0",
         items: [
           {
             text: "Changelog",
@@ -110,6 +113,7 @@ export default defineConfig({
           { text: "Node.js", link: "/guide/node" },
           { text: "React Native", link: "/guide/react-native" },
           { text: "CLI Dev Tools", link: "/guide/cli" },
+          { text: "HTTP Push Sync", link: "/guide/http-sync" },
         ],
       },
       {

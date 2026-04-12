@@ -13,9 +13,198 @@ use web_sys::FileSystemSyncAccessHandle;
 use taladb_core::engine::RedbBackend;
 use taladb_core::{Database, Filter, HnswOptions, Update, Value, VectorMetric};
 
+use crate::doc_to_json;
 use crate::storage::opfs_backend::OpfsBackend;
 
-use crate::doc_to_json;
+#[cfg(target_arch = "wasm32")]
+use std::collections::HashMap;
+#[cfg(target_arch = "wasm32")]
+use std::sync::Arc;
+#[cfg(target_arch = "wasm32")]
+use serde_json::{json, Map, Value as JsonValue};
+#[cfg(target_arch = "wasm32")]
+use taladb_core::config::SyncConfig;
+#[cfg(target_arch = "wasm32")]
+use taladb_core::{Document, SyncEvent, SyncHook, TalaDbConfig};
+
+// ---------------------------------------------------------------------------
+// WasmSyncHook — HTTP push sync for the browser (WASM) platform
+//
+// `on_event` is synchronous (required by SyncHook). We use `spawn_local` to
+// schedule the HTTP POST as a microtask so it never blocks the write path.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+struct WasmSyncHook {
+    config: Arc<SyncConfig>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WasmSyncHook {
+    fn new(config: SyncConfig) -> Self {
+        WasmSyncHook {
+            config: Arc::new(config),
+        }
+    }
+
+    fn endpoint_for(&self, event: &SyncEvent) -> Option<String> {
+        let cfg = &*self.config;
+        match event {
+            SyncEvent::Insert { .. } => cfg.insert_endpoint.clone().or_else(|| cfg.endpoint.clone()),
+            SyncEvent::Update { .. } => cfg.update_endpoint.clone().or_else(|| cfg.endpoint.clone()),
+            SyncEvent::Delete { .. } => cfg.delete_endpoint.clone().or_else(|| cfg.endpoint.clone()),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl SyncHook for WasmSyncHook {
+    fn on_event(&self, event: SyncEvent) {
+        if !self.config.enabled {
+            return;
+        }
+        let Some(endpoint) = self.endpoint_for(&event) else {
+            return;
+        };
+        let payload = build_wasm_payload(event, &self.config.exclude_fields);
+        let headers = self.config.headers.clone();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            fire_wasm_with_retry(&endpoint, &headers, &payload).await;
+        });
+    }
+}
+
+/// Build the JSON payload for a sync event (WASM variant — uses js_sys::Date for timestamp).
+#[cfg(target_arch = "wasm32")]
+fn build_wasm_payload(event: SyncEvent, exclude: &[String]) -> JsonValue {
+    let ts = js_sys::Date::now() as u64;
+    match event {
+        SyncEvent::Insert {
+            collection,
+            id,
+            document,
+        } => {
+            let doc_obj = doc_fields_to_json(&document, exclude);
+            json!({
+                "_taladb_event": "insert",
+                "collection": collection,
+                "id": id,
+                "document": doc_obj,
+                "timestamp": ts,
+            })
+        }
+        SyncEvent::Update {
+            collection,
+            id,
+            changes,
+        } => {
+            let mut changes_obj = Map::new();
+            for (k, v) in &changes {
+                if !exclude.contains(k) {
+                    changes_obj.insert(k.clone(), wasm_value_to_json(v));
+                }
+            }
+            json!({
+                "_taladb_event": "update",
+                "collection": collection,
+                "id": id,
+                "changes": JsonValue::Object(changes_obj),
+                "timestamp": ts,
+            })
+        }
+        SyncEvent::Delete { collection, id } => {
+            json!({
+                "_taladb_event": "delete",
+                "collection": collection,
+                "id": id,
+                "timestamp": ts,
+            })
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn doc_fields_to_json(doc: &Document, exclude: &[String]) -> JsonValue {
+    let mut obj = Map::new();
+    for (k, v) in &doc.fields {
+        if !exclude.contains(k) {
+            obj.insert(k.clone(), wasm_value_to_json(v));
+        }
+    }
+    JsonValue::Object(obj)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_value_to_json(v: &Value) -> JsonValue {
+    use crate::value_to_json;
+    value_to_json(v)
+}
+
+/// Simple sleep using globalThis.setTimeout — works in both window and worker contexts.
+#[cfg(target_arch = "wasm32")]
+async fn sleep_ms_wasm(ms: u32) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let promise = js_sys::Promise::new(&mut move |resolve, _| {
+        let global = js_sys::global();
+        let set_timeout = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
+            .expect("setTimeout not found on globalThis");
+        let _ = js_sys::Reflect::apply(
+            set_timeout.unchecked_ref::<js_sys::Function>(),
+            &JsValue::undefined(),
+            &js_sys::Array::of2(&resolve, &JsValue::from_f64(ms as f64)),
+        );
+    });
+    let _ = JsFuture::from(promise).await;
+}
+
+/// POST `payload` with exponential-backoff retry (4 total attempts).
+#[cfg(target_arch = "wasm32")]
+async fn fire_wasm_with_retry(
+    endpoint: &str,
+    headers: &HashMap<String, String>,
+    payload: &JsonValue,
+) {
+    const BACKOFFS_MS: &[u32] = &[200, 400, 800];
+    let client = reqwest::Client::new();
+    let max_attempts = BACKOFFS_MS.len() + 1;
+
+    for attempt in 0..max_attempts {
+        if attempt > 0 {
+            sleep_ms_wasm(BACKOFFS_MS[attempt - 1]).await;
+        }
+
+        let mut req = client.post(endpoint).json(payload);
+        for (k, v) in headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => return,
+            Ok(resp) if resp.status().is_server_error() => continue,
+            Ok(_) => return, // 4xx — permanent, no retry
+            Err(_) => continue, // network error — retry
+        }
+    }
+    // All attempts exhausted — silently drop
+}
+
+/// Build a WASM sync hook from an optional JSON config string.
+#[cfg(target_arch = "wasm32")]
+fn build_wasm_sync_hook(
+    config_json: Option<String>,
+) -> Result<Option<Arc<dyn SyncHook>>, JsValue> {
+    if let Some(json) = config_json {
+        let config: TalaDbConfig =
+            serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if config.sync.enabled {
+            return Ok(Some(Arc::new(WasmSyncHook::new(config.sync)) as Arc<dyn SyncHook>));
+        }
+    }
+    Ok(None)
+}
 
 // ---------------------------------------------------------------------------
 // WorkerDB
@@ -24,6 +213,8 @@ use crate::doc_to_json;
 #[wasm_bindgen]
 pub struct WorkerDB {
     db: Database,
+    #[cfg(target_arch = "wasm32")]
+    sync_hook: Option<Arc<dyn SyncHook>>,
 }
 
 #[wasm_bindgen]
@@ -36,7 +227,11 @@ impl WorkerDB {
     #[wasm_bindgen(js_name = openInMemory)]
     pub fn open_in_memory() -> Result<WorkerDB, JsValue> {
         let db = Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(WorkerDB { db })
+        Ok(WorkerDB {
+            db,
+            #[cfg(target_arch = "wasm32")]
+            sync_hook: None,
+        })
     }
 
     /// Open a database, restoring from a previously exported snapshot if provided.
@@ -55,7 +250,33 @@ impl WorkerDB {
                 .map_err(|e| JsValue::from_str(&e.to_string()))?,
             _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
         };
-        Ok(WorkerDB { db })
+        Ok(WorkerDB {
+            db,
+            #[cfg(target_arch = "wasm32")]
+            sync_hook: None,
+        })
+    }
+
+    /// Open a database from an optional snapshot with HTTP push sync config.
+    ///
+    /// `config_json` — JSON-serialised `TalaDbConfig`, or `null` to open without sync.
+    ///
+    /// ```js
+    /// const db = WorkerDB.openWithConfigAndSnapshot(snapshot, JSON.stringify(config));
+    /// ```
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = openWithConfigAndSnapshot)]
+    pub fn open_with_config_and_snapshot(
+        data: Option<Vec<u8>>,
+        config_json: Option<String>,
+    ) -> Result<WorkerDB, JsValue> {
+        let db = match data {
+            Some(ref bytes) if !bytes.is_empty() => Database::restore_from_snapshot(bytes)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?,
+            _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
+        };
+        let sync_hook = build_wasm_sync_hook(config_json)?;
+        Ok(WorkerDB { db, sync_hook })
     }
 
     /// Serialize the entire in-memory database to bytes for persistence.
@@ -83,7 +304,55 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let db = Database::open_with_backend(Box::new(redb_backend))
             .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
-        Ok(WorkerDB { db })
+        Ok(WorkerDB {
+            db,
+            #[cfg(target_arch = "wasm32")]
+            sync_hook: None,
+        })
+    }
+
+    /// Open a database backed by OPFS with HTTP push sync config.
+    ///
+    /// `config_json` — JSON-serialised `TalaDbConfig`, or `null` to open without sync.
+    ///
+    /// ```js
+    /// const handle = await file_handle.createSyncAccessHandle();
+    /// const db = WorkerDB.openWithConfigAndOpfs(handle, JSON.stringify(config));
+    /// ```
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = openWithConfigAndOpfs)]
+    pub fn open_with_config_and_opfs(
+        sync_handle: FileSystemSyncAccessHandle,
+        config_json: Option<String>,
+    ) -> Result<WorkerDB, JsValue> {
+        let opfs = OpfsBackend::from_handle(sync_handle);
+        let redb_backend = RedbBackend::open_with_redb_backend(opfs)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let db = Database::open_with_backend(Box::new(redb_backend))
+            .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
+        let sync_hook = build_wasm_sync_hook(config_json)?;
+        Ok(WorkerDB { db, sync_hook })
+    }
+
+    // ------------------------------------------------------------------
+    // Internal helpers
+    // ------------------------------------------------------------------
+
+    /// Get a collection handle, attaching the sync hook on write paths.
+    #[cfg(target_arch = "wasm32")]
+    fn get_collection(&self, name: &str) -> taladb_core::Collection {
+        let col = self.db.collection(name);
+        if let Some(hook) = &self.sync_hook {
+            col.with_sync_hook(Arc::clone(hook))
+        } else {
+            col
+        }
+    }
+
+    // When not targeting WASM (e.g. cargo check on host), fall back to no-hook.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_collection(&self, name: &str) -> taladb_core::Collection {
+        self.db.collection(name)
     }
 
     // ------------------------------------------------------------------
@@ -95,8 +364,8 @@ impl WorkerDB {
         let v: serde_json::Value =
             serde_json::from_str(doc_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let fields = json_obj_to_fields(&v)?;
-        let col = self.db.collection(collection);
-        let id = col
+        let id = self
+            .get_collection(collection)
             .insert(fields)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(id.to_string())
@@ -108,8 +377,8 @@ impl WorkerDB {
         let arr: Vec<serde_json::Value> =
             serde_json::from_str(docs_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let items: Result<Vec<_>, _> = arr.iter().map(json_obj_to_fields).collect();
-        let col = self.db.collection(collection);
-        let ids = col
+        let ids = self
+            .get_collection(collection)
             .insert_many(items?)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
@@ -119,8 +388,9 @@ impl WorkerDB {
     /// Find documents. Returns a JSON array of document objects.
     pub fn find(&self, collection: &str, filter_json: &str) -> Result<String, JsValue> {
         let filter = parse_filter(filter_json)?;
-        let col = self.db.collection(collection);
-        let docs = col
+        let docs = self
+            .db
+            .collection(collection)
             .find(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let json: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
@@ -131,8 +401,9 @@ impl WorkerDB {
     #[wasm_bindgen(js_name = findOne)]
     pub fn find_one(&self, collection: &str, filter_json: &str) -> Result<String, JsValue> {
         let filter = parse_filter(filter_json)?;
-        let col = self.db.collection(collection);
-        let doc = col
+        let doc = self
+            .db
+            .collection(collection)
             .find_one(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let json = doc.as_ref().map(doc_to_json);
@@ -149,8 +420,7 @@ impl WorkerDB {
     ) -> Result<bool, JsValue> {
         let filter = parse_filter(filter_json)?;
         let update = parse_update(update_json)?;
-        self.db
-            .collection(collection)
+        self.get_collection(collection)
             .update_one(filter, update)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -165,8 +435,7 @@ impl WorkerDB {
     ) -> Result<u32, JsValue> {
         let filter = parse_filter(filter_json)?;
         let update = parse_update(update_json)?;
-        self.db
-            .collection(collection)
+        self.get_collection(collection)
             .update_many(filter, update)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -176,8 +445,7 @@ impl WorkerDB {
     #[wasm_bindgen(js_name = deleteOne)]
     pub fn delete_one(&self, collection: &str, filter_json: &str) -> Result<bool, JsValue> {
         let filter = parse_filter(filter_json)?;
-        self.db
-            .collection(collection)
+        self.get_collection(collection)
             .delete_one(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -186,8 +454,7 @@ impl WorkerDB {
     #[wasm_bindgen(js_name = deleteMany)]
     pub fn delete_many(&self, collection: &str, filter_json: &str) -> Result<u32, JsValue> {
         let filter = parse_filter(filter_json)?;
-        self.db
-            .collection(collection)
+        self.get_collection(collection)
             .delete_many(filter)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -460,10 +727,9 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
                     val.as_array()?.iter().map(json_to_core_value).collect(),
                 ),
                 "$exists" => Filter::Exists(field.clone(), val.as_bool().unwrap_or(true)),
-                "$contains" => Filter::Contains(
-                    field.clone(),
-                    val.as_str().unwrap_or("").to_string(),
-                ),
+                "$contains" => {
+                    Filter::Contains(field.clone(), val.as_str().unwrap_or("").to_string())
+                }
                 _ => return None,
             };
             filters.push(f);
