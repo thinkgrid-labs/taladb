@@ -5,6 +5,32 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-04-12
+
+### Added
+- **HTTP push sync** — event-driven, webhook-style sync that pushes mutation events from the database to a remote server over HTTP:
+  - `taladb.config.json` / `taladb.config.ts` support — configure `sync.pushEndpoint`, `sync.authToken`, and `sync.retryPolicy` per project
+  - `SyncHook` trait implementation — every `insert`, `updateOne`, `updateMany`, `deleteOne`, `deleteMany` emits a typed `SyncEvent` to a background dispatcher
+  - **Browser / WASM** — `SyncConfig` wired into the WASM worker; mutations are dispatched from `worker_db.rs` via `fetch()` on the worker thread; no main-thread blocking
+  - **Node.js** — `loadConfig` / `validateConfig` read the project config file at startup and wire the sync hook into the native module
+  - **React Native** — `TalaDBModule.initialize({ pushEndpoint, authToken })` passes sync config to the JSI layer at runtime; no config file needed
+  - Configurable retry policy: exponential back-off with jitter, configurable `maxRetries` and `initialDelayMs`
+  - `SyncEvent` payload includes `collection`, `operation`, `documentId`, `timestamp`, and the full document diff
+  - CLI: `taladb sync status` shows pending event queue depth and last-push timestamp
+
+### Fixed
+- **Android `TalaDBModule` — wrong library loaded** — `System.loadLibrary("taladb_ffi")` loaded the raw Rust crate which has no JNI entrypoints; corrected to load `taladb_ffi` then `taladb_jsi`
+- **Android `TalaDBModule` — wrong JSI runtime pointer** — `jsCallInvokerHolder.nativeCallInvoker` returns a `CallInvoker*`, not a `jsi::Runtime*`; fixed to `reactContext.javaScriptContextHolder!!.get()`
+- **iOS podspec — static library replaced with XCFramework** — `s.vendored_libraries = "libtaladb_ffi.a"` replaced with `s.vendored_frameworks = "TalaDBFfi.xcframework"` to support both device and Apple Silicon simulator slices; CI now builds three targets (`aarch64-apple-ios`, `aarch64-apple-ios-sim`, `x86_64-apple-ios`) and packages them via `xcodebuild -create-xcframework`
+- **Clippy: wasm32-only imports in `worker_db.rs`** — `HashMap`, `Arc`, `SyncEvent`, `SyncHook`, and related types were declared at crate level but only used inside `#[cfg(target_arch = "wasm32")]` blocks; moved behind matching `#[cfg]` guards to fix unused-import warnings in the CI `--target x86_64-unknown-linux-gnu` check
+- **Browser bundle — `js-yaml` import error** — `taladb`'s `config.ts` pulled in `js-yaml`, `node:fs`, and `node:path`; Vite statically analysed these even behind runtime guards and threw at startup. Fixed with a separate browser build entry (`index.browser.mjs`) that substitutes a no-op `config.browser.ts` stub via an esbuild plugin; the `browser` export condition in `package.json` ensures Vite resolves this path automatically
+- **Playground `browser` export condition not applied** — `dev-playground.sh` copied `dist/` but not `package.json`, so the playground's `node_modules/taladb` still resolved `index.mjs` (the Node build) instead of `index.browser.mjs`; fixed by also copying `package.json`
+
+### Improved
+- **`web.md` browser support table** — updated to reflect the actual DedicatedWorker + Web Locks architecture: OPFS is the primary fast path; IndexedDB snapshot fallback activates immediately via `{ ifAvailable: true }` (no blocking wait); secondary tabs are live-synced via `BroadcastChannel`
+- **`react-native.md`** — HTTP push sync section added; removed stale "not yet published to npm" limitation (package is live at `@taladb/react-native@0.5.0`); dropped `x86` ABI from Android build matrix (no current-generation device or emulator requires it)
+- **Android NDK version pinned** — CI now installs NDK `27.2.12479018` explicitly via `setup-android`
+
 ## [0.5.0] - 2026-04-12
 
 ### Added
