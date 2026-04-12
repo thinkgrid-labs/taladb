@@ -12,10 +12,10 @@ TalaDB runs in the browser as a WebAssembly module compiled from the same Rust c
 | Feature | Chrome | Firefox | Safari |
 |---|---|---|---|
 | WASM (in-memory) | 79+ | 78+ | 14+ |
-| OPFS (persistent) | 86+ | 111+ | 15.2+ |
-| Full persistence | 86+ | 111+ | 16.4+ |
+| OPFS (fastest persistence) | 86+ | 111+ | 15.2+ |
+| IndexedDB fallback (persistence without OPFS) | 79+ | 78+ | 14+ |
 
-On browsers without OPFS support, TalaDB falls back to an in-memory database automatically. Data is not persisted across page reloads in that case.
+On browsers without OPFS, TalaDB automatically falls back to an IndexedDB-backed database. Data still persists across page reloads — writes are a bit slower because each one flushes a snapshot to IndexedDB.
 
 ## Installation
 
@@ -348,5 +348,4 @@ await db.close()
 ## Current limitations
 
 - **HNSW vector index** — not available in the browser. The HNSW algorithm uses `rayon` for parallelism which requires native threads. Calling `createVectorIndex({ indexType: 'hnsw' })` or `upgradeVectorIndex()` in the browser throws a clear error. Flat (brute-force) vector search works fine for collections up to ~100k vectors.
-- **Multi-tab writes** — only the first tab to open the database gets OPFS write access. Additional tabs open a live read replica synced via `BroadcastChannel`. Writes from any tab are reflected across all tabs automatically.
-- **In-memory fallback** — on browsers without OPFS (or when OPFS is unavailable), data is stored in memory only and lost on page reload.
+- **Multi-tab writes** — only the first tab to open the database holds the exclusive OPFS file lock (via the Web Locks API). Additional tabs fall back to an IndexedDB-backed in-memory copy that stays fresh as the primary tab writes. Writes from secondary tabs are local only — they are not synced back to the primary tab or to OPFS.
