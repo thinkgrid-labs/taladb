@@ -1,4 +1,4 @@
-use taladb_core::document::Value;
+use taladb_core::document::{Document, Value};
 use taladb_core::query::filter::Filter;
 use taladb_core::sync::{stamp, Change, ChangeOp, Changeset, LastWriteWins, SyncAdapter};
 use taladb_core::Database;
@@ -60,21 +60,19 @@ fn export_changes_returns_docs_after_since_ms() {
     let col = db.collection("tasks");
     let adapter = LastWriteWins::new();
 
-    // Insert with known timestamps
-    let mut old_fields = vec![("title".into(), s("old task"))];
-    stamp(&mut old_fields);
-    // Override to a known old timestamp
-    if let Some(entry) = old_fields.iter_mut().find(|(k, _)| k == "_changed_at") {
-        entry.1 = i(1000);
-    }
-    col.insert(old_fields).unwrap();
+    // Insert with known timestamps using insert_with_id so auto-stamping
+    // does not overwrite the controlled _changed_at values.
+    let old_doc = Document::new(vec![
+        ("title".into(), s("old task")),
+        ("_changed_at".into(), i(1000)),
+    ]);
+    col.insert_with_id(old_doc).unwrap();
 
-    let mut new_fields = vec![("title".into(), s("new task"))];
-    stamp(&mut new_fields);
-    if let Some(entry) = new_fields.iter_mut().find(|(k, _)| k == "_changed_at") {
-        entry.1 = i(9000);
-    }
-    col.insert(new_fields).unwrap();
+    let new_doc = Document::new(vec![
+        ("title".into(), s("new task")),
+        ("_changed_at".into(), i(9000)),
+    ]);
+    col.insert_with_id(new_doc).unwrap();
 
     let changes = adapter.export_changes(&db, &["tasks"], 5000).unwrap();
     assert_eq!(

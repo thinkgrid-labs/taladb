@@ -311,17 +311,17 @@ impl SyncAdapter for LastWriteWins {
                 }
 
                 ChangeOp::Delete => {
-                    // delete_by_id hard-deletes the doc and writes a tombstone.
-                    // If the doc is already gone (already deleted locally), we
-                    // still need to ensure the tombstone exists so this replica
-                    // can forward the deletion to downstream peers.
-                    col.delete_by_id(change.id)?;
-                    // Upsert tombstone with the remote timestamp so the higher
-                    // timestamp wins if both sides deleted the same document.
+                    // Hard-delete the document (no-op if already gone) and
+                    // track whether it actually existed so we can return an
+                    // accurate applied count.
+                    let existed = col.delete_by_id(change.id)?;
+
+                    // Always upsert the tombstone — even if the doc was already
+                    // absent — so this replica can forward the deletion to any
+                    // downstream peers that haven't seen it yet.
                     let tomb_table = tomb_table_name(&change.collection);
                     let mut wtxn = db.backend().begin_write()?;
                     let ts_bytes = postcard::to_allocvec(&(change.changed_at as i64))?;
-                    // Only overwrite if the remote timestamp is newer.
                     let existing_ts: i64 = wtxn
                         .get(&tomb_table, &change.id.to_bytes())?
                         .and_then(|b| postcard::from_bytes::<i64>(&b).ok())
@@ -330,7 +330,10 @@ impl SyncAdapter for LastWriteWins {
                         wtxn.put(&tomb_table, &change.id.to_bytes(), &ts_bytes)?;
                     }
                     wtxn.commit()?;
-                    applied += 1;
+
+                    if existed {
+                        applied += 1;
+                    }
                 }
             }
         }
