@@ -606,6 +606,49 @@ impl WorkerDB {
     }
 
     // ------------------------------------------------------------------
+    // Tombstone compaction
+    // ------------------------------------------------------------------
+
+    /// Remove tombstones older than `before_ms` from the given collection.
+    ///
+    /// Call periodically (e.g. on app startup) after your sync retention window
+    /// has elapsed so deleted document IDs no longer accumulate indefinitely.
+    /// Returns the number of tombstones removed.
+    ///
+    /// ```js
+    /// // Prune tombstones older than 30 days
+    /// const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    /// const pruned = db.compactTombstones('users', cutoff);
+    /// ```
+    #[wasm_bindgen(js_name = compactTombstones)]
+    pub fn compact_tombstones(
+        &self,
+        collection: &str,
+        before_ms: f64,
+    ) -> Result<u32, JsValue> {
+        self.db
+            .collection(collection)
+            .compact_tombstones(before_ms as u64)
+            .map(|n| n as u32)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    // ------------------------------------------------------------------
+    // Collection introspection
+    // ------------------------------------------------------------------
+
+    /// Returns a JSON array of all collection names in the database.
+    /// Used by the Worker to build the collections list for exportChangeset.
+    #[wasm_bindgen(js_name = listCollections)]
+    pub fn list_collections(&self) -> Result<String, JsValue> {
+        let names = self
+            .db
+            .list_collection_names()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&names).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    // ------------------------------------------------------------------
     // Bidirectional sync — changeset export / import
     // ------------------------------------------------------------------
 

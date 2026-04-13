@@ -1270,6 +1270,53 @@ impl Collection {
         Ok(self.find(filter)?.len() as u64)
     }
 
+    /// Remove tombstones older than `before_ms` (milliseconds since Unix epoch).
+    ///
+    /// Tombstones record deleted document IDs so deletions can propagate via the
+    /// sync changeset API.  Once all replicas are known to have received a
+    /// deletion (i.e. after your retention window has elapsed), those tombstones
+    /// can be safely pruned to reclaim storage.
+    ///
+    /// Returns the number of tombstones removed.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Prune tombstones older than 30 days
+    /// let cutoff = now_ms() - 30 * 24 * 60 * 60 * 1000;
+    /// let pruned = collection.compact_tombstones(cutoff)?;
+    /// ```
+    pub fn compact_tombstones(&self, before_ms: u64) -> Result<u64, TalaDbError> {
+        let tomb_table = tomb_table_name(&self.name);
+        let rtxn = self.backend.begin_read()?;
+        let all = rtxn.scan_all(&tomb_table).unwrap_or_default();
+
+        // Collect IDs whose tombstone timestamp is older than before_ms.
+        let to_prune: Vec<Vec<u8>> = all
+            .into_iter()
+            .filter_map(|(key_bytes, val_bytes)| {
+                let ts: i64 = postcard::from_bytes(&val_bytes).ok()?;
+                if (ts as u64) < before_ms {
+                    Some(key_bytes)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if to_prune.is_empty() {
+            return Ok(0);
+        }
+
+        drop(rtxn);
+        let count = to_prune.len() as u64;
+        let mut wtxn = self.backend.begin_write()?;
+        for key in &to_prune {
+            wtxn.delete(&tomb_table, key)?;
+        }
+        wtxn.commit()?;
+        Ok(count)
+    }
+
     fn delete_doc_and_indexes_with_compound(
         &self,
         doc: &Document,
