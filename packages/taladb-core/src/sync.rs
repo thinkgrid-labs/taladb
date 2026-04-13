@@ -34,7 +34,10 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::document::{Document, Value};
+#[allow(unused_imports)] // trait needed for begin_read/begin_write method dispatch
+use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
+use crate::index::tomb_table_name;
 use crate::query::filter::Filter;
 
 // ---------------------------------------------------------------------------
@@ -202,10 +205,17 @@ impl SyncAdapter for LastWriteWins {
 
         for &col_name in collections {
             let col = db.collection(col_name);
-            // Fetch all documents — a production impl would filter by `_changed_at`
-            // using a secondary index. Here we export everything and let the remote
-            // filter by `since_ms`.
-            let docs = col.find(Filter::All)?;
+            // Use the _changed_at secondary index for an O(log N) range scan
+            // instead of a full table scan. The index is auto-created on first
+            // mutation by ensure_changed_at_index().
+            let docs = if since_ms == 0 {
+                col.find(Filter::All)?
+            } else {
+                col.find(Filter::Gt(
+                    "_changed_at".into(),
+                    Value::Int(since_ms as i64),
+                ))?
+            };
             for doc in docs {
                 let changed_at = doc
                     .get("_changed_at")
@@ -216,14 +226,34 @@ impl SyncAdapter for LastWriteWins {
                             None
                         }
                     })
-                    // _changed_at defaults to 0 if absent — document always loses conflicts
                     .unwrap_or(0);
 
+                changes.push(Change {
+                    collection: col_name.to_string(),
+                    id: doc.id,
+                    op: ChangeOp::Upsert(doc),
+                    changed_at,
+                });
+            }
+
+            // Export tombstones so remote replicas learn about deletions.
+            let tomb_table = tomb_table_name(col_name);
+            let rtxn = db.backend().begin_read()?;
+            let all_tombs = rtxn.scan_all(&tomb_table).unwrap_or_default();
+            for (key_bytes, val_bytes) in all_tombs {
+                if key_bytes.len() != 16 {
+                    continue;
+                }
+                let ts: i64 = postcard::from_bytes(&val_bytes).unwrap_or(0);
+                let changed_at = ts as u64;
                 if changed_at > since_ms {
+                    let mut id_arr = [0u8; 16];
+                    id_arr.copy_from_slice(&key_bytes);
+                    let id = Ulid::from_bytes(id_arr);
                     changes.push(Change {
                         collection: col_name.to_string(),
-                        id: doc.id,
-                        op: ChangeOp::Upsert(doc),
+                        id,
+                        op: ChangeOp::Delete,
                         changed_at,
                     });
                 }
@@ -281,11 +311,26 @@ impl SyncAdapter for LastWriteWins {
                 }
 
                 ChangeOp::Delete => {
-                    // _id is Document::id, not a field — use delete_by_id
-                    let deleted = col.delete_by_id(change.id)?;
-                    if deleted {
-                        applied += 1;
+                    // delete_by_id hard-deletes the doc and writes a tombstone.
+                    // If the doc is already gone (already deleted locally), we
+                    // still need to ensure the tombstone exists so this replica
+                    // can forward the deletion to downstream peers.
+                    col.delete_by_id(change.id)?;
+                    // Upsert tombstone with the remote timestamp so the higher
+                    // timestamp wins if both sides deleted the same document.
+                    let tomb_table = tomb_table_name(&change.collection);
+                    let mut wtxn = db.backend().begin_write()?;
+                    let ts_bytes = postcard::to_allocvec(&(change.changed_at as i64))?;
+                    // Only overwrite if the remote timestamp is newer.
+                    let existing_ts: i64 = wtxn
+                        .get(&tomb_table, &change.id.to_bytes())?
+                        .and_then(|b| postcard::from_bytes::<i64>(&b).ok())
+                        .unwrap_or(0);
+                    if change.changed_at as i64 > existing_ts {
+                        wtxn.put(&tomb_table, &change.id.to_bytes(), &ts_bytes)?;
                     }
+                    wtxn.commit()?;
+                    applied += 1;
                 }
             }
         }

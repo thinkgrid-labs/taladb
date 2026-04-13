@@ -15,7 +15,7 @@ TalaDB runs in the browser as a WebAssembly module compiled from the same Rust c
 | OPFS (fastest persistence) | 86+ | 111+ | 15.2+ |
 | IndexedDB fallback (persistence without OPFS) | 79+ | 78+ | 14+ |
 
-On browsers without OPFS, TalaDB automatically falls back to an IndexedDB-backed database. Data still persists across page reloads — writes are a bit slower because each one flushes a snapshot to IndexedDB.
+On browsers without OPFS, TalaDB automatically falls back to an IndexedDB-backed database. Data still persists across page reloads. Snapshots are written to IndexedDB with a short debounce so bulk inserts stay fast.
 
 ## Installation
 
@@ -345,7 +345,54 @@ a.click()
 await db.close()
 ```
 
+## Bidirectional sync
+
+The built-in HTTP push sync sends every local write to your server. To pull
+remote changes back into the browser — for multi-device or offline-first sync —
+use the changeset API directly:
+
+```ts
+// Export local changes since the last sync
+const changeset = await db.exportChangeset(['users', 'posts'], lastSyncMs)
+await fetch('/sync/push', { method: 'POST', body: changeset })
+
+// Import remote changes from the server
+const resp  = await fetch(`/sync/pull?since=${lastSyncMs}`)
+const applied = await db.importChangeset(await resp.text())
+if (applied > 0) console.log(`Merged ${applied} remote changes`)
+
+lastSyncMs = Date.now()
+```
+
+`exportChangeset` and `importChangeset` use Last-Write-Wins conflict resolution
+with ULID tie-breaking for deterministic merge on any number of replicas.
+Deletes are tombstoned so they propagate correctly through every sync cycle.
+You control the transport — fetch, WebSocket, SSE, or WebRTC data channel.
+
 ## Current limitations
 
-- **HNSW vector index** — not available in the browser. The HNSW algorithm uses `rayon` for parallelism which requires native threads. Calling `createVectorIndex({ indexType: 'hnsw' })` or `upgradeVectorIndex()` in the browser throws a clear error. Flat (brute-force) vector search works fine for collections up to ~100k vectors.
-- **Multi-tab writes** — only the first tab to open the database holds the exclusive OPFS file lock (via the Web Locks API). Additional tabs fall back to an IndexedDB-backed in-memory copy that stays fresh as the primary tab writes. Writes from secondary tabs are local only — they are not synced back to the primary tab or to OPFS.
+- **HNSW vector index** — not available in the browser. The HNSW algorithm uses
+  `rayon` for parallelism which requires native threads. Calling
+  `createVectorIndex({ indexType: 'hnsw' })` or `upgradeVectorIndex()` in the
+  browser throws a clear error. Flat (brute-force) vector search works fine for
+  collections up to ~100k vectors.
+
+- **Secondary-tab writes** — only the first tab to open the database holds the
+  exclusive OPFS file lock (Web Locks API). Additional tabs operate on an
+  in-memory snapshot seeded from IndexedDB and stay read-fresh within 500 ms of
+  any primary-tab write via BroadcastChannel. However, writes made on a
+  secondary tab are not written back to the primary's OPFS file. For
+  write-heavy multi-tab workloads, keep mutations on the primary tab or route
+  them through a shared service worker.
+
+- **Snapshot size** — `exportSnapshot` / the IDB fallback path serialises the
+  entire database to a `Uint8Array` in memory. This works well for databases
+  under ~50 MB. Beyond that, the serialisation cost becomes noticeable; prefer
+  OPFS-backed storage (the default when available) which avoids full snapshots
+  entirely.
+
+- **Tombstone compaction** — deleted document IDs are stored as tombstones so
+  deletions propagate via the changeset sync API. Tombstones are never
+  automatically pruned. For collections with high delete rates over a long
+  lifetime, call `collection.compactTombstones(beforeMs)` periodically to
+  reclaim storage. (Coming in a future release.)

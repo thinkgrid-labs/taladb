@@ -10,14 +10,14 @@ use crate::error::TalaDbError;
 use crate::fts::{encode_fts_key, fts_table_name, tokenize, FtsDef};
 use crate::index::{
     compound_meta_key, compound_table_name, docs_table_name, encode_compound_key, encode_index_key,
-    index_table_name, meta_key, CompoundIndexDef, IndexDef, META_COMPOUND_TABLE,
+    index_table_name, meta_key, tomb_table_name, CompoundIndexDef, IndexDef, META_COMPOUND_TABLE,
     META_INDEXES_TABLE,
 };
 use crate::query::executor::execute;
 use crate::query::filter::Filter;
 use crate::query::options::{project_document, sort_documents, FindOptions};
 use crate::query::planner::plan_full;
-use crate::sync::{SyncEvent, SyncHook};
+use crate::sync::{now_ms, SyncEvent, SyncHook};
 #[cfg(feature = "vector-hnsw")]
 use crate::vector::{build_hnsw, search_hnsw, SharedHnswCache};
 use crate::vector::{
@@ -125,6 +125,15 @@ impl Collection {
             vec_indexes,
             compound_indexes,
         })
+    }
+
+    /// Ensure the `_changed_at` secondary index exists for this collection.
+    ///
+    /// Called automatically before every mutation so `export_changes` can use
+    /// an index range scan instead of a full table scan.  `create_index` is
+    /// idempotent, so this is a no-op after the first call.
+    fn ensure_changed_at_index(&self) -> Result<(), TalaDbError> {
+        self.create_index("_changed_at")
     }
 
     // ------------------------------------------------------------------
@@ -835,8 +844,12 @@ impl Collection {
     // Public API
     // ------------------------------------------------------------------
 
-    pub fn insert(&self, fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
+    pub fn insert(&self, mut fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
+        // Auto-stamp _changed_at so LWW merge works correctly without manual calls.
+        fields.retain(|(k, _)| k != "_changed_at");
+        fields.push(("_changed_at".into(), Value::Int(now_ms() as i64)));
         let doc = Document::new(fields);
+        self.ensure_changed_at_index()?;
         let cache = self.load_indexes_cached()?;
         let (indexes, fts, vecs, cidxs) = (
             cache.indexes,
@@ -867,7 +880,15 @@ impl Collection {
     }
 
     pub fn insert_many(&self, items: Vec<Vec<(String, Value)>>) -> Result<Vec<Ulid>, TalaDbError> {
-        let docs: Vec<Document> = items.into_iter().map(Document::new).collect();
+        let ts = now_ms() as i64;
+        let docs: Vec<Document> = items
+            .into_iter()
+            .map(|mut fields| {
+                fields.retain(|(k, _)| k != "_changed_at");
+                fields.push(("_changed_at".into(), Value::Int(ts)));
+                Document::new(fields)
+            })
+            .collect();
         let cache = self.load_indexes_cached()?;
         let (indexes, fts, vecs, cidxs) = (
             cache.indexes,
@@ -1075,6 +1096,7 @@ impl Collection {
     }
 
     pub fn update_one(&self, filter: Filter, update: Update) -> Result<bool, TalaDbError> {
+        self.ensure_changed_at_index()?;
         let cache = self.load_indexes_cached()?;
         let (indexes, fts, vecs, cidxs) = (
             cache.indexes,
@@ -1119,6 +1141,7 @@ impl Collection {
     }
 
     pub fn update_many(&self, filter: Filter, update: Update) -> Result<u64, TalaDbError> {
+        self.ensure_changed_at_index()?;
         let cache = self.load_indexes_cached()?;
         let (indexes, fts, vecs, cidxs) = (
             cache.indexes,
@@ -1259,6 +1282,13 @@ impl Collection {
         let docs_table = docs_table_name(&self.name);
         wtxn.delete(&docs_table, &doc.id.to_bytes())?;
 
+        // Write a tombstone so this deletion can be exported via SyncAdapter
+        // and propagated to remote replicas that may not have received the
+        // HTTP push event.
+        let tomb_table = tomb_table_name(&self.name);
+        let ts_bytes = postcard::to_allocvec(&(now_ms() as i64))?;
+        wtxn.put(&tomb_table, &doc.id.to_bytes(), &ts_bytes)?;
+
         for idx in indexes {
             let idx_table = index_table_name(&self.name, &idx.field);
             if let Some(val) = doc.get(&idx.field) {
@@ -1349,6 +1379,8 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
             }
         }
     }
+    // Auto-advance _changed_at on every mutation so LWW always has a fresh timestamp.
+    doc.set("_changed_at", Value::Int(now_ms() as i64));
     Ok(())
 }
 

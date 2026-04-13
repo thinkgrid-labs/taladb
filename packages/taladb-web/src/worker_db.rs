@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
 use taladb_core::engine::RedbBackend;
-use taladb_core::{Database, Filter, HnswOptions, Update, Value, VectorMetric};
+use taladb_core::{Changeset, Database, Filter, HnswOptions, LastWriteWins, SyncAdapter, Update, Value, VectorMetric};
 
 use crate::doc_to_json;
 use crate::storage::opfs_backend::OpfsBackend;
@@ -603,6 +603,54 @@ impl WorkerDB {
             .collect();
 
         serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    // ------------------------------------------------------------------
+    // Bidirectional sync — changeset export / import
+    // ------------------------------------------------------------------
+
+    /// Export a changeset for the given collections since `since_ms`.
+    ///
+    /// Returns a JSON string representing `Vec<Change>` that can be sent
+    /// to a remote peer via fetch, WebSocket, or SSE.
+    ///
+    /// ```js
+    /// const json = db.exportChangeset(JSON.stringify(['users', 'posts']), 0);
+    /// await fetch('/sync', { method: 'POST', body: json });
+    /// ```
+    #[wasm_bindgen(js_name = exportChangeset)]
+    pub fn export_changeset(
+        &self,
+        collections_json: &str,
+        since_ms: f64,
+    ) -> Result<String, JsValue> {
+        let collections: Vec<String> = serde_json::from_str(collections_json)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let col_refs: Vec<&str> = collections.iter().map(|s| s.as_str()).collect();
+        let changeset = LastWriteWins::new()
+            .export_changes(&self.db, &col_refs, since_ms as u64)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&changeset).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Import a remote changeset and merge it into the local database using
+    /// Last-Write-Wins conflict resolution.
+    ///
+    /// Returns the number of documents actually changed.
+    ///
+    /// ```js
+    /// const resp = await fetch('/sync?since=' + lastSync);
+    /// const applied = db.importChangeset(await resp.text());
+    /// if (applied > 0) { /* refresh UI */ }
+    /// ```
+    #[wasm_bindgen(js_name = importChangeset)]
+    pub fn import_changeset(&self, changeset_json: &str) -> Result<u32, JsValue> {
+        let changeset: Changeset = serde_json::from_str(changeset_json)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let applied = LastWriteWins::new()
+            .import_changes(&self.db, changeset)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(applied as u32)
     }
 }
 
