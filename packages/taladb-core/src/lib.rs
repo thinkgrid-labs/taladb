@@ -26,7 +26,7 @@ pub use http_sync::HttpSyncHook;
 pub use migration::{run_migrations, Migration};
 pub use query::options::{FindOptions, SortDirection, SortSpec};
 pub use query::Filter;
-pub use sync::{NoopSyncHook, SyncEvent, SyncHook};
+pub use sync::{Changeset, LastWriteWins, NoopSyncHook, SyncAdapter, SyncEvent, SyncHook};
 pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 
 use std::path::Path;
@@ -85,6 +85,11 @@ impl Database {
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
+    }
+
+    /// Access the raw storage backend (crate-internal, used by sync adapters).
+    pub(crate) fn backend(&self) -> &dyn StorageBackend {
+        self.backend.as_ref()
     }
 
     /// Get a collection handle by name.

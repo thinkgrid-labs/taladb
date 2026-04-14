@@ -5,7 +5,11 @@ description: Use TalaDB in the browser with WebAssembly and OPFS persistent stor
 
 # Web (Browser / WASM)
 
-TalaDB runs in the browser as a WebAssembly module compiled from the same Rust core used on every other platform. Data is persisted to the [Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) (OPFS) — a fast, private storage area built into modern browsers. No server, no cloud, no extra infrastructure.
+TalaDB runs in the browser as a WebAssembly module compiled from the same Rust
+core used on every other platform. Data is persisted to the
+[Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system)
+(OPFS) — a fast, private storage area built into modern browsers. No server, no
+cloud, no extra infrastructure.
 
 ## Browser support
 
@@ -15,7 +19,10 @@ TalaDB runs in the browser as a WebAssembly module compiled from the same Rust c
 | OPFS (fastest persistence) | 86+ | 111+ | 15.2+ |
 | IndexedDB fallback (persistence without OPFS) | 79+ | 78+ | 14+ |
 
-On browsers without OPFS, TalaDB automatically falls back to an IndexedDB-backed database. Data still persists across page reloads — writes are a bit slower because each one flushes a snapshot to IndexedDB.
+On browsers without OPFS, TalaDB automatically falls back to an
+IndexedDB-backed in-memory database. Data still persists across page reloads.
+Snapshots are written to IndexedDB with a short debounce so bulk inserts stay
+fast.
 
 ## Installation
 
@@ -26,8 +33,9 @@ pnpm add taladb @taladb/web
 ## Vite setup
 
 Add two things to `vite.config.ts`:
+
 1. Exclude `taladb` and `@taladb/web` from dependency pre-bundling
-2. Set the COOP/COEP headers required for OPFS in a Worker context
+2. Set the COOP/COEP headers required for the OPFS Worker context
 
 ```ts
 // vite.config.ts
@@ -60,59 +68,14 @@ await users.insert({ name: 'Alice', age: 30 })
 const all = await users.find()
 ```
 
-That's all the setup you need. `openDB` detects the browser automatically, opens a persistent OPFS database named `myapp.db`, and returns a collection API identical to Node.js and React Native.
-
-## HTTP push sync
-
-Pass a `config` option to `openDB` to push mutation events to a remote endpoint after every write:
-
-```ts
-import { openDB } from 'taladb'
-
-const db = await openDB('myapp.db', {
-  config: {
-    sync: {
-      enabled: true,
-      endpoint: 'https://api.example.com/taladb-events',
-      headers: { Authorization: `Bearer ${myToken}` },
-      exclude_fields: ['embedding'],  // omit large vector fields
-    },
-  },
-})
-
-// Every write now fires an HTTP event in the background
-const users = db.collection('users')
-await users.insert({ name: 'Alice', role: 'admin' })
-```
-
-After every committed write, TalaDB fires a background `fetch` on the JS microtask queue and POSTs the event payload to the configured endpoint with up to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). Writes are never blocked.
-
-::: warning Tab lifetime
-In-flight sync requests are subject to normal browser fetch constraints. If the user closes the tab during a retry sequence, any remaining attempts are lost. Sync is best-effort by design.
-:::
-
-Per-event endpoint overrides are supported:
-
-```ts
-const db = await openDB('myapp.db', {
-  config: {
-    sync: {
-      enabled: true,
-      endpoint: 'https://api.example.com/events',
-      insert_endpoint: 'https://api.example.com/events/insert',
-      update_endpoint: 'https://api.example.com/events/update',
-      delete_endpoint: 'https://api.example.com/events/delete',
-      headers: { Authorization: 'Bearer YOUR_TOKEN' },
-    },
-  },
-})
-```
-
-See the [HTTP Push Sync guide](/guide/http-sync) for the full config reference, payload shapes, and retry behaviour.
+`openDB` detects the browser automatically, opens a persistent OPFS database
+named `myapp.db`, and returns a collection API identical to Node.js and React
+Native.
 
 ## Defining your schema
 
-TalaDB is schemaless, but TypeScript generics let you describe the shape of each collection:
+TalaDB is schemaless, but TypeScript generics let you describe the shape of each
+collection:
 
 ```ts
 interface User {
@@ -192,7 +155,8 @@ const activeAdults = await users.find({
 
 ## Full-text search
 
-Create an FTS index on any string field to enable fast `$contains` queries without scanning every document:
+Create an FTS index on any string field to enable fast `$contains` queries
+without scanning every document:
 
 ```ts
 const posts = db.collection<Post>('posts')
@@ -215,7 +179,9 @@ const { btree, fts, vector } = await users.listIndexes()
 
 ## Live queries in React
 
-`subscribe` fires the callback immediately with the current results, then again after any write that could affect the result set. Call the returned function to unsubscribe.
+`subscribe` fires the callback immediately with the current results, then again
+after any write that could affect the result set. Call the returned function to
+unsubscribe.
 
 ```tsx
 import { useEffect, useState } from 'react'
@@ -238,7 +204,8 @@ const admins = useLiveQuery(db.collection<User>('users'), { role: 'admin' })
 
 ## Vector search
 
-Store and search embeddings from an on-device model — no cloud API, no data leaving the browser.
+Store and search embeddings from an on-device model — no cloud API, no data
+leaving the browser.
 
 ```ts
 import { pipeline } from '@huggingface/transformers'
@@ -296,9 +263,153 @@ const filtered = await articles.findNearest('embedding', queryVec, 5, {
 | `dot` | Embeddings where magnitude matters | Unbounded |
 | `euclidean` | Spatial / coordinate data | (0, 1] |
 
+## Multi-tab behaviour
+
+TalaDB uses the [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API)
+to coordinate database access across tabs sharing the same origin.
+
+**Primary tab** — the first tab to open a given database acquires an exclusive
+lock on the OPFS file. All writes go directly to the persistent file.
+
+**Secondary tabs** — additional tabs open an in-memory copy seeded from an
+IndexedDB snapshot. They stay read-consistent within ~500 ms of any primary-tab
+write via BroadcastChannel. Writes made on a secondary tab are automatically
+merged into the primary tab's OPFS database using Last-Write-Wins — no extra
+code required.
+
+```
+Tab A (primary, OPFS)          Tab B (secondary, in-memory)
+      │                                    │
+      │←── write from Tab B ───────────────┤  BroadcastChannel changeset
+      │    importChangeset()               │
+      │    write to OPFS                   │
+      │─── taladb:changed ────────────────→│  Tab B reloads snapshot
+```
+
+For bulk write workloads across many tabs, prefer routing mutations through the
+primary tab. The merge path adds one BroadcastChannel round-trip per write batch.
+
+## HTTP push sync
+
+Pass a `config` option to `openDB` to push mutation events to a remote endpoint
+after every write:
+
+```ts
+import { openDB } from 'taladb'
+
+const db = await openDB('myapp.db', {
+  config: {
+    sync: {
+      enabled: true,
+      endpoint: 'https://api.example.com/taladb-events',
+      headers: { Authorization: `Bearer ${myToken}` },
+      exclude_fields: ['embedding'],  // omit large vector fields from payloads
+    },
+  },
+})
+
+// Every write now fires an HTTP POST in the background
+const users = db.collection('users')
+await users.insert({ name: 'Alice', role: 'admin' })
+```
+
+After every committed write, TalaDB fires a background `fetch` on the JS
+microtask queue and POSTs the event payload to the configured endpoint with up
+to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). Writes are
+never blocked.
+
+::: warning Tab lifetime
+In-flight sync requests are subject to normal browser fetch constraints. If the
+user closes the tab during a retry sequence, any remaining attempts are lost.
+HTTP push sync is best-effort by design.
+:::
+
+Per-event endpoint overrides are supported:
+
+```ts
+const db = await openDB('myapp.db', {
+  config: {
+    sync: {
+      enabled: true,
+      endpoint: 'https://api.example.com/events',
+      insert_endpoint: 'https://api.example.com/events/insert',
+      update_endpoint: 'https://api.example.com/events/update',
+      delete_endpoint: 'https://api.example.com/events/delete',
+      headers: { Authorization: 'Bearer YOUR_TOKEN' },
+    },
+  },
+})
+```
+
+See the [HTTP Push Sync guide](/guide/http-sync) for the full config reference,
+payload shapes, and retry behaviour.
+
+## Bidirectional sync
+
+HTTP push sync sends local writes to your server. To pull remote changes back
+into the browser — for multi-device or offline-first scenarios — use the
+changeset API:
+
+```ts
+let lastSyncMs = 0
+
+async function sync() {
+  // Push local changes since last sync
+  const outgoing = await db.exportChangeset(['users', 'posts'], lastSyncMs)
+  await fetch('/sync/push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: outgoing,
+  })
+
+  // Pull remote changes since last sync
+  const resp = await fetch(`/sync/pull?since=${lastSyncMs}`)
+  const applied = await db.importChangeset(await resp.text())
+  if (applied > 0) console.log(`Merged ${applied} remote change(s)`)
+
+  lastSyncMs = Date.now()
+}
+
+// Sync on load, then every 30 s
+sync()
+setInterval(sync, 30_000)
+```
+
+`exportChangeset` and `importChangeset` use Last-Write-Wins conflict resolution
+with ULID tie-breaking for deterministic merge across any number of replicas.
+Deletes are tombstoned so they propagate correctly through every sync cycle.
+You supply the transport — fetch polling, WebSocket, SSE, or WebRTC data
+channel.
+
+### Conflict resolution
+
+Every document carries an internal `_changed_at` timestamp (set automatically
+on every insert and update — no manual stamping required). When two replicas
+both modified the same document, the one with the higher `_changed_at` wins. If
+timestamps are equal, the higher ULID wins, giving a deterministic total order
+without coordination.
+
+### Tombstone management
+
+Deleted document IDs are kept as tombstones so deletions propagate correctly via
+`exportChangeset`. Tombstones accumulate over time and should be pruned
+periodically once you are confident all replicas have received the deletion:
+
+```ts
+// On app startup — prune tombstones older than your retention window
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+const cutoff = Date.now() - THIRTY_DAYS_MS
+
+for (const name of ['users', 'posts', 'comments']) {
+  const pruned = await db.compactTombstones(name, cutoff)
+  if (pruned > 0) console.log(`Pruned ${pruned} tombstone(s) from '${name}'`)
+}
+```
+
 ## Migrations
 
-Run schema changes at open time — each migration runs once, in order, atomically:
+Run schema changes at open time — each migration runs once, in order,
+atomically:
 
 ```ts
 const db = await openDB('myapp.db', {
@@ -345,7 +456,19 @@ a.click()
 await db.close()
 ```
 
+Calling `close()` flushes any pending IDB snapshot, releases the Web Lock, and
+allows another tab to acquire the OPFS file as the new primary.
+
 ## Current limitations
 
-- **HNSW vector index** — not available in the browser. The HNSW algorithm uses `rayon` for parallelism which requires native threads. Calling `createVectorIndex({ indexType: 'hnsw' })` or `upgradeVectorIndex()` in the browser throws a clear error. Flat (brute-force) vector search works fine for collections up to ~100k vectors.
-- **Multi-tab writes** — only the first tab to open the database holds the exclusive OPFS file lock (via the Web Locks API). Additional tabs fall back to an IndexedDB-backed in-memory copy that stays fresh as the primary tab writes. Writes from secondary tabs are local only — they are not synced back to the primary tab or to OPFS.
+- **HNSW vector index** — not available in the browser. The HNSW algorithm uses
+  `rayon` for parallelism which requires native threads. Calling
+  `createVectorIndex({ indexType: 'hnsw' })` or `upgradeVectorIndex()` in the
+  browser throws a clear error. Flat (brute-force) vector search works correctly
+  and scales to ~100k vectors without an index upgrade.
+
+- **Snapshot size** — `exportSnapshot` and the IndexedDB fallback path
+  serialise the entire database to a `Uint8Array` in Wasm memory. This works
+  well for databases under ~50 MB. Beyond that, the serialisation overhead
+  becomes noticeable. OPFS-backed storage (the default when OPFS is available)
+  is not affected — it writes directly to the file with no in-memory copy.

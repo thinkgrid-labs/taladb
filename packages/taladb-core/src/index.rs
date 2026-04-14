@@ -159,6 +159,12 @@ pub fn docs_table_name(collection: &str) -> String {
     format!("docs::{}", collection)
 }
 
+/// Table that stores delete tombstones so deletions can propagate via sync.
+/// Key: ULID bytes (16 B).  Value: postcard-encoded `i64` wall-clock timestamp (ms).
+pub fn tomb_table_name(collection: &str) -> String {
+    format!("tomb::{}", collection)
+}
+
 pub const META_INDEXES_TABLE: &str = "meta::indexes";
 pub const META_COMPOUND_TABLE: &str = "meta::compound_indexes";
 pub const META_VERSION_TABLE: &str = "meta::db_version";

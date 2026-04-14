@@ -1,6 +1,6 @@
 {
   "name": "taladb",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Local-first document and vector database for React, React Native, and Node.js",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

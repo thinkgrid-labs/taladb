@@ -48,6 +48,10 @@
  * dropVectorIndex   { collection, field }
  * upgradeVectorIndex { collection, field }
  * findNearest       { collection, field, queryJson, topK, filterJson? }
+ * listCollections   {}                             → JSON string[]
+ * compactTombstones { collection, beforeMs }       → number pruned
+ * exportChangeset   { collectionsJson, sinceMs? }  → JSON changeset string
+ * importChangeset   { changesetJson }              → number of applied changes
  * close             {}
  *
  * Multi-tab live queries (BroadcastChannel)
@@ -56,6 +60,16 @@
  * posts a `"taladb:changed"` message on a BroadcastChannel named
  * `"taladb:<dbName>"`.  Other tabs listening on the same channel re-trigger
  * their active `subscribe()` pollers immediately, bypassing the 300 ms tick.
+ *
+ * Secondary-tab write propagation
+ * --------------------------------
+ * Fallback (non-OPFS) tabs can also make writes that need to reach the primary
+ * tab's OPFS-backed database.  After every mutating op a fallback tab exports a
+ * mini-changeset (all collections, since the previous sync point) and posts it
+ * as `{ type: 'taladb:secondary-write', changeset }` on the BroadcastChannel.
+ * The primary (OPFS) tab receives it, calls importChangeset(), and runs the
+ * normal onWriteCommitted() path — so all other tabs are notified and the OPFS
+ * file stays authoritative.  LWW merge handles any concurrent edits.
  *
  * IndexedDB fallback (no OPFS)
  * ----------------------------
@@ -130,6 +144,14 @@ let broadcastChannel = null;
  */
 let idbFallback = false;
 
+/**
+ * Timestamp (ms) of the last changeset we exported and broadcast to the
+ * primary tab.  Used as `sinceMs` for the next export so we only send the
+ * delta, not the entire database on every write.
+ * @type {number}
+ */
+let lastSecondaryPushMs = 0;
+
 // ---------------------------------------------------------------------------
 // IndexedDB helpers (used only when OPFS is unavailable)
 // ---------------------------------------------------------------------------
@@ -193,20 +215,97 @@ async function idbSaveSnapshot(dbName, bytes) {
   } catch { /* best-effort persistence — ignore failures */ }
 }
 
+// ---------------------------------------------------------------------------
+// Debounced IDB snapshot
+// ---------------------------------------------------------------------------
+
 /**
- * Notify sibling tabs of a write and, when in IDB-fallback mode, flush the
- * updated snapshot to IndexedDB.  Must be called after every mutating op.
+ * Debounce + max-interval parameters for IDB snapshot persistence.
+ *
+ * On every write we notify sibling tabs immediately via BroadcastChannel,
+ * but we defer the actual IDB persistence so that bulk inserts (insertMany,
+ * rapid sequential inserts) only produce a single IDB write rather than one
+ * per document.  A max-interval cap ensures data is never more than 5 s stale
+ * in IDB even under continuous write load.
  */
-function onWriteCommitted() {
-  broadcastChannel?.postMessage('taladb:changed');
-  // Always flush a snapshot to IDB after every write — this keeps other tabs'
-  // IDB-fallback instances in sync via BroadcastChannel + snapshotDirty reload.
+const SNAPSHOT_DEBOUNCE_MS = 500;
+const SNAPSHOT_MAX_INTERVAL_MS = 5000;
+
+/** setTimeout handle for the pending debounced flush. */
+let snapshotTimer = null;
+
+/** Timestamp of the last completed IDB flush (ms since epoch). */
+let lastSnapshotMs = 0;
+
+/** Perform the IDB snapshot write and reset state. */
+async function flushSnapshot() {
+  clearTimeout(snapshotTimer);
+  snapshotTimer = null;
+  lastSnapshotMs = Date.now();
   if (db && activeDbName) {
     try {
       const bytes = db.exportSnapshot();
-      idbSaveSnapshot(activeDbName, bytes).catch(() => {});
-    } catch { /* ignore snapshot export errors */ }
+      await idbSaveSnapshot(activeDbName, bytes);
+    } catch { /* best-effort — ignore failures */ }
   }
+}
+
+/**
+ * Schedule (or immediately trigger) an IDB snapshot write.
+ *
+ * - If the last flush was more than SNAPSHOT_MAX_INTERVAL_MS ago, flush now.
+ * - Otherwise debounce: reset the timer to fire SNAPSHOT_DEBOUNCE_MS from now.
+ */
+function scheduleSnapshot() {
+  const now = Date.now();
+  if (now - lastSnapshotMs > SNAPSHOT_MAX_INTERVAL_MS) {
+    // Overdue — flush synchronously in the microtask queue.
+    flushSnapshot().catch(() => {});
+    return;
+  }
+  clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(() => { flushSnapshot().catch(() => {}); }, SNAPSHOT_DEBOUNCE_MS);
+}
+
+/**
+ * When running as a fallback (non-OPFS) tab, export the changes made since
+ * the last push and broadcast them to the primary tab for merging into OPFS.
+ *
+ * Uses exportChangeset with all known collections to keep the delta small.
+ * The primary tab's BroadcastChannel handler calls importChangeset() and runs
+ * its own onWriteCommitted(), which notifies all tabs (including this one) via
+ * taladb:changed so reads stay consistent.
+ */
+function pushChangesetToPrimary() {
+  if (!idbFallback || !db || !broadcastChannel || !activeDbName) return;
+  try {
+    // Collect all collection names from the current in-memory state.
+    // exportChangeset accepts a JSON array of collection names.
+    const collections = db.listCollections();
+    const changeset = db.exportChangeset(collections, lastSecondaryPushMs);
+    // Only broadcast if there is actually something to send.
+    const parsed = JSON.parse(changeset);
+    if (parsed.length === 0) return;
+    lastSecondaryPushMs = Date.now();
+    broadcastChannel.postMessage({ type: 'taladb:secondary-write', changeset });
+    log(`Broadcast ${parsed.length} change(s) to primary tab`);
+  } catch (err) {
+    warn('Failed to export changeset for primary tab:', err);
+  }
+}
+
+/**
+ * Notify sibling tabs of a write and schedule IDB persistence.
+ * Must be called after every mutating op.
+ */
+function onWriteCommitted() {
+  broadcastChannel?.postMessage('taladb:changed');
+  // Fallback tab: push local changes to the primary (OPFS) tab so they are
+  // merged into the authoritative database file.
+  pushChangesetToPrimary();
+  // Debounced IDB flush — keeps other tabs' fallback instances in sync via
+  // BroadcastChannel + snapshotDirty reload without writing to IDB on every op.
+  scheduleSnapshot();
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +456,31 @@ async function dispatch(op, args) {
         args.filterJson ?? 'null',
       );
 
+    case 'listCollections':
+      return db.listCollections();
+
+    case 'compactTombstones':
+      // Prune tombstones older than beforeMs from a collection.
+      // Returns the count of tombstones removed.
+      return db.compactTombstones(args.collection, args.beforeMs ?? 0);
+
+    case 'exportChangeset':
+      // Export a LWW changeset for the given collections since sinceMs.
+      // Returns a JSON string the caller can POST to a sync server.
+      return db.exportChangeset(args.collectionsJson, args.sinceMs ?? 0);
+
+    case 'importChangeset': {
+      // Apply a remote changeset (JSON string from sync server) using LWW.
+      // Triggers onWriteCommitted so multi-tab peers get notified.
+      const applied = db.importChangeset(args.changesetJson);
+      if (applied > 0) onWriteCommitted();
+      return applied;
+    }
+
     case 'close':
+      // Flush any pending debounced snapshot before releasing the lock so
+      // no writes are lost when the tab closes or navigates away.
+      await flushSnapshot();
       // Release the Web Lock and close the sync handle gracefully.
       if (releaseLock) { releaseLock(); releaseLock = null; }
       broadcastChannel?.close();
@@ -402,6 +525,17 @@ async function doInit(dbName, configJson) {
         const resolve = pendingSnapshotResolve;
         pendingSnapshotResolve = null;
         resolve();
+      } else if (e.data?.type === 'taladb:secondary-write' && !idbFallback && db) {
+        // Primary (OPFS) tab: a secondary tab made a write — merge it in via LWW.
+        try {
+          const applied = db.importChangeset(e.data.changeset);
+          if (applied > 0) {
+            log(`Merged ${applied} change(s) from secondary tab`);
+            onWriteCommitted();
+          }
+        } catch (err) {
+          warn('Failed to import secondary-tab changeset:', err);
+        }
       }
     };
     log('BroadcastChannel opened:', `taladb:${dbName}`);
