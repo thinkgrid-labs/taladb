@@ -33,6 +33,7 @@ fn err_to_js(e: TalaDbError) -> JsValue {
         TalaDbError::InvalidOperation(_) => "InvalidOperation",
         TalaDbError::Config(_) => "Config",
         TalaDbError::InvalidName(_) => "InvalidName",
+        TalaDbError::QueryTimeout => "QueryTimeout",
     };
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &"error".into(), &JsValue::from_str(&msg));

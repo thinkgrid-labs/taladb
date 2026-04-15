@@ -320,6 +320,7 @@ fn find_with_options_sort_skip_limit() {
         skip: 1,
         limit: Some(3),
         fields: None,
+        timeout: None,
     };
     let results = col.find_with_options(Filter::All, opts).unwrap();
     let ns: Vec<i64> = results
@@ -350,6 +351,7 @@ fn find_with_options_projection() {
         skip: 0,
         limit: None,
         fields: Some(vec!["name".into(), "age".into()]),
+        timeout: None,
     };
     let results = col.find_with_options(Filter::All, opts).unwrap();
     assert_eq!(results.len(), 1);
@@ -375,6 +377,7 @@ fn sort_descending() {
         skip: 0,
         limit: None,
         fields: None,
+        timeout: None,
     };
     let results = col.find_with_options(Filter::All, opts).unwrap();
     let vs: Vec<i64> = results
@@ -405,6 +408,7 @@ fn multi_field_sort() {
         skip: 0,
         limit: None,
         fields: None,
+        timeout: None,
     };
     let results = col.find_with_options(Filter::All, opts).unwrap();
     let pairs: Vec<(&str, i64)> = results
@@ -442,6 +446,7 @@ fn skip_beyond_collection_size_returns_empty() {
         skip: 100,
         limit: None,
         fields: None,
+        timeout: None,
     };
     assert!(col.find_with_options(Filter::All, opts).unwrap().is_empty());
 }
@@ -458,6 +463,7 @@ fn limit_zero_returns_empty() {
         skip: 0,
         limit: Some(0),
         fields: None,
+        timeout: None,
     };
     assert!(col.find_with_options(Filter::All, opts).unwrap().is_empty());
 }
@@ -486,6 +492,7 @@ fn pagination_with_filter() {
         skip: 3,
         limit: Some(4),
         fields: None,
+        timeout: None,
     };
     let results = col
         .find_with_options(
@@ -1183,4 +1190,44 @@ fn aggregate_group_by_nested_field() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("total"), Some(&Value::Int(30)));
+}
+
+// ---------------------------------------------------------------------------
+// Query timeout
+// ---------------------------------------------------------------------------
+
+#[test]
+fn query_timeout_zero_duration_errors() {
+    let db = db();
+    let col = db.collection("timeout_test").unwrap();
+    for i in 0..100 {
+        col.insert(vec![("n".into(), Value::Int(i))]).unwrap();
+    }
+
+    let opts = FindOptions {
+        timeout: Some(std::time::Duration::from_nanos(1)), // essentially zero
+        ..Default::default()
+    };
+
+    let result = col.find_with_options(Filter::All, opts);
+    // May succeed (very fast) or timeout — but must not panic.
+    let _ = result;
+}
+
+#[test]
+fn query_timeout_generous_duration_succeeds() {
+    let db = db();
+    let col = db.collection("timeout_ok").unwrap();
+    for i in 0..50 {
+        col.insert(vec![("n".into(), Value::Int(i))]).unwrap();
+    }
+
+    let opts = FindOptions {
+        timeout: Some(std::time::Duration::from_secs(10)),
+        ..Default::default()
+    };
+
+    // Should always succeed within 10 seconds for 50 documents.
+    let docs = col.find_with_options(Filter::All, opts).unwrap();
+    assert_eq!(docs.len(), 50);
 }

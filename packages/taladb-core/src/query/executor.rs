@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::ops::Bound;
+use std::time::Instant;
 
 use ulid::Ulid;
 
@@ -13,11 +14,16 @@ use crate::query::planner::QueryPlan;
 
 /// Execute a query plan and return matching documents.
 /// The `filter` is always applied as a post-filter to eliminate false positives.
+///
+/// `deadline` — if `Some`, the executor checks elapsed time in the document
+/// filter loop and returns [`TalaDbError::QueryTimeout`] if the deadline is
+/// exceeded.
 pub fn execute(
     plan: &QueryPlan,
     filter: &Filter,
     txn: &dyn ReadTxn,
     collection: &str,
+    deadline: Option<Instant>,
 ) -> Result<Vec<Document>, TalaDbError> {
     let candidates = match plan {
         QueryPlan::FullScan => full_scan(txn, collection)?,
@@ -103,7 +109,7 @@ pub fn execute(
         QueryPlan::IndexOr { plans } => {
             let mut seen: HashSet<[u8; 16]> = HashSet::new();
             for sub_plan in plans {
-                let ulids = collect_ulids(sub_plan, txn, collection)?;
+                let ulids = collect_ulids(sub_plan, txn, collection, deadline)?;
                 for id_bytes in ulids {
                     seen.insert(id_bytes);
                 }
@@ -117,28 +123,42 @@ pub fn execute(
     // re-tokenizing the same query string for every candidate document.
     if let Filter::Contains(field, query) = filter {
         let query_tokens = tokenize(query);
-        return Ok(candidates
-            .into_iter()
-            .filter(|d| {
-                if query_tokens.is_empty() {
-                    return true;
+        let mut results = Vec::with_capacity(candidates.len());
+        for d in candidates {
+            if let Some(dl) = deadline {
+                if Instant::now() >= dl {
+                    return Err(TalaDbError::QueryTimeout);
                 }
-                if let Some(Value::Str(text)) = d.get(field) {
-                    let doc_tokens = tokenize(text);
-                    query_tokens
-                        .iter()
-                        .all(|qt| doc_tokens.iter().any(|dt| dt == qt))
-                } else {
-                    false
-                }
-            })
-            .collect());
+            }
+            let matches = if query_tokens.is_empty() {
+                true
+            } else if let Some(Value::Str(text)) = d.get(field) {
+                let doc_tokens = tokenize(text);
+                query_tokens
+                    .iter()
+                    .all(|qt| doc_tokens.iter().any(|dt| dt == qt))
+            } else {
+                false
+            };
+            if matches {
+                results.push(d);
+            }
+        }
+        return Ok(results);
     }
 
-    Ok(candidates
-        .into_iter()
-        .filter(|d| filter.matches(d))
-        .collect())
+    let mut results = Vec::with_capacity(candidates.len());
+    for d in candidates {
+        if let Some(dl) = deadline {
+            if Instant::now() >= dl {
+                return Err(TalaDbError::QueryTimeout);
+            }
+        }
+        if filter.matches(&d) {
+            results.push(d);
+        }
+    }
+    Ok(results)
 }
 
 /// Collect raw ULID bytes from an index-backed plan without loading documents.
@@ -147,6 +167,7 @@ fn collect_ulids(
     plan: &QueryPlan,
     txn: &dyn ReadTxn,
     collection: &str,
+    deadline: Option<Instant>,
 ) -> Result<Vec<[u8; 16]>, TalaDbError> {
     match plan {
         QueryPlan::IndexEq { field, start, end } => {
@@ -192,7 +213,7 @@ fn collect_ulids(
         }
         _ => {
             // For non-index plans, fall back to executing and extracting ids
-            let docs = execute(plan, &Filter::All, txn, collection)?;
+            let docs = execute(plan, &Filter::All, txn, collection, deadline)?;
             Ok(docs.into_iter().map(|d| d.id.to_bytes()).collect())
         }
     }

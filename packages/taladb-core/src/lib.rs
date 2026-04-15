@@ -165,6 +165,7 @@ impl Database {
     /// then for each table: name length u32 LE, name bytes, entry count u64 LE,
     /// then for each entry: key length u32 LE, key bytes, value length u32 LE,
     /// value bytes.
+    #[tracing::instrument(skip(self))]
     pub fn export_snapshot(&self) -> Result<Vec<u8>, TalaDbError> {
         let txn = self.backend.begin_read()?;
         let table_names = txn.list_tables()?;

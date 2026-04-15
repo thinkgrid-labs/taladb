@@ -565,6 +565,7 @@ impl Collection {
     /// arbitrary set-membership constraints.
     ///
     /// Results are ordered by descending similarity score (highest first).
+    #[tracing::instrument(skip(self, query, pre_filter), fields(collection = %self.name, field, top_k))]
     pub fn find_nearest(
         &self,
         field: &str,
@@ -636,10 +637,10 @@ impl Collection {
 
         // 5. Score all candidates
         let metric = &def.metric;
-        let mut scored: Vec<(ulid::Ulid, f32)> = candidates
-            .iter()
-            .map(|(id, v)| (*id, compute_similarity(metric, query, v)))
-            .collect();
+        let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(candidates.len());
+        for (id, v) in &candidates {
+            scored.push((*id, compute_similarity(metric, query, v)));
+        }
 
         // 6. Sort descending, keep top_k
         scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -967,13 +968,14 @@ impl Collection {
         Ok(ids)
     }
 
+    #[tracing::instrument(skip(self, filter), fields(collection = %self.name))]
     pub fn find(&self, filter: Filter) -> Result<Vec<Document>, TalaDbError> {
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
         let cidxs = self.load_compound_indexes()?;
         let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
-        execute(&qplan, &filter, rtxn.as_ref(), &self.name)
+        execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)
     }
 
     pub fn find_one(&self, filter: Filter) -> Result<Option<Document>, TalaDbError> {
@@ -988,17 +990,21 @@ impl Collection {
     /// 3. Skip (`options.skip`)
     /// 4. Limit (`options.limit`)
     /// 5. Projection (`options.fields`)
+    #[tracing::instrument(skip(self, filter, options), fields(collection = %self.name))]
     pub fn find_with_options(
         &self,
         filter: Filter,
         options: FindOptions,
     ) -> Result<Vec<Document>, TalaDbError> {
+        let deadline = options
+            .timeout
+            .map(|d| std::time::Instant::now() + d);
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
         let cidxs = self.load_compound_indexes()?;
         let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
-        let mut docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
+        let mut docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name, deadline)?;
 
         // Sort
         if !options.sort.is_empty() {
@@ -1045,7 +1051,7 @@ impl Collection {
             let cidxs = self.load_compound_indexes()?;
             let plan = plan_full(filter, &indexes, &fts, &cidxs);
             let rtxn = self.backend.begin_read()?;
-            let docs = execute(&plan, filter, rtxn.as_ref(), &self.name)?;
+            let docs = execute(&plan, filter, rtxn.as_ref(), &self.name, None)?;
             (docs, 1usize)
         } else {
             let rtxn = self.backend.begin_read()?;
@@ -1054,6 +1060,7 @@ impl Collection {
                 &Filter::All,
                 rtxn.as_ref(),
                 &self.name,
+                None,
             )?;
             (docs, 0usize)
         };
@@ -1150,7 +1157,7 @@ impl Collection {
         );
         let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
-        let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
+        let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
         if let Some(old_doc) = candidates.drain(..).next() {
@@ -1195,7 +1202,7 @@ impl Collection {
         );
         let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
-        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
+        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
         let mut count = 0u64;
@@ -1246,7 +1253,7 @@ impl Collection {
         );
         let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
-        let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
+        let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
         if let Some(doc) = candidates.drain(..).next() {
@@ -1282,7 +1289,7 @@ impl Collection {
         );
         let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
-        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name)?;
+        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
         let mut count = 0u64;

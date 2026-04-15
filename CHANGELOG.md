@@ -5,7 +5,22 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.0] - 2026-04-15
+## [Unreleased] — 0.7.1
+
+### Added
+
+- **Query timeouts** — `FindOptions` has a new optional `timeout: Option<std::time::Duration>` field. When set, `find_with_options` checks elapsed time between candidate documents and returns `Err(TalaDbError::QueryTimeout)` if the deadline is exceeded. No-op when `None` (default). Bindings for WASM, Node.js, and React Native surface this as a `"QueryTimeout"` error code.
+
+- **`TalaDbError::QueryTimeout` variant** — new error variant returned when a query exceeds its configured timeout.
+
+- **`tracing` spans on heavy operations** — `Collection::find`, `Collection::find_with_options`, `Collection::find_nearest`, and `Database::export_snapshot` are now annotated with `#[tracing::instrument]`. Operators using an OpenTelemetry or Jaeger subscriber will see per-call spans with `collection` and `top_k` fields automatically.
+
+- **Fuzz targets** (`packages/taladb-core/fuzz/`) — two `cargo-fuzz` targets added:
+  - `fuzz_snapshot`: feeds arbitrary bytes into `Database::restore_from_snapshot` to catch panics in the snapshot parser.
+  - `fuzz_filter`: deserializes arbitrary bytes as `Document` and runs filter evaluation, catching deserialization and matching panics.
+    Run with `cargo fuzz run fuzz_snapshot` from `packages/taladb-core/`.
+
+## [Unreleased] — 0.7.0
 
 ### Breaking Changes
 

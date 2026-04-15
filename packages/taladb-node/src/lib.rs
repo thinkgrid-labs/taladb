@@ -25,6 +25,7 @@ fn err_to_napi(e: TalaDbError) -> napi::Error {
         TalaDbError::InvalidOperation(_) => "InvalidOperation",
         TalaDbError::Config(_) => "Config",
         TalaDbError::InvalidName(_) => "InvalidName",
+        TalaDbError::QueryTimeout => "QueryTimeout",
     };
     napi::Error::from_reason(format!("{}: {}", code, e))
 }

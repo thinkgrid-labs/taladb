@@ -52,6 +52,9 @@ pub enum TalaDbError {
 
     #[error("invalid name: {0}")]
     InvalidName(String),
+
+    #[error("query exceeded the configured timeout")]
+    QueryTimeout,
 }
 
 impl From<redb::DatabaseError> for TalaDbError {

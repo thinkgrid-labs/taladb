@@ -86,7 +86,7 @@ export default defineConfig({
       { text: "Roadmap", link: "/roadmap" },
       { text: "Live Demo", link: "https://taladb-playground.vercel.app/" },
       {
-        text: "v0.7.0",
+        text: "v0.7.1",
         items: [
           {
             text: "Changelog",
