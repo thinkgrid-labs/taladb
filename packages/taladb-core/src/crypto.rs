@@ -43,9 +43,11 @@ use crate::error::TalaDbError;
 
 /// Version tag prepended to every encrypted value.
 /// Increment this and add a migration path if the format ever changes.
+#[cfg(feature = "encryption")]
 const CRYPTO_FORMAT_V1: u8 = 0x01;
 
 /// AES-GCM nonce length for format version 1.
+#[cfg(feature = "encryption")]
 const NONCE_LEN_V1: usize = 12;
 
 /// Minimum PBKDF2-HMAC-SHA256 iteration count (OWASP 2023 recommendation).
@@ -70,6 +72,7 @@ pub type EncryptionKey = [u8; 32];
 /// Construct the Authenticated Associated Data string for a given
 /// `(table, key)` pair.  Using AAD prevents a ciphertext from being silently
 /// relocated to a different table or key slot.
+#[cfg(feature = "encryption")]
 fn make_aad(table: &str, key: &[u8]) -> Vec<u8> {
     // Format: "<table>\0<hex-encoded key bytes>"
     // The null byte separator ensures the table name cannot be confused with
