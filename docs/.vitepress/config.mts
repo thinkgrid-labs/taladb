@@ -2,17 +2,16 @@ import { defineConfig, type HeadConfig } from "vitepress";
 
 const title = "TalaDB";
 const description =
-  "Local-first document + vector database built in Rust. MongoDB-like API for browser (WASM + OPFS), Node.js, and React Native — zero cloud, zero GC.";
-const siteUrl = "https://thinkgrid-labs.github.io/taladb";
+  "The embedded database for local-first JavaScript apps. Documents + vector search built in Rust — browser (WASM + OPFS), Node.js, and React Native. No cloud. No compromise.";
+const siteUrl = "https://taladb.dev";
 const ogImage = `${siteUrl}/tala-db-banner.png`;
 
 export default defineConfig({
   title,
   description,
-  base: "/taladb/",
+  base: "/taladb/",   // update to "/" once taladb.dev is live
   appearance: false,
 
-  // Canonical URL injected into every page <head>
   transformHead({ pageData }) {
     const canonicalUrl = `${siteUrl}/${pageData.relativePath}`
       .replace(/index\.md$/, "")
@@ -22,7 +21,6 @@ export default defineConfig({
       ["link", { rel: "canonical", href: canonicalUrl }],
     ];
 
-    // Per-page Open Graph overrides
     const pageTitle = pageData.frontmatter.title
       ? `${pageData.frontmatter.title} | ${title}`
       : title;
@@ -49,10 +47,7 @@ export default defineConfig({
     // Google Analytics
     ["script", { async: "", src: "https://www.googletagmanager.com/gtag/js?id=G-SWTD98L8XR" }],
     ["script", {}, "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-SWTD98L8XR');"],
-    [
-      "link",
-      { rel: "icon", href: "/taladb/favicon.png", type: "image/png" },
-    ],
+    ["link", { rel: "icon", href: "/taladb/favicon.png", type: "image/png" }],
     ["link", { rel: "apple-touch-icon", href: "/taladb/apple-touch-icon.png" }],
     ["meta", { name: "theme-color", content: "#B54B31" }],
     ["meta", { name: "author", content: "thinkgrid-labs" }],
@@ -61,11 +56,9 @@ export default defineConfig({
       {
         name: "keywords",
         content:
-          "local-first database, rust database, wasm database, react native database, embedded database, nosql, offline-first, taladb",
+          "local-first database, rust database, wasm database, react native database, embedded database, nosql, offline-first, taladb, vector database, on-device ai",
       },
     ],
-    // Prevent indexing until stable release — remove before 1.0
-    // ['meta', { name: 'robots', content: 'noindex' }],
   ],
 
   sitemap: {
@@ -73,13 +66,13 @@ export default defineConfig({
   },
 
   themeConfig: {
-    logo: { src: "/tala-db.png", alt: "TalaDB logo" },
+    logo: { src: "/tala-db.png", alt: "TalaDB" },
     siteTitle: false,
 
     nav: [
-      { text: "Introduction", link: "/introduction" },
+      { text: "Docs", link: "/introduction" },
       { text: "Guides", link: "/guide/web" },
-      { text: "API Reference", link: "/api/collection" },
+      { text: "API", link: "/api/collection" },
       { text: "Roadmap", link: "/roadmap" },
       { text: "Live Demo", link: "https://taladb-playground.vercel.app/" },
       {
@@ -92,6 +85,10 @@ export default defineConfig({
           {
             text: "Contributing",
             link: "https://github.com/thinkgrid-labs/taladb/blob/main/CONTRIBUTING.md",
+          },
+          {
+            text: "npm",
+            link: "https://www.npmjs.com/package/taladb",
           },
         ],
       },
@@ -141,8 +138,16 @@ export default defineConfig({
     ],
 
     footer: {
-      message: "Released under the MIT License.",
-      copyright: "Copyright © 2026 ThinkGrid Labs",
+      message: `
+        <a href="/introduction">Docs</a> ·
+        <a href="https://www.npmjs.com/package/taladb" target="_blank" rel="noopener">npm</a> ·
+        <a href="/roadmap">Roadmap</a> ·
+        <a href="https://github.com/thinkgrid-labs/taladb/discussions" target="_blank" rel="noopener">Discussions</a> ·
+        <a href="https://github.com/thinkgrid-labs/taladb/releases" target="_blank" rel="noopener">Changelog</a> ·
+        <a href="https://github.com/sponsors/thinkgrid-labs" target="_blank" rel="noopener">Sponsor</a>
+        <br/>Released under the MIT License.
+      `,
+      copyright: "Copyright &copy; 2026 ThinkGrid Labs",
     },
 
     editLink: {

@@ -244,7 +244,13 @@ impl SyncAdapter for LastWriteWins {
                 if key_bytes.len() != 16 {
                     continue;
                 }
-                let ts: i64 = postcard::from_bytes(&val_bytes).unwrap_or(0);
+                let ts: i64 = postcard::from_bytes(&val_bytes).unwrap_or_else(|e| {
+                    eprintln!(
+                        "[taladb] sync: corrupt tombstone timestamp in \"{col_name}\", \
+                         defaulting to 0 (epoch): {e}"
+                    );
+                    0
+                });
                 let changed_at = ts as u64;
                 if changed_at > since_ms {
                     let mut id_arr = [0u8; 16];

@@ -1,6 +1,6 @@
 ---
 title: Introduction
-description: Learn what TalaDB is, how it works, and why it was built — an embedded document and vector database powered by a Rust core that runs in the browser, Node.js, and React Native.
+description: Learn what TalaDB is, how it works, and why it was built — the embedded database for local-first JavaScript apps, powered by a Rust core that runs in the browser, Node.js, and React Native.
 ---
 
 # Introduction

@@ -131,9 +131,15 @@ impl Filter {
             }
 
             // Regex post-filter — compiled on each invocation, always a full scan.
+            // Size limits guard against ReDoS via catastrophic backtracking or
+            // excessively large compiled automata from user-supplied patterns.
             Filter::Regex(field, pattern) => {
                 if let Some(Value::Str(text)) = doc.get(field) {
-                    regex::Regex::new(pattern)
+                    regex::RegexBuilder::new(pattern)
+                        // Limit the compiled NFA/DFA size to 1 MiB each.
+                        .size_limit(1 << 20)
+                        .dfa_size_limit(1 << 20)
+                        .build()
                         .map(|re| re.is_match(text))
                         .unwrap_or(false)
                 } else {

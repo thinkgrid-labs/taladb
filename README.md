@@ -2,7 +2,8 @@
 
 <img src=".github/assets/tala-db-banner.png" alt="TalaDB" width="800" />
 
-**Local-first document + vector database. Zero cloud. Zero GC. Zero compromise.**
+**The embedded database for local-first JavaScript apps.**<br/>
+Documents + vector search built in Rust — browser, Node.js, and React Native. No cloud. No compromise.
 
 [![Status: Beta](https://img.shields.io/badge/Status-Beta-orange)](https://github.com/thinkgrid-labs/taladb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -11,7 +12,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/thinkgrid-labs/taladb)
 [![Sponsor](https://img.shields.io/badge/Sponsor-thinkgrid--labs-red?logo=github-sponsors)](https://github.com/sponsors/thinkgrid-labs)
 
-**[Documentation](https://thinkgrid-labs.github.io/taladb/) · [Live Demo](https://taladb-playground.vercel.app/) · [Web Guide](https://thinkgrid-labs.github.io/taladb/guide/web) · [Node.js Guide](https://thinkgrid-labs.github.io/taladb/guide/node) · [React Native Guide](https://thinkgrid-labs.github.io/taladb/guide/react-native)**
+**[Documentation](https://taladb.dev) · [Live Demo](https://taladb-playground.vercel.app/) · [Web Guide](https://taladb.dev/guide/web) · [Node.js Guide](https://taladb.dev/guide/node) · [React Native Guide](https://taladb.dev/guide/react-native)**
 
 </div>
 
@@ -20,7 +21,7 @@
 
 ---
 
-TalaDB is an open-source, **local-first document and vector database** built in Rust. It gives React and React Native developers a MongoDB-like query API alongside on-device vector similarity search — store documents, search embeddings, and combine both in a single query, all running entirely on the user's device with no server, no network, and no cloud subscription.
+TalaDB is an open-source, **embedded database for local-first JavaScript apps** built in Rust. It gives web and React Native developers a MongoDB-like query API alongside on-device vector similarity search — store documents, search embeddings, and combine both in a single query, all running entirely on the user's device with no server, no network, and no cloud subscription.
 
 The same Rust core powers all three runtimes:
 
@@ -181,22 +182,22 @@ unsub()
 
 ## Documentation
 
-Full documentation is at **[thinkgrid-labs.github.io/taladb](https://thinkgrid-labs.github.io/taladb/)**.
+Full documentation is at **[taladb.dev](https://taladb.dev)**.
 
 | Section | Link |
 |---|---|
-| Introduction & architecture | [/introduction](https://thinkgrid-labs.github.io/taladb/introduction) |
-| Core concepts | [/concepts](https://thinkgrid-labs.github.io/taladb/concepts) |
-| Feature overview | [/features](https://thinkgrid-labs.github.io/taladb/features) |
-| Web (Browser / WASM) guide | [/guide/web](https://thinkgrid-labs.github.io/taladb/guide/web) |
-| Node.js guide | [/guide/node](https://thinkgrid-labs.github.io/taladb/guide/node) |
-| React Native guide | [/guide/react-native](https://thinkgrid-labs.github.io/taladb/guide/react-native) |
-| Collection API | [/api/collection](https://thinkgrid-labs.github.io/taladb/api/collection) |
-| Filters | [/api/filters](https://thinkgrid-labs.github.io/taladb/api/filters) |
-| Updates | [/api/updates](https://thinkgrid-labs.github.io/taladb/api/updates) |
-| Migrations | [/api/migrations](https://thinkgrid-labs.github.io/taladb/api/migrations) |
-| Encryption | [/api/encryption](https://thinkgrid-labs.github.io/taladb/api/encryption) |
-| Live queries | [/api/live-queries](https://thinkgrid-labs.github.io/taladb/api/live-queries) |
+| Introduction & architecture | [/introduction](https://taladb.dev/introduction) |
+| Core concepts | [/concepts](https://taladb.dev/concepts) |
+| Feature overview | [/features](https://taladb.dev/features) |
+| Web (Browser / WASM) guide | [/guide/web](https://taladb.dev/guide/web) |
+| Node.js guide | [/guide/node](https://taladb.dev/guide/node) |
+| React Native guide | [/guide/react-native](https://taladb.dev/guide/react-native) |
+| Collection API | [/api/collection](https://taladb.dev/api/collection) |
+| Filters | [/api/filters](https://taladb.dev/api/filters) |
+| Updates | [/api/updates](https://taladb.dev/api/updates) |
+| Migrations | [/api/migrations](https://taladb.dev/api/migrations) |
+| Encryption | [/api/encryption](https://taladb.dev/api/encryption) |
+| Live queries | [/api/live-queries](https://taladb.dev/api/live-queries) |
 
 ## Development
 
@@ -246,20 +247,14 @@ pnpm docs:preview # preview production build
 
 ## Contributing
 
-Contributions are welcome! TalaDB is MIT-licensed and fully open source.
+TalaDB is built by and for the community. Whether you're fixing a bug, adding a new query operator, or improving documentation, your help is welcome!
 
 1. Fork the repo and create a branch: `git checkout -b feat/my-feature`
 2. Make your changes and add tests
 3. Run `cargo test --workspace` and `pnpm --filter taladb test`
 4. Open a pull request with a clear description
 
-Please open an issue first for large features or architectural changes.
-
-## Contributing
-
-TalaDB is built by and for the community. Whether you're fixing a bug, adding a new query operator, or improving documentation, your help is welcome!
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and our development workflow.
+Please open an issue first for large features or architectural changes. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
 
 | Name | Contact |
@@ -279,6 +274,6 @@ If you find TalaDB useful, please consider [sponsoring the project](https://gith
 
 <div align="center">
 
-Built with Rust 🦀 · Documents and vectors, on device
+Built with Rust · Documents and vectors, on device · [taladb.dev](https://taladb.dev)
 
 </div>
