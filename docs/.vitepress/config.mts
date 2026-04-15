@@ -9,7 +9,7 @@ const ogImage = `${siteUrl}/tala-db-banner.png`;
 export default defineConfig({
   title,
   description,
-  base: "/taladb/",   // update to "/" once taladb.dev is live
+  base: "/", // update to "/" once taladb.dev is live
   appearance: false,
 
   transformHead({ pageData }) {
@@ -45,8 +45,18 @@ export default defineConfig({
 
   head: [
     // Google Analytics
-    ["script", { async: "", src: "https://www.googletagmanager.com/gtag/js?id=G-SWTD98L8XR" }],
-    ["script", {}, "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-SWTD98L8XR');"],
+    [
+      "script",
+      {
+        async: "",
+        src: "https://www.googletagmanager.com/gtag/js?id=G-SWTD98L8XR",
+      },
+    ],
+    [
+      "script",
+      {},
+      "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-SWTD98L8XR');",
+    ],
     ["link", { rel: "icon", href: "/taladb/favicon.png", type: "image/png" }],
     ["link", { rel: "apple-touch-icon", href: "/taladb/apple-touch-icon.png" }],
     ["meta", { name: "theme-color", content: "#B54B31" }],
@@ -115,9 +125,7 @@ export default defineConfig({
       },
       {
         text: "Packages",
-        items: [
-          { text: "React Hooks (@taladb/react)", link: "/guide/react" },
-        ],
+        items: [{ text: "React Hooks (@taladb/react)", link: "/guide/react" }],
       },
       {
         text: "API Reference",

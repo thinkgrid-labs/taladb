@@ -202,8 +202,12 @@ impl Database {
     /// Returns [`TalaDbError::InvalidSnapshot`] if the data is corrupt or from an
     /// incompatible snapshot version.
     pub fn restore_from_snapshot(data: &[u8]) -> Result<Self, TalaDbError> {
-        /// 10 GiB hard cap — prevents OOM from corrupted or crafted snapshots.
-        const MAX_SNAPSHOT_SIZE: usize = 10 * 1024 * 1024 * 1024;
+        /// Hard cap — prevents OOM from corrupted or crafted snapshots.
+        /// 2 GiB on 32-bit targets (WASM), 10 GiB on 64-bit targets.
+        #[cfg(target_pointer_width = "32")]
+        const MAX_SNAPSHOT_SIZE: usize = 2 * 1024 * 1024 * 1024; // 2 GiB fits in u32
+        #[cfg(not(target_pointer_width = "32"))]
+        const MAX_SNAPSHOT_SIZE: usize = 10 * 1024 * 1024 * 1024; // 10 GiB
         if data.len() > MAX_SNAPSHOT_SIZE {
             return Err(TalaDbError::InvalidSnapshot);
         }
