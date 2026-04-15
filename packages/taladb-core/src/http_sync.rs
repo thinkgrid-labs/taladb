@@ -206,7 +206,12 @@ pub(crate) fn value_to_json(v: &Value) -> JsonValue {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -218,13 +223,16 @@ const BACKOFFS_MS: &[u64] = &[200, 400, 800];
 
 /// POST `payload` to `endpoint`, retrying on 5xx / network errors.
 /// 4xx responses are treated as permanent and not retried.
-/// Silently gives up after all attempts are exhausted.
+/// Logs to stderr after all attempts are exhausted so operators can detect
+/// replication failures.
 fn fire_with_retry(
     client: &reqwest::blocking::Client,
     endpoint: &str,
     headers: &HashMap<String, String>,
     payload: &JsonValue,
 ) {
+    use reqwest::header::{HeaderName, HeaderValue};
+
     let max_attempts = BACKOFFS_MS.len() + 1; // 4 total (1 + 3 retries)
     for attempt in 0..max_attempts {
         if attempt > 0 {
@@ -233,7 +241,19 @@ fn fire_with_retry(
 
         let mut req = client.post(endpoint).json(payload);
         for (k, v) in headers {
-            req = req.header(k.as_str(), v.as_str());
+            // Parse header name/value through reqwest's typed API so invalid
+            // characters (CRLF, null bytes) are rejected rather than injected.
+            match (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                (Ok(name), Ok(value)) => {
+                    req = req.header(name, value);
+                }
+                _ => {
+                    eprintln!("[taladb] sync: skipping invalid header name or value for key {k:?}");
+                }
+            }
         }
 
         match req.send() {
@@ -246,7 +266,11 @@ fn fire_with_retry(
             Err(_) => continue,
         }
     }
-    // All attempts exhausted — silently drop the event.
+    // All attempts exhausted — log so operators can detect replication failures.
+    eprintln!(
+        "[taladb] sync: event permanently failed after {} attempts to {endpoint}",
+        max_attempts
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +286,6 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::*;
     use crate::config::SyncConfig;
     use crate::document::Value;
     use crate::sync::SyncHook;

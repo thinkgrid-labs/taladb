@@ -24,6 +24,7 @@ fn err_to_napi(e: TalaDbError) -> napi::Error {
         TalaDbError::VectorDimensionMismatch { .. } => "VectorDimensionMismatch",
         TalaDbError::InvalidOperation(_) => "InvalidOperation",
         TalaDbError::Config(_) => "Config",
+        TalaDbError::InvalidName(_) => "InvalidName",
     };
     napi::Error::from_reason(format!("{}: {}", code, e))
 }

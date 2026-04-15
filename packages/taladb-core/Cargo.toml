@@ -19,17 +19,20 @@ rand             = { version = "0.8",  optional = true }
 pbkdf2           = { version = "0.12", optional = true }
 hmac             = { version = "0.12", optional = true }
 sha2             = { version = "0.10", optional = true }
+zeroize          = { version = "1.7",  optional = true, features = ["derive"] }
 # HNSW approximate nearest-neighbor index — opt-in via `vector-hnsw` feature.
 # Pure Rust, WASM-compatible, MIT license.
 instant-distance = { version = "0.6", optional = true }
 # Config parsing — YAML and JSON config file support.
 serde_json = "1.0"
 serde_yaml = "0.9"
+# URL validation in config (lightweight, no extra TLS deps).
+url = "2.5"
 # HTTP push sync — only pulled in when the `sync-http` feature is enabled.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
 
 [features]
-encryption   = ["dep:aes-gcm", "dep:rand", "dep:pbkdf2", "dep:hmac", "dep:sha2"]
+encryption   = ["dep:aes-gcm", "dep:rand", "dep:pbkdf2", "dep:hmac", "dep:sha2", "dep:zeroize"]
 vector-hnsw  = ["dep:instant-distance"]
 sync-http    = ["dep:reqwest"]
 
@@ -37,3 +40,4 @@ sync-http    = ["dep:reqwest"]
 tempfile = "3.10"
 wiremock = "0.6"
 tokio    = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+zeroize  = { version = "1.7", features = ["derive"] }

@@ -1849,7 +1849,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-cli"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1864,7 +1864,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aes-gcm",
  "hmac",
@@ -1883,12 +1883,14 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "ulid",
+ "url",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
 name = "taladb-ffi"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "serde_json",
  "taladb-core",
@@ -1896,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-node"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "napi",
  "napi-build",
@@ -1908,7 +1910,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-web"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
@@ -2772,6 +2774,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "zerotrie"

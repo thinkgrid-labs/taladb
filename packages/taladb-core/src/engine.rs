@@ -90,12 +90,22 @@ struct RedbWriteTxn {
     txn: redb::WriteTransaction,
 }
 
+/// Maximum number of distinct table names that may be interned per process.
+/// Each name is `Box::leak`ed exactly once (~50–200 bytes each), so this
+/// caps total memory growth from interning at well under a megabyte.
+const MAX_INTERNED_NAMES: usize = 4096;
+
 /// Intern a table name string so we can hand a `&'static str` to redb's
 /// `TableDefinition::new`, which requires `'static`.
 ///
 /// Each unique name is leaked exactly once; subsequent calls return the same
-/// pointer. Memory is bounded by the number of distinct collection/index names
-/// (typically < 100 per database), making the leak acceptable.
+/// pointer. The intern set is bounded by [`MAX_INTERNED_NAMES`] to prevent
+/// unbounded memory growth when a workload generates many distinct names.
+///
+/// # Panics
+/// Panics if more than `MAX_INTERNED_NAMES` distinct names are interned in a
+/// single process — this indicates a programming error (e.g. dynamically
+/// generating thousands of collection names).
 fn intern_name(name: &str) -> &'static str {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -104,10 +114,18 @@ fn intern_name(name: &str) -> &'static str {
     let set = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
     // Recover from a poisoned mutex: the only content is interned strings
     // (immutable &'static str), so the state is always valid even after panic.
-    let mut guard = set.lock().unwrap_or_else(|p| p.into_inner());
+    let mut guard = set.lock().unwrap_or_else(|p| {
+        eprintln!("[taladb] intern_name: mutex was poisoned; recovering");
+        p.into_inner()
+    });
     if let Some(&existing) = guard.get(name) {
         return existing;
     }
+    assert!(
+        guard.len() < MAX_INTERNED_NAMES,
+        "[taladb] intern_name: exceeded {MAX_INTERNED_NAMES} interned table names; \
+         avoid dynamically generating unbounded collection or index names"
+    );
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
     guard.insert(leaked);
     leaked

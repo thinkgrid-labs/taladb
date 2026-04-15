@@ -93,6 +93,25 @@ impl Collection {
         self
     }
 
+    /// Validate that a collection name does not contain the `"::"` separator
+    /// used internally for table names (e.g. `"collection::field"`).
+    /// A name containing `"::"` would produce table-name collisions between
+    /// collections and their indexes.
+    fn validate_name(name: &str) -> Result<(), TalaDbError> {
+        if name.contains("::") {
+            return Err(TalaDbError::InvalidName(format!(
+                "collection name \"{name}\" must not contain \"::\" \
+                 (reserved for internal table naming)"
+            )));
+        }
+        if name.is_empty() {
+            return Err(TalaDbError::InvalidName(
+                "collection name must not be empty".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn invalidate_index_cache(&self) {
         if let Ok(mut guard) = self.index_cache.lock() {
             *guard = None;
@@ -141,6 +160,7 @@ impl Collection {
     // ------------------------------------------------------------------
 
     pub fn create_index(&self, field: &str) -> Result<(), TalaDbError> {
+        Self::validate_name(&self.name)?;
         let meta_key = meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
@@ -212,6 +232,7 @@ impl Collection {
     /// Create a full-text search index on a string field.
     /// After calling this, `Filter::Contains(field, query)` will use the index.
     pub fn create_fts_index(&self, field: &str) -> Result<(), TalaDbError> {
+        Self::validate_name(&self.name)?;
         let meta_key = format!("{}::{}", self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 
@@ -295,6 +316,7 @@ impl Collection {
     /// Backfills existing documents. The index name is derived from the
     /// field list, so `["a","b"]` and `["b","a"]` are two distinct indexes.
     pub fn create_compound_index(&self, fields: &[&str]) -> Result<(), TalaDbError> {
+        Self::validate_name(&self.name)?;
         if fields.len() < 2 {
             return Err(TalaDbError::InvalidOperation(
                 "compound index requires at least 2 fields".into(),
@@ -406,6 +428,7 @@ impl Collection {
         metric: Option<VectorMetric>,
         hnsw: Option<HnswOptions>,
     ) -> Result<(), TalaDbError> {
+        Self::validate_name(&self.name)?;
         let meta_key = vec_meta_key(&self.name, field);
         let mut wtxn = self.backend.begin_write()?;
 

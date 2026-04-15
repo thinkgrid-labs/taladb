@@ -49,6 +49,9 @@ pub enum TalaDbError {
 
     #[error("config error: {0}")]
     Config(String),
+
+    #[error("invalid name: {0}")]
+    InvalidName(String),
 }
 
 impl From<redb::DatabaseError> for TalaDbError {

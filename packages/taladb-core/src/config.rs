@@ -88,10 +88,10 @@ pub struct TalaDbConfig {
 impl TalaDbConfig {
     /// Validate a parsed config.
     ///
-    /// Checks that every endpoint URL (if present) is an HTTP or HTTPS URL.
-    /// Returns `Err(TalaDbError::Config(...))` on the first invalid value.
+    /// Checks that every endpoint URL (if present) is a well-formed HTTP or
+    /// HTTPS URL. Returns `Err(TalaDbError::Config(...))` on the first invalid value.
     pub fn validate(&self) -> Result<(), TalaDbError> {
-        for url in [
+        for raw in [
             self.sync.endpoint.as_deref(),
             self.sync.insert_endpoint.as_deref(),
             self.sync.update_endpoint.as_deref(),
@@ -100,9 +100,17 @@ impl TalaDbConfig {
         .into_iter()
         .flatten()
         {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
+            let parsed = url::Url::parse(raw).map_err(|e| {
+                TalaDbError::Config(format!("invalid endpoint URL \"{raw}\" — {e}"))
+            })?;
+            if parsed.scheme() != "http" && parsed.scheme() != "https" {
                 return Err(TalaDbError::Config(format!(
-                    "invalid endpoint URL \"{url}\" — must start with http:// or https://"
+                    "invalid endpoint URL \"{raw}\" — must start with http:// or https://"
+                )));
+            }
+            if parsed.host().is_none() {
+                return Err(TalaDbError::Config(format!(
+                    "invalid endpoint URL \"{raw}\" — missing host"
                 )));
             }
         }

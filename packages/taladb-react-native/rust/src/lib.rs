@@ -93,7 +93,10 @@ pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
         Err(_) => return std::ptr::null_mut(),
     };
     match Database::open(Path::new(path_str)) {
-        Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db, sync_hook: None })),
+        Ok(db) => Box::into_raw(Box::new(TalaDbHandle {
+            db,
+            sync_hook: None,
+        })),
         Err(_) => std::ptr::null_mut(),
     }
 }
