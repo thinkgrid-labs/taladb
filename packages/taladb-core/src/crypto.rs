@@ -420,7 +420,9 @@ mod tests {
         let mut ct = encrypt(&key, "t", b"k", b"data").unwrap();
         ct[0] = 0xFF; // corrupt version byte
         let err = decrypt(&key, "t", b"k", &ct).unwrap_err();
-        assert!(err.to_string().contains("unsupported encrypted-value format version"));
+        assert!(err
+            .to_string()
+            .contains("unsupported encrypted-value format version"));
     }
 
     #[test]

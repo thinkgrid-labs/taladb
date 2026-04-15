@@ -101,9 +101,7 @@ impl TalaDbConfig {
         .flatten()
         {
             let parsed = url::Url::parse(raw).map_err(|e| {
-                TalaDbError::Config(format!(
-                    "invalid endpoint URL \"{raw}\" — {e}"
-                ))
+                TalaDbError::Config(format!("invalid endpoint URL \"{raw}\" — {e}"))
             })?;
             if parsed.scheme() != "http" && parsed.scheme() != "https" {
                 return Err(TalaDbError::Config(format!(

@@ -6,13 +6,12 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "outDir": "dist",
+    "noEmit": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "lib": ["ES2020", "DOM"],
     "jsx": "react-jsx",
-    "baseUrl": ".",
     "paths": {
       "taladb": ["../taladb/src/index.ts"]
     }

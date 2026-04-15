@@ -251,9 +251,7 @@ fn fire_with_retry(
                     req = req.header(name, value);
                 }
                 _ => {
-                    eprintln!(
-                        "[taladb] sync: skipping invalid header name or value for key {k:?}"
-                    );
+                    eprintln!("[taladb] sync: skipping invalid header name or value for key {k:?}");
                 }
             }
         }

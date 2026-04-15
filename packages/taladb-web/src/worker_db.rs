@@ -11,17 +11,20 @@ use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
 use taladb_core::engine::RedbBackend;
-use taladb_core::{Changeset, Database, Filter, HnswOptions, LastWriteWins, SyncAdapter, Update, Value, VectorMetric};
+use taladb_core::{
+    Changeset, Database, Filter, HnswOptions, LastWriteWins, SyncAdapter, Update, Value,
+    VectorMetric,
+};
 
 use crate::doc_to_json;
 use crate::storage::opfs_backend::OpfsBackend;
 
 #[cfg(target_arch = "wasm32")]
+use serde_json::{json, Map, Value as JsonValue};
+#[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
-#[cfg(target_arch = "wasm32")]
-use serde_json::{json, Map, Value as JsonValue};
 #[cfg(target_arch = "wasm32")]
 use taladb_core::config::SyncConfig;
 #[cfg(target_arch = "wasm32")]
@@ -50,9 +53,15 @@ impl WasmSyncHook {
     fn endpoint_for(&self, event: &SyncEvent) -> Option<String> {
         let cfg = &*self.config;
         match event {
-            SyncEvent::Insert { .. } => cfg.insert_endpoint.clone().or_else(|| cfg.endpoint.clone()),
-            SyncEvent::Update { .. } => cfg.update_endpoint.clone().or_else(|| cfg.endpoint.clone()),
-            SyncEvent::Delete { .. } => cfg.delete_endpoint.clone().or_else(|| cfg.endpoint.clone()),
+            SyncEvent::Insert { .. } => {
+                cfg.insert_endpoint.clone().or_else(|| cfg.endpoint.clone())
+            }
+            SyncEvent::Update { .. } => {
+                cfg.update_endpoint.clone().or_else(|| cfg.endpoint.clone())
+            }
+            SyncEvent::Delete { .. } => {
+                cfg.delete_endpoint.clone().or_else(|| cfg.endpoint.clone())
+            }
         }
     }
 }
@@ -184,7 +193,7 @@ async fn fire_wasm_with_retry(
         match req.send().await {
             Ok(resp) if resp.status().is_success() => return,
             Ok(resp) if resp.status().is_server_error() => continue,
-            Ok(_) => return, // 4xx — permanent, no retry
+            Ok(_) => return,    // 4xx — permanent, no retry
             Err(_) => continue, // network error — retry
         }
     }
@@ -193,14 +202,14 @@ async fn fire_wasm_with_retry(
 
 /// Build a WASM sync hook from an optional JSON config string.
 #[cfg(target_arch = "wasm32")]
-fn build_wasm_sync_hook(
-    config_json: Option<String>,
-) -> Result<Option<Arc<dyn SyncHook>>, JsValue> {
+fn build_wasm_sync_hook(config_json: Option<String>) -> Result<Option<Arc<dyn SyncHook>>, JsValue> {
     if let Some(json) = config_json {
         let config: TalaDbConfig =
             serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         if config.sync.enabled {
-            return Ok(Some(Arc::new(WasmSyncHook::new(config.sync)) as Arc<dyn SyncHook>));
+            return Ok(Some(
+                Arc::new(WasmSyncHook::new(config.sync)) as Arc<dyn SyncHook>
+            ));
         }
     }
     Ok(None)
@@ -621,11 +630,7 @@ impl WorkerDB {
     /// const pruned = db.compactTombstones('users', cutoff);
     /// ```
     #[wasm_bindgen(js_name = compactTombstones)]
-    pub fn compact_tombstones(
-        &self,
-        collection: &str,
-        before_ms: f64,
-    ) -> Result<u32, JsValue> {
+    pub fn compact_tombstones(&self, collection: &str, before_ms: f64) -> Result<u32, JsValue> {
         self.db
             .collection(collection)
             .compact_tombstones(before_ms as u64)
@@ -688,8 +693,8 @@ impl WorkerDB {
     /// ```
     #[wasm_bindgen(js_name = importChangeset)]
     pub fn import_changeset(&self, changeset_json: &str) -> Result<u32, JsValue> {
-        let changeset: Changeset = serde_json::from_str(changeset_json)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let changeset: Changeset =
+            serde_json::from_str(changeset_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let applied = LastWriteWins::new()
             .import_changes(&self.db, changeset)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
