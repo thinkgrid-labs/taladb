@@ -484,6 +484,135 @@ pub fn migrate_encrypted_v0_to_v1(
 }
 
 // ---------------------------------------------------------------------------
+// Field-level encryption
+// ---------------------------------------------------------------------------
+
+/// Configuration for per-field encryption on a [`crate::collection::Collection`].
+///
+/// Stores the set of field names to encrypt and the encryption key.
+/// Created via [`Collection::with_field_encryption`] and held inside the
+/// `Collection` struct (behind the `encryption` feature flag).
+#[cfg(feature = "encryption")]
+#[derive(Clone)]
+pub struct FieldEncryptionConfig {
+    /// Sorted list of field names whose values should be encrypted.
+    pub fields: Vec<String>,
+    pub key: EncryptionKey,
+}
+
+/// Encrypt the nominated fields in `doc` in-place.
+///
+/// Each target field value is serialized to bytes with `postcard`, encrypted
+/// with AES-GCM-256 using AAD `"field:<field_name>"`, and stored back as
+/// `Value::Bytes`.  Fields not in the list are left unchanged.
+#[cfg(feature = "encryption")]
+pub fn encrypt_fields(
+    doc: &mut crate::document::Document,
+    config: &FieldEncryptionConfig,
+) -> Result<(), crate::error::TalaDbError> {
+    for (name, val) in &mut doc.fields {
+        if config.fields.iter().any(|f| f == name) {
+            // Use the field name as a stable context for AAD so that a
+            // ciphertext for field "ssn" cannot be transplanted to field "token".
+            let aad_key = format!("field:{name}").into_bytes();
+            let plain = postcard::to_allocvec(val)
+                .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
+            let ciphertext = encrypt(&config.key, "field", &aad_key, &plain)?;
+            *val = crate::document::Value::Bytes(ciphertext);
+        }
+    }
+    Ok(())
+}
+
+/// Decrypt the nominated fields in `doc` in-place.
+///
+/// Reverses [`encrypt_fields`]: finds `Value::Bytes` entries for the listed
+/// fields, decrypts them, and deserializes back to the original `Value`.
+#[cfg(feature = "encryption")]
+pub fn decrypt_fields(
+    doc: &mut crate::document::Document,
+    config: &FieldEncryptionConfig,
+) -> Result<(), crate::error::TalaDbError> {
+    for (name, val) in &mut doc.fields {
+        if config.fields.iter().any(|f| f == name) {
+            if let crate::document::Value::Bytes(ciphertext) = val {
+                let aad_key = format!("field:{name}").into_bytes();
+                let plain = decrypt(&config.key, "field", &aad_key, ciphertext)?;
+                let original: crate::document::Value = postcard::from_bytes(&plain)
+                    .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
+                *val = original;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Key rotation
+// ---------------------------------------------------------------------------
+
+/// Re-encrypt all values in `backend` under a new key in a single atomic
+/// transaction per table.
+///
+/// `old_key` is used to decrypt existing values; `new_key` is used to
+/// re-encrypt them.  On failure the database is left unchanged for the
+/// affected table (each table is written in its own transaction).
+///
+/// Returns the total number of values re-encrypted.
+///
+/// # When to use
+/// Call this function once after an `old_key` is suspected to be compromised.
+/// The database must be opened with `EncryptedBackend` wrapping a **raw**
+/// (unencrypted) backend so the function can operate on the raw ciphertext
+/// bytes directly.  Pass the same raw backend that was passed to
+/// `EncryptedBackend::new`.
+///
+/// **Requires** the `encryption` feature flag.
+#[cfg(feature = "encryption")]
+pub fn rekey(
+    backend: &dyn crate::engine::StorageBackend,
+    old_key: &EncryptionKey,
+    new_key: &EncryptionKey,
+) -> Result<usize, TalaDbError> {
+    let rtxn = backend.begin_read()?;
+    let tables = rtxn.list_tables()?;
+    drop(rtxn);
+
+    let mut total = 0usize;
+
+    for table in &tables {
+        let rtxn = backend.begin_read()?;
+        let pairs = rtxn.scan_all(table)?;
+        drop(rtxn);
+
+        if pairs.is_empty() {
+            continue;
+        }
+
+        let mut updates: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+
+        for (raw_key, raw_val) in &pairs {
+            // Decrypt with old key.
+            let plaintext = decrypt(old_key, table, raw_key, raw_val)?;
+            // Re-encrypt with new key.
+            let new_val = encrypt(new_key, table, raw_key, &plaintext)?;
+            updates.push((raw_key.clone(), new_val));
+        }
+
+        // Write all re-encrypted values for this table atomically.
+        let mut wtxn = backend.begin_write()?;
+        for (k, v) in &updates {
+            wtxn.put(table, k, v)?;
+        }
+        wtxn.commit()?;
+
+        total += updates.len();
+    }
+
+    Ok(total)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -556,5 +685,55 @@ mod tests {
     fn derive_key_at_min_iterations_succeeds() {
         let key = derive_key("pass", b"salt1234567890ab", MIN_PBKDF2_ITERATIONS).unwrap();
         assert_eq!(key.len(), 32);
+    }
+
+    #[test]
+    fn rekey_round_trip() {
+        use crate::engine::{RedbBackend, StorageBackend};
+
+        let old_key: EncryptionKey = zeroize::Zeroizing::new([0x11u8; 32]);
+        let new_key: EncryptionKey = zeroize::Zeroizing::new([0x22u8; 32]);
+
+        // Open a raw in-memory backend and write some encrypted values.
+        let raw = std::sync::Arc::new(RedbBackend::open_in_memory().unwrap());
+        let enc = EncryptedBackend::new(raw.clone(), old_key.clone());
+
+        let mut wtxn = enc.begin_write().unwrap();
+        wtxn.put("docs::test", b"k1", b"hello").unwrap();
+        wtxn.put("docs::test", b"k2", b"world").unwrap();
+        wtxn.commit().unwrap();
+
+        // Rotate the key on the raw backend.
+        let count = super::rekey(raw.as_ref(), &old_key, &new_key).unwrap();
+        assert_eq!(count, 2);
+
+        // Old key must no longer decrypt.
+        let enc_old = EncryptedBackend::new(raw.clone(), old_key.clone());
+        let rtxn_old = enc_old.begin_read().unwrap();
+        assert!(rtxn_old.get("docs::test", b"k1").is_err());
+
+        // New key must decrypt correctly.
+        let enc_new = EncryptedBackend::new(raw.clone(), new_key.clone());
+        let rtxn_new = enc_new.begin_read().unwrap();
+        assert_eq!(rtxn_new.get("docs::test", b"k1").unwrap().unwrap(), b"hello");
+        assert_eq!(rtxn_new.get("docs::test", b"k2").unwrap().unwrap(), b"world");
+    }
+
+    #[test]
+    fn rekey_wrong_old_key_fails() {
+        use crate::engine::{RedbBackend, StorageBackend};
+
+        let old_key: EncryptionKey = zeroize::Zeroizing::new([0x11u8; 32]);
+        let wrong_key: EncryptionKey = zeroize::Zeroizing::new([0xFFu8; 32]);
+        let new_key: EncryptionKey = zeroize::Zeroizing::new([0x22u8; 32]);
+
+        let raw = std::sync::Arc::new(RedbBackend::open_in_memory().unwrap());
+        let enc = EncryptedBackend::new(raw.clone(), old_key);
+        let mut wtxn = enc.begin_write().unwrap();
+        wtxn.put("t", b"k", b"v").unwrap();
+        wtxn.commit().unwrap();
+
+        // Passing the wrong old key must return an encryption error.
+        assert!(super::rekey(raw.as_ref(), &wrong_key, &new_key).is_err());
     }
 }

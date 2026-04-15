@@ -5,6 +5,20 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 0.7.2
+
+### Added
+
+- **`rekey(backend, old_key, new_key)`** (`encryption` feature) — rotate the AES-GCM-256 encryption key on a live database without a full export/import cycle. Iterates every table in the raw backend, decrypts each value with `old_key`, and re-encrypts with `new_key` in an atomic transaction per table. Returns the count of re-encrypted values. Passing the wrong `old_key` fails immediately with `TalaDbError::Encryption`. Re-exported from the crate root as `taladb_core::rekey`.
+
+- **`Collection::with_field_encryption(fields, key)`** (`encryption` feature) — per-field AES-GCM-256 encryption. Listed field values are encrypted before storage (using `field:<name>` as AAD so ciphertexts cannot be transplanted between fields) and decrypted transparently on all read paths (`find`, `find_with_options`, `find_one`). All other fields remain in plaintext and fully indexable. Encrypted fields are stored as `Value::Bytes` and cannot be queried by value.
+
+- **`Collection::with_audit_log(caller)`** — opt-in append-only audit log. After every successful mutation (`insert`, `insert_many`, `update_one`, `update_many`, `delete_one`, `delete_many`) an entry is written to the `_audit` table containing: `collection`, `op` (`"insert"` | `"update"` | `"delete"`), `doc_id`, `ts` (ms since Unix epoch), and the `caller` identity string supplied by the application. No update or delete API exists for audit records. Read with `taladb_core::read_audit_log(backend, collection_filter, op_filter)`.
+
+- **`read_audit_log(backend, collection_filter, op_filter)`** — scan the `_audit` table and return `Vec<AuditEntry>`, optionally filtered by collection name and/or operation type. Returns entries in ULID insertion order.
+
+- **`AuditEntry`**, **`AuditOp`** — public types for working with audit log entries, re-exported from the crate root.
+
 ## [Unreleased] — 0.7.1
 
 ### Added

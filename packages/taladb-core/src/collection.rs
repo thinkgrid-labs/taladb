@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
+use crate::audit::{write_audit_entry, AuditOp};
 use crate::aggregate::{execute_pipeline, Stage};
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
@@ -62,6 +63,14 @@ pub struct Collection {
     backend: Arc<dyn StorageBackend>,
     index_cache: Mutex<Option<CachedIndexes>>,
     sync_hook: Option<Arc<dyn SyncHook>>,
+    /// If `Some`, every successful mutation appends an entry to the `_audit`
+    /// table. The string is the caller identity recorded in each entry.
+    audit_caller: Option<String>,
+    /// If `Some`, the listed field values are individually encrypted at rest
+    /// using the provided key.  Only the named fields are encrypted; all other
+    /// fields remain in plaintext and are fully indexable.
+    #[cfg(feature = "encryption")]
+    field_encryption: Option<crate::crypto::FieldEncryptionConfig>,
     #[cfg(feature = "vector-hnsw")]
     hnsw_cache: SharedHnswCache,
 }
@@ -73,6 +82,9 @@ impl Collection {
             backend,
             index_cache: Mutex::new(None),
             sync_hook: None,
+            audit_caller: None,
+            #[cfg(feature = "encryption")]
+            field_encryption: None,
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: crate::vector::new_shared_cache(),
         }
@@ -85,12 +97,87 @@ impl Collection {
         self
     }
 
+    /// Enable the append-only audit log for this collection handle.
+    ///
+    /// After each successful mutation (`insert`, `insert_many`, `update_one`,
+    /// `update_many`, `delete_one`, `delete_many`) an entry is written to the
+    /// `_audit` table recording the collection name, operation type, document
+    /// ID, wall-clock timestamp, and the `caller` identity string supplied here.
+    ///
+    /// Read the log with [`crate::read_audit_log`].
+    pub fn with_audit_log(mut self, caller: String) -> Self {
+        self.audit_caller = Some(caller);
+        self
+    }
+
+    /// Enable field-level encryption for this collection handle.
+    ///
+    /// Values stored in any of the listed `fields` will be individually
+    /// encrypted with AES-GCM-256 using `key` before storage, and decrypted
+    /// transparently on read.  All other fields remain in plaintext and are
+    /// fully indexable.
+    ///
+    /// **Note:** Encrypted fields cannot be indexed or queried by value — the
+    /// stored bytes are opaque ciphertext.  Index and filter on plaintext fields
+    /// only.
+    ///
+    /// **Requires** the `encryption` feature flag.
+    #[cfg(feature = "encryption")]
+    pub fn with_field_encryption(
+        mut self,
+        fields: Vec<String>,
+        key: crate::crypto::EncryptionKey,
+    ) -> Self {
+        let mut sorted = fields;
+        sorted.sort();
+        self.field_encryption = Some(crate::crypto::FieldEncryptionConfig {
+            fields: sorted,
+            key,
+        });
+        self
+    }
+
     /// Attach a shared HNSW cache (called by `Database::collection()` so all
     /// handles from the same `Database` share a single graph store).
     #[cfg(feature = "vector-hnsw")]
     pub(crate) fn with_hnsw_cache(mut self, cache: SharedHnswCache) -> Self {
         self.hnsw_cache = cache;
         self
+    }
+
+    /// Encrypt nominated fields in `doc` in-place, if field encryption is
+    /// configured.  No-op when the `encryption` feature is disabled or when
+    /// `with_field_encryption` was not called.
+    fn encrypt_doc(&self, doc: &mut Document) -> Result<(), TalaDbError> {
+        #[cfg(feature = "encryption")]
+        if let Some(cfg) = &self.field_encryption {
+            crate::crypto::encrypt_fields(doc, cfg)?;
+        }
+        Ok(())
+    }
+
+    /// Decrypt nominated fields in `doc` in-place, if field encryption is
+    /// configured.  No-op when the `encryption` feature is disabled or when
+    /// `with_field_encryption` was not called.
+    fn decrypt_doc(&self, _doc: &mut Document) -> Result<(), TalaDbError> {
+        #[cfg(feature = "encryption")]
+        if let Some(cfg) = &self.field_encryption {
+            crate::crypto::decrypt_fields(_doc, cfg)?;
+        }
+        Ok(())
+    }
+
+    /// Apply [`Self::decrypt_doc`] to every document in `docs`.
+    fn decrypt_docs(&self, docs: Vec<Document>) -> Result<Vec<Document>, TalaDbError> {
+        #[cfg(feature = "encryption")]
+        if self.field_encryption.is_some() {
+            let mut out = docs;
+            for doc in &mut out {
+                self.decrypt_doc(doc)?;
+            }
+            return Ok(out);
+        }
+        Ok(docs)
     }
 
     /// Validate that a collection name does not contain the `"::"` separator
@@ -893,7 +980,11 @@ impl Collection {
         // Auto-stamp _changed_at so LWW merge works correctly without manual calls.
         fields.retain(|(k, _)| k != "_changed_at");
         fields.push(("_changed_at".into(), Value::Int(now_ms() as i64)));
-        let doc = Document::new(fields);
+        let mut doc = Document::new(fields);
+        // Encrypt nominated fields before writing indexes or the doc body.
+        // Index entries are written from the plaintext doc, so encrypted fields
+        // are not indexable (intentional — see `with_field_encryption` docs).
+        self.encrypt_doc(&mut doc)?;
         self.ensure_changed_at_index()?;
         let cache = self.load_indexes_cached()?;
         let (indexes, fts, vecs, cidxs) = (
@@ -921,12 +1012,21 @@ impl Collection {
                 document: doc,
             });
         }
+        if let Some(caller) = &self.audit_caller {
+            write_audit_entry(
+                self.backend.as_ref(),
+                &self.name,
+                AuditOp::Insert,
+                &id.to_string(),
+                caller,
+            )?;
+        }
         Ok(id)
     }
 
     pub fn insert_many(&self, items: Vec<Vec<(String, Value)>>) -> Result<Vec<Ulid>, TalaDbError> {
         let ts = now_ms() as i64;
-        let docs: Vec<Document> = items
+        let mut docs: Vec<Document> = items
             .into_iter()
             .map(|mut fields| {
                 fields.retain(|(k, _)| k != "_changed_at");
@@ -934,6 +1034,9 @@ impl Collection {
                 Document::new(fields)
             })
             .collect();
+        for doc in &mut docs {
+            self.encrypt_doc(doc)?;
+        }
         let cache = self.load_indexes_cached()?;
         let (indexes, fts, vecs, cidxs) = (
             cache.indexes,
@@ -965,6 +1068,17 @@ impl Collection {
                 });
             }
         }
+        if let Some(caller) = &self.audit_caller {
+            for doc in &docs {
+                write_audit_entry(
+                    self.backend.as_ref(),
+                    &self.name,
+                    AuditOp::Insert,
+                    &doc.id.to_string(),
+                    caller,
+                )?;
+            }
+        }
         Ok(ids)
     }
 
@@ -975,7 +1089,8 @@ impl Collection {
         let cidxs = self.load_compound_indexes()?;
         let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
-        execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)
+        let docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
+        self.decrypt_docs(docs)
     }
 
     pub fn find_one(&self, filter: Filter) -> Result<Option<Document>, TalaDbError> {
@@ -1005,6 +1120,8 @@ impl Collection {
         let qplan = plan_full(&filter, &indexes, &fts, &cidxs);
         let rtxn = self.backend.begin_read()?;
         let mut docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name, deadline)?;
+        // Decrypt encrypted fields before sorting/projecting.
+        docs = self.decrypt_docs(docs)?;
 
         // Sort
         if !options.sort.is_empty() {
@@ -1160,7 +1277,9 @@ impl Collection {
         let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
-        if let Some(old_doc) = candidates.drain(..).next() {
+        if let Some(mut old_doc) = candidates.drain(..).next() {
+            // Decrypt encrypted fields so the update operates on plaintext.
+            self.decrypt_doc(&mut old_doc)?;
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, update)?;
             let changes = if self.sync_hook.is_some() {
@@ -1168,10 +1287,14 @@ impl Collection {
             } else {
                 HashMap::new()
             };
+            // Re-encrypt before writing.
+            self.encrypt_doc(&mut new_doc)?;
+            let mut encrypted_old = old_doc.clone();
+            self.encrypt_doc(&mut encrypted_old)?;
             let mut wtxn = self.backend.begin_write()?;
             self.write_doc_and_indexes_with_compound(
                 &new_doc,
-                Some(&old_doc),
+                Some(&encrypted_old),
                 &indexes,
                 &fts,
                 &vecs,
@@ -1185,6 +1308,15 @@ impl Collection {
                     id: old_doc.id.to_string(),
                     changes,
                 });
+            }
+            if let Some(caller) = &self.audit_caller {
+                write_audit_entry(
+                    self.backend.as_ref(),
+                    &self.name,
+                    AuditOp::Update,
+                    &old_doc.id.to_string(),
+                    caller,
+                )?;
             }
             return Ok(true);
         }
@@ -1214,15 +1346,18 @@ impl Collection {
         };
         let mut wtxn = self.backend.begin_write()?;
         for old_doc in &candidates {
-            let mut new_doc = old_doc.clone();
+            let mut plain_old = old_doc.clone();
+            self.decrypt_doc(&mut plain_old)?;
+            let mut new_doc = plain_old.clone();
             apply_update(&mut new_doc, update.clone())?;
             if has_hook {
                 events.push(SyncEvent::Update {
                     collection: self.name.clone(),
                     id: old_doc.id.to_string(),
-                    changes: diff_documents(old_doc, &new_doc),
+                    changes: diff_documents(&plain_old, &new_doc),
                 });
             }
+            self.encrypt_doc(&mut new_doc)?;
             self.write_doc_and_indexes_with_compound(
                 &new_doc,
                 Some(old_doc),
@@ -1238,6 +1373,17 @@ impl Collection {
         if let Some(hook) = &self.sync_hook {
             for event in events {
                 hook.on_event(event);
+            }
+        }
+        if let Some(caller) = &self.audit_caller {
+            for old_doc in &candidates {
+                write_audit_entry(
+                    self.backend.as_ref(),
+                    &self.name,
+                    AuditOp::Update,
+                    &old_doc.id.to_string(),
+                    caller,
+                )?;
             }
         }
         Ok(count)
@@ -1271,8 +1417,17 @@ impl Collection {
             if let Some(hook) = &self.sync_hook {
                 hook.on_event(SyncEvent::Delete {
                     collection: self.name.clone(),
-                    id: doc_id,
+                    id: doc_id.clone(),
                 });
+            }
+            if let Some(caller) = &self.audit_caller {
+                write_audit_entry(
+                    self.backend.as_ref(),
+                    &self.name,
+                    AuditOp::Delete,
+                    &doc_id,
+                    caller,
+                )?;
             }
             return Ok(true);
         }
@@ -1312,6 +1467,17 @@ impl Collection {
                     collection: self.name.clone(),
                     id: doc.id.to_string(),
                 });
+            }
+        }
+        if let Some(caller) = &self.audit_caller {
+            for doc in &candidates {
+                write_audit_entry(
+                    self.backend.as_ref(),
+                    &self.name,
+                    AuditOp::Delete,
+                    &doc.id.to_string(),
+                    caller,
+                )?;
             }
         }
         Ok(count)
