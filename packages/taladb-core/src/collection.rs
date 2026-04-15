@@ -148,10 +148,10 @@ impl Collection {
     /// Encrypt nominated fields in `doc` in-place, if field encryption is
     /// configured.  No-op when the `encryption` feature is disabled or when
     /// `with_field_encryption` was not called.
-    fn encrypt_doc(&self, doc: &mut Document) -> Result<(), TalaDbError> {
+    fn encrypt_doc(&self, _doc: &mut Document) -> Result<(), TalaDbError> {
         #[cfg(feature = "encryption")]
         if let Some(cfg) = &self.field_encryption {
-            crate::crypto::encrypt_fields(doc, cfg)?;
+            crate::crypto::encrypt_fields(_doc, cfg)?;
         }
         Ok(())
     }
