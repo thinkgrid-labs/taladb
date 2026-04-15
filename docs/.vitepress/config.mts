@@ -9,7 +9,7 @@ const ogImage = `${siteUrl}/tala-db-banner.png`;
 export default defineConfig({
   title,
   description,
-  base: "/taladb/",   // update to "/" once taladb.dev is live
+  base: "/",   // update to "/" once taladb.dev is live
   appearance: false,
 
   transformHead({ pageData }) {
