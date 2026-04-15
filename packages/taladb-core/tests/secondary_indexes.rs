@@ -20,7 +20,7 @@ fn f(x: f64) -> Value {
 #[test]
 fn index_eq_lookup() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![
         ("email".into(), s("alice@example.com")),
@@ -44,7 +44,7 @@ fn index_eq_lookup() {
 #[test]
 fn index_range_gte() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("products");
+    let col = db.collection("products").unwrap();
 
     for price in [10, 20, 30, 40, 50] {
         col.insert(vec![("price".into(), i(price))]).unwrap();
@@ -61,7 +61,7 @@ fn index_range_gte() {
 #[test]
 fn index_range_lte() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("products");
+    let col = db.collection("products").unwrap();
 
     for price in [10, 20, 30, 40, 50] {
         col.insert(vec![("price".into(), i(price))]).unwrap();
@@ -78,7 +78,7 @@ fn index_range_lte() {
 #[test]
 fn index_range_exclusive_bounds() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("scores");
+    let col = db.collection("scores").unwrap();
 
     for n in [10i64, 20, 30, 40, 50] {
         col.insert(vec![("score".into(), i(n))]).unwrap();
@@ -95,7 +95,7 @@ fn index_range_exclusive_bounds() {
 #[test]
 fn index_range_between() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("ages");
+    let col = db.collection("ages").unwrap();
 
     for age in [15i64, 18, 25, 30, 65, 70] {
         col.insert(vec![("age".into(), i(age))]).unwrap();
@@ -119,7 +119,7 @@ fn index_range_between() {
 #[test]
 fn index_in_lookup() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     for status in ["active", "pending", "deleted", "archived"] {
         col.insert(vec![("status".into(), s(status))]).unwrap();
@@ -135,7 +135,7 @@ fn index_in_lookup() {
 #[test]
 fn index_in_single_value_matches_one() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     col.insert(vec![("tag".into(), s("rust"))]).unwrap();
     col.insert(vec![("tag".into(), s("wasm"))]).unwrap();
@@ -148,7 +148,7 @@ fn index_in_single_value_matches_one() {
 #[test]
 fn index_in_no_match_returns_empty() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     col.insert(vec![("tag".into(), s("rust"))]).unwrap();
     col.create_index("tag").unwrap();
@@ -166,7 +166,7 @@ fn index_in_no_match_returns_empty() {
 #[test]
 fn string_index_sorts_lexicographically() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("names");
+    let col = db.collection("names").unwrap();
 
     for name in ["charlie", "alice", "bob", "dave"] {
         col.insert(vec![("name".into(), s(name))]).unwrap();
@@ -190,7 +190,7 @@ fn string_index_sorts_lexicographically() {
 #[test]
 fn float_index_range() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("prices");
+    let col = db.collection("prices").unwrap();
 
     for price in [1.99f64, 9.99, 19.99, 49.99, 99.99] {
         col.insert(vec![("price".into(), f(price))]).unwrap();
@@ -208,7 +208,7 @@ fn float_index_range() {
 #[test]
 fn index_maintained_on_update() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.create_index("email").unwrap();
     col.insert(vec![("email".into(), s("old@example.com"))])
@@ -234,7 +234,7 @@ fn index_maintained_on_update() {
 #[test]
 fn index_maintained_on_update_many() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.create_index("role").unwrap();
     for _ in 0..3 {
@@ -264,7 +264,7 @@ fn index_maintained_on_update_many() {
 #[test]
 fn index_maintained_on_delete() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.create_index("email").unwrap();
     col.insert(vec![("email".into(), s("alice@example.com"))])
@@ -285,7 +285,7 @@ fn index_maintained_on_delete() {
 #[test]
 fn index_maintained_on_delete_many() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.create_index("active").unwrap();
     col.insert(vec![("active".into(), b(true))]).unwrap();
@@ -310,7 +310,7 @@ fn index_maintained_on_delete_many() {
 #[test]
 fn create_index_backfills_existing_docs() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("age".into(), i(30))]).unwrap();
     col.insert(vec![("age".into(), i(25))]).unwrap();
@@ -326,7 +326,7 @@ fn create_index_backfills_existing_docs() {
 #[test]
 fn create_index_is_idempotent() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("age".into(), i(30))]).unwrap();
     col.create_index("age").unwrap();
@@ -339,7 +339,7 @@ fn create_index_is_idempotent() {
 #[test]
 fn drop_index_falls_back_to_full_scan() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("age".into(), i(30))]).unwrap();
     col.insert(vec![("age".into(), i(25))]).unwrap();
@@ -354,7 +354,7 @@ fn drop_index_falls_back_to_full_scan() {
 #[test]
 fn multiple_indexes_on_same_collection() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.create_index("email").unwrap();
     col.create_index("age").unwrap();
@@ -391,7 +391,7 @@ fn multiple_indexes_on_same_collection() {
 #[test]
 fn index_on_field_absent_in_some_docs() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.create_index("premium").unwrap();
     col.insert(vec![
@@ -418,7 +418,7 @@ fn index_on_field_absent_in_some_docs() {
 #[test]
 fn or_across_same_indexed_field() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.create_index("role").unwrap();
     for role in ["admin", "editor", "viewer", "banned"] {
@@ -442,7 +442,7 @@ fn or_across_same_indexed_field() {
 #[test]
 fn or_across_different_indexed_fields() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("content");
+    let col = db.collection("content").unwrap();
 
     col.create_index("status").unwrap();
     col.create_index("priority").unwrap();
@@ -503,7 +503,7 @@ fn or_across_different_indexed_fields() {
 #[test]
 fn nin_with_index_excludes_values() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     col.create_index("status").unwrap();
     for status in ["active", "pending", "deleted", "archived"] {
@@ -532,7 +532,7 @@ fn nin_with_index_excludes_values() {
 #[test]
 fn drop_index_on_nonexistent_returns_error() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     let err = col.drop_index("nonexistent_field").unwrap_err();
     assert!(
@@ -548,7 +548,7 @@ fn drop_index_on_nonexistent_returns_error() {
 #[test]
 fn index_correct_on_large_collection() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("big");
+    let col = db.collection("big").unwrap();
 
     col.create_index("n").unwrap();
     for n in 0i64..200 {

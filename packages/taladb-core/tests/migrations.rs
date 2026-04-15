@@ -24,9 +24,13 @@ fn open_migrated(migrations: &[Migration]) -> Database {
 fn empty_migrations_list_opens_cleanly() {
     let db = open_migrated(&[]);
     db.collection("test")
+        .unwrap()
         .insert(vec![("x".into(), i(1))])
         .unwrap();
-    assert_eq!(db.collection("test").count(Filter::All).unwrap(), 1);
+    assert_eq!(
+        db.collection("test").unwrap().count(Filter::All).unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -219,7 +223,7 @@ fn post_migration_db_accepts_collection_index() {
         up: noop,
     }]);
 
-    let users = db.collection("users");
+    let users = db.collection("users").unwrap();
     users.create_index("email").unwrap();
     users
         .insert(vec![
@@ -288,14 +292,19 @@ fn snapshot_after_migration_restores_correctly() {
     }]);
 
     db.collection("items")
+        .unwrap()
         .insert(vec![("v".into(), i(1))])
         .unwrap();
     db.collection("items")
+        .unwrap()
         .insert(vec![("v".into(), i(2))])
         .unwrap();
 
     let snapshot = db.export_snapshot().unwrap();
     let db2 = Database::restore_from_snapshot(&snapshot).unwrap();
 
-    assert_eq!(db2.collection("items").count(Filter::All).unwrap(), 2);
+    assert_eq!(
+        db2.collection("items").unwrap().count(Filter::All).unwrap(),
+        2
+    );
 }

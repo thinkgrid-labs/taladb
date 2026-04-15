@@ -5,6 +5,26 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-04-15
+
+### Breaking Changes
+
+- **`Database::collection()` now returns `Result<Collection, TalaDbError>`** instead of `Collection`. Call sites must handle the error with `?` (in functions returning `Result`) or `.unwrap()` (in tests). Returns `TalaDbError::InvalidName` if the name is empty, longer than 128 characters, or contains `"::"`.
+
+- **Encrypted data format v0 is unreadable by `>= 0.6.2`**. Any database encrypted before `0.6.2` (without the version byte and AAD binding) must be migrated with the new `migrate_encrypted_v0_to_v1` helper before the upgrade can be completed.
+
+### Added
+
+- **`migrate_encrypted_v0_to_v1(backend, key)`** — one-time migration helper for databases encrypted before `0.6.2`. Reads every stored value using the old format (`[12-byte nonce][ciphertext]`, no AAD), re-encrypts it with the current v1 format (version byte + AAD binding), and writes the result back atomically per table. Returns the count of values re-encrypted. Requires the `encryption` feature.
+
+- **Collection name validation at handle construction** — `Database::collection()` now validates the name eagerly (empty, >128 chars, contains `"::"`), surfacing errors at handle creation time rather than silently at index creation time. Also adds a 128-character maximum length check.
+
+- **`tracing` crate integration** — all internal `eprintln!` calls replaced with structured `tracing::warn!` / `tracing::error!` calls. Operators can now route TalaDB diagnostics through any `tracing` subscriber (JSON stdout, OpenTelemetry, Datadog). Zero overhead when no subscriber is installed.
+
+- **HTTP sync bounded thread pool** — `HttpSyncHook` no longer spawns a new OS thread per write event. A fixed pool of 4 background workers shares a bounded channel (capacity 256). Events are dropped with a `tracing::warn!` when the pool is saturated, rather than spawning unbounded threads. Each worker creates its own `reqwest::blocking::Client` to avoid the "cannot drop runtime in async context" panic in tokio test environments.
+
+- **Snapshot size guard** — `Database::restore_from_snapshot()` now rejects inputs larger than 10 GiB, preventing OOM conditions from corrupted or crafted snapshots.
+
 ## [0.6.1] - 2026-04-13
 
 ### Added
@@ -179,7 +199,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
 
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.1...v0.4.0
 [0.2.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.0...v0.2.1

@@ -115,7 +115,7 @@ fn intern_name(name: &str) -> &'static str {
     // Recover from a poisoned mutex: the only content is interned strings
     // (immutable &'static str), so the state is always valid even after panic.
     let mut guard = set.lock().unwrap_or_else(|p| {
-        eprintln!("[taladb] intern_name: mutex was poisoned; recovering");
+        tracing::warn!("intern_name: mutex was poisoned; recovering");
         p.into_inner()
     });
     if let Some(&existing) = guard.get(name) {

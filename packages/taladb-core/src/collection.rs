@@ -98,20 +98,41 @@ impl Collection {
     /// A name containing `"::"` would produce table-name collisions between
     /// collections and their indexes.
     fn validate_name(name: &str) -> Result<(), TalaDbError> {
-        if name.contains("::") {
-            return Err(TalaDbError::InvalidName(format!(
-                "collection name \"{name}\" must not contain \"::\" \
-                 (reserved for internal table naming)"
-            )));
-        }
-        if name.is_empty() {
-            return Err(TalaDbError::InvalidName(
-                "collection name must not be empty".into(),
-            ));
-        }
-        Ok(())
+        validate_collection_name(name)
     }
+}
 
+/// Validate a collection name.
+///
+/// Rules:
+/// - Must not be empty.
+/// - Must not exceed 128 characters.
+/// - Must not contain `"::"` (reserved for internal table naming).
+///
+/// Called by [`crate::Database::collection`] so callers get an error
+/// immediately rather than at index-creation time.
+pub fn validate_collection_name(name: &str) -> Result<(), TalaDbError> {
+    if name.is_empty() {
+        return Err(TalaDbError::InvalidName(
+            "collection name must not be empty".into(),
+        ));
+    }
+    if name.len() > 128 {
+        return Err(TalaDbError::InvalidName(format!(
+            "collection name is too long ({} chars); maximum is 128",
+            name.len()
+        )));
+    }
+    if name.contains("::") {
+        return Err(TalaDbError::InvalidName(format!(
+            "collection name \"{name}\" must not contain \"::\" \
+             (reserved for internal table naming)"
+        )));
+    }
+    Ok(())
+}
+
+impl Collection {
     fn invalidate_index_cache(&self) {
         if let Ok(mut guard) = self.index_cache.lock() {
             *guard = None;
@@ -1503,6 +1524,7 @@ mod tests {
         let hook = Arc::new(RecordingSyncHook::new());
         let col = db
             .collection(name)
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
         (col, hook)
     }
@@ -1535,7 +1557,7 @@ mod tests {
     #[test]
     fn no_hook_insert_no_panic() {
         let db = db();
-        let col = db.collection("items");
+        let col = db.collection("items").unwrap();
         assert!(col.insert(vec![("x".into(), Value::Int(1))]).is_ok());
     }
 

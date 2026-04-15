@@ -15,7 +15,7 @@ fn i(n: i64) -> Value {
 #[test]
 fn empty_string_is_valid_field_value() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     col.insert(vec![("bio".into(), s(""))]).unwrap();
     let doc = col
@@ -28,7 +28,7 @@ fn empty_string_is_valid_field_value() {
 #[test]
 fn zero_integer_is_valid_and_findable() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("counters");
+    let col = db.collection("counters").unwrap();
 
     col.insert(vec![("count".into(), i(0))]).unwrap();
     col.create_index("count").unwrap();
@@ -40,7 +40,7 @@ fn zero_integer_is_valid_and_findable() {
 #[test]
 fn negative_integer_sorts_below_zero() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("temps");
+    let col = db.collection("temps").unwrap();
 
     col.create_index("temp").unwrap();
     for t in [-10i64, -5, 0, 5, 10] {
@@ -60,7 +60,7 @@ fn negative_integer_sorts_below_zero() {
 #[test]
 fn i64_min_and_max_round_trip() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("extremes");
+    let col = db.collection("extremes").unwrap();
 
     col.create_index("n").unwrap();
     col.insert(vec![("n".into(), i(i64::MIN))]).unwrap();
@@ -86,7 +86,7 @@ fn i64_min_and_max_round_trip() {
 #[test]
 fn document_with_many_fields_round_trips() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("wide");
+    let col = db.collection("wide").unwrap();
 
     let fields: Vec<(String, Value)> = (0..100).map(|n| (format!("field_{n}"), i(n))).collect();
 
@@ -101,7 +101,7 @@ fn document_with_many_fields_round_trips() {
 #[test]
 fn large_string_value_round_trips() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("blobs");
+    let col = db.collection("blobs").unwrap();
 
     let big = "x".repeat(64 * 1024); // 64 KB string
     col.insert(vec![("data".into(), Value::Str(big.clone()))])
@@ -114,7 +114,7 @@ fn large_string_value_round_trips() {
 #[test]
 fn insert_and_delete_1000_documents() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("bulk");
+    let col = db.collection("bulk").unwrap();
 
     col.create_index("n").unwrap();
     let items: Vec<Vec<(String, Value)>> = (0i64..1000).map(|n| vec![("n".into(), i(n))]).collect();
@@ -138,7 +138,7 @@ fn insert_and_delete_1000_documents() {
 #[test]
 fn update_set_preserves_other_fields() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![
         ("name".into(), s("Alice")),
@@ -165,7 +165,7 @@ fn update_set_preserves_other_fields() {
 #[test]
 fn update_inc_does_not_affect_other_numeric_fields() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("stats");
+    let col = db.collection("stats").unwrap();
 
     col.insert(vec![("views".into(), i(100)), ("likes".into(), i(50))])
         .unwrap();
@@ -185,7 +185,7 @@ fn update_inc_does_not_affect_other_numeric_fields() {
 #[test]
 fn delete_by_unique_field_removes_only_target_document() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("name".into(), s("Alice")), ("uid".into(), i(1))])
         .unwrap();
@@ -206,7 +206,7 @@ fn delete_by_unique_field_removes_only_target_document() {
 #[test]
 fn find_one_returns_earliest_insertion() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("events");
+    let col = db.collection("events").unwrap();
 
     col.insert(vec![("seq".into(), i(1)), ("type".into(), s("click"))])
         .unwrap();
@@ -229,7 +229,7 @@ fn find_one_returns_earliest_insertion() {
 #[test]
 fn int_field_does_not_match_string_query() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     col.insert(vec![("val".into(), i(42))]).unwrap();
 
@@ -244,7 +244,7 @@ fn int_field_does_not_match_string_query() {
 #[test]
 fn nested_and_or_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![
         ("role".into(), s("admin")),
@@ -294,7 +294,7 @@ fn nested_and_or_filter() {
 #[test]
 fn update_inc_creates_field_on_missing() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("counters");
+    let col = db.collection("counters").unwrap();
 
     col.insert(vec![("name".into(), s("Alice"))]).unwrap();
 
@@ -319,7 +319,7 @@ fn update_inc_creates_field_on_missing() {
 #[test]
 fn update_push_on_nonexistent_creates_array() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     col.insert(vec![("name".into(), s("Bob"))]).unwrap();
 
@@ -344,7 +344,7 @@ fn update_push_on_nonexistent_creates_array() {
 #[test]
 fn update_pull_on_missing_field_is_noop() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     col.insert(vec![("name".into(), s("Carol"))]).unwrap();
 
@@ -374,7 +374,7 @@ fn update_pull_on_missing_field_is_noop() {
 #[test]
 fn update_inc_on_string_returns_type_error() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     col.insert(vec![("label".into(), s("hello"))]).unwrap();
 
@@ -401,7 +401,7 @@ fn update_inc_on_string_returns_type_error() {
 #[test]
 fn update_push_on_non_array_returns_type_error() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     col.insert(vec![("count".into(), i(5))]).unwrap();
 
@@ -428,7 +428,7 @@ fn update_push_on_non_array_returns_type_error() {
 #[test]
 fn snapshot_captures_state_at_export_time() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     col.insert(vec![("v".into(), i(1))]).unwrap();
     col.insert(vec![("v".into(), i(2))]).unwrap();
@@ -440,7 +440,7 @@ fn snapshot_captures_state_at_export_time() {
 
     let db2 = Database::restore_from_snapshot(&snapshot).unwrap();
     assert_eq!(
-        db2.collection("items").count(Filter::All).unwrap(),
+        db2.collection("items").unwrap().count(Filter::All).unwrap(),
         2,
         "snapshot must not include post-export writes"
     );

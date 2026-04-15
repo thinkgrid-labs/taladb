@@ -39,7 +39,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value as JsonValue};
@@ -52,28 +52,92 @@ use crate::sync::{now_ms, SyncEvent, SyncHook};
 // Public hook
 // ---------------------------------------------------------------------------
 
+/// Number of background worker threads in the sync thread pool.
+const WORKER_THREADS: usize = 4;
+
+/// Capacity of the bounded task channel. Back-pressure kicks in when the pool
+/// is saturated — `on_event` will drop events rather than block the writer.
+const TASK_CHANNEL_CAPACITY: usize = 256;
+
+struct SyncTask {
+    endpoint: String,
+    headers: HashMap<String, String>,
+    payload: JsonValue,
+}
+
 /// Fires an HTTP POST for every mutation event.
 ///
-/// - Requests run on a background OS thread — `on_event` returns immediately.
+/// - Uses a fixed pool of [`WORKER_THREADS`] background threads sharing a
+///   single `reqwest::blocking::Client` — no per-event thread spawn overhead.
+/// - The task channel is bounded to [`TASK_CHANNEL_CAPACITY`]; events are
+///   dropped (with a warning) when the pool is fully saturated rather than
+///   blocking the writer thread.
 /// - Retries up to 3 times on 5xx / network error with 200 / 400 / 800 ms
 ///   exponential backoff. 4xx responses are not retried (permanent error).
-/// - Final failure is silently dropped — HTTP sync is best-effort.
 ///
 /// # Usage
 /// ```ignore
 /// let hook = Arc::new(HttpSyncHook::new(config.sync));
-/// let col = db.collection("users")
+/// let col = db.collection("users")?
 ///     .with_sync_hook(hook as Arc<dyn SyncHook>);
 /// ```
 pub struct HttpSyncHook {
     config: Arc<SyncConfig>,
+    /// Sender half of the bounded worker channel. `None` when sync is disabled.
+    tx: Option<std::sync::mpsc::SyncSender<SyncTask>>,
 }
 
 impl HttpSyncHook {
     /// Build the hook from a `SyncConfig`.
+    ///
+    /// When `config.enabled` is `true`, spawns [`WORKER_THREADS`] background
+    /// threads that share one `reqwest::blocking::Client`.
     pub fn new(config: SyncConfig) -> Self {
+        if !config.enabled {
+            return HttpSyncHook {
+                config: Arc::new(config),
+                tx: None,
+            };
+        }
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<SyncTask>(TASK_CHANNEL_CAPACITY);
+        // Wrap receiver in Arc<Mutex> so it can be shared across worker threads.
+        let rx = Arc::new(Mutex::new(rx));
+
+        for _ in 0..WORKER_THREADS {
+            let rx = Arc::clone(&rx);
+            std::thread::spawn(move || {
+                // Build the reqwest client inside the worker thread.
+                // This avoids the "cannot drop runtime in async context" panic
+                // that occurs when the client (which holds a tokio runtime) is
+                // dropped from within a tokio-managed thread (e.g. #[tokio::test]).
+                let client = match reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!(error = %e, "sync: worker failed to build HTTP client");
+                        return;
+                    }
+                };
+                loop {
+                    let task = {
+                        let guard = rx.lock().unwrap_or_else(|p| p.into_inner());
+                        guard.recv()
+                    };
+                    match task {
+                        Ok(t) => fire_with_retry(&client, &t.endpoint, &t.headers, &t.payload),
+                        // Channel closed — all senders dropped, shut down.
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+
         HttpSyncHook {
             config: Arc::new(config),
+            tx: Some(tx),
         }
     }
 
@@ -95,29 +159,23 @@ impl HttpSyncHook {
 
 impl SyncHook for HttpSyncHook {
     fn on_event(&self, event: SyncEvent) {
-        if !self.config.enabled {
+        let Some(tx) = &self.tx else {
             return;
-        }
+        };
         let Some(endpoint) = self.endpoint_for(&event) else {
             return;
         };
         let payload = event_to_payload(event, &self.config.exclude_fields);
         let headers = self.config.headers.clone();
-
-        // The reqwest::blocking::Client is created inside the spawned thread.
-        // This avoids the "cannot drop a runtime in an async context" panic that
-        // occurs when the client (which holds a tokio runtime internally) is
-        // dropped from within a tokio-managed thread (e.g. #[tokio::test]).
-        std::thread::spawn(move || {
-            let client = match reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-            {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            fire_with_retry(&client, &endpoint, &headers, &payload);
-        });
+        let task = SyncTask {
+            endpoint,
+            headers,
+            payload,
+        };
+        // try_send: drops the event if the channel is full rather than blocking.
+        if let Err(e) = tx.try_send(task) {
+            tracing::warn!(error = %e, "sync: task channel full; dropping sync event");
+        }
     }
 }
 
@@ -251,7 +309,7 @@ fn fire_with_retry(
                     req = req.header(name, value);
                 }
                 _ => {
-                    eprintln!("[taladb] sync: skipping invalid header name or value for key {k:?}");
+                    tracing::warn!(key = ?k, "sync: skipping invalid header name or value");
                 }
             }
         }
@@ -267,9 +325,10 @@ fn fire_with_retry(
         }
     }
     // All attempts exhausted — log so operators can detect replication failures.
-    eprintln!(
-        "[taladb] sync: event permanently failed after {} attempts to {endpoint}",
-        max_attempts
+    tracing::error!(
+        attempts = max_attempts,
+        endpoint,
+        "sync: event permanently failed after all retry attempts"
     );
 }
 
@@ -489,6 +548,7 @@ mod tests {
         let hook = Arc::new(HttpSyncHook::new(config));
         let col = db
             .collection("items")
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
         // Should complete instantly (no network call)
         col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
@@ -511,6 +571,7 @@ mod tests {
         let hook = Arc::new(HttpSyncHook::new(enabled_config(&server.uri())));
         let col = db
             .collection("users")
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
         col.insert(vec![("name".into(), Value::Str("Alice".into()))])
@@ -540,6 +601,7 @@ mod tests {
         let hook = Arc::new(HttpSyncHook::new(enabled_config(&server.uri())));
         let col = db
             .collection("users")
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
         col.insert(vec![
@@ -580,6 +642,7 @@ mod tests {
         let hook = Arc::new(HttpSyncHook::new(enabled_config(&server.uri())));
         let col = db
             .collection("items")
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
         let id = col
@@ -632,6 +695,7 @@ mod tests {
         let hook = Arc::new(HttpSyncHook::new(config));
         let col = db
             .collection("items")
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
         col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
@@ -662,6 +726,7 @@ mod tests {
         let hook = Arc::new(HttpSyncHook::new(config));
         let col = db
             .collection("items")
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
         col.insert(vec![("y".into(), Value::Bool(true))]).unwrap();
@@ -690,6 +755,7 @@ mod tests {
         let hook = Arc::new(HttpSyncHook::new(enabled_config(&server.uri())));
         let col = db
             .collection("items")
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
         col.insert(vec![("z".into(), Value::Int(42))]).unwrap();
@@ -719,6 +785,7 @@ mod tests {
         let hook = Arc::new(HttpSyncHook::new(enabled_config(&server.uri())));
         let col = db
             .collection("items")
+            .unwrap()
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
         col.insert(vec![("w".into(), Value::Int(1))]).unwrap();

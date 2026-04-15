@@ -15,7 +15,7 @@ fn i(n: i64) -> Value {
 #[test]
 fn create_and_drop_fts_index() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("articles");
+    let col = db.collection("articles").unwrap();
 
     col.create_fts_index("body").unwrap();
 
@@ -38,7 +38,7 @@ fn create_and_drop_fts_index() {
 #[test]
 fn create_fts_index_twice_is_idempotent() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("articles");
+    let col = db.collection("articles").unwrap();
     col.create_fts_index("title").unwrap();
     // Second call must be a no-op, not an error.
     col.create_fts_index("title").unwrap();
@@ -47,7 +47,7 @@ fn create_fts_index_twice_is_idempotent() {
 #[test]
 fn drop_fts_index_nonexistent_returns_error() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("articles");
+    let col = db.collection("articles").unwrap();
     let err = col.drop_fts_index("body").unwrap_err();
     assert!(
         format!("{err}").contains("not found"),
@@ -62,7 +62,7 @@ fn drop_fts_index_nonexistent_returns_error() {
 #[test]
 fn fts_single_token_matches() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("posts");
+    let col = db.collection("posts").unwrap();
     col.create_fts_index("content").unwrap();
 
     col.insert(vec![("content".into(), s("Hello world from TalaDB"))])
@@ -87,7 +87,7 @@ fn fts_single_token_matches() {
 #[test]
 fn fts_single_token_no_match_returns_empty() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("posts");
+    let col = db.collection("posts").unwrap();
     col.create_fts_index("content").unwrap();
 
     col.insert(vec![("content".into(), s("Hello world"))])
@@ -106,7 +106,7 @@ fn fts_single_token_no_match_returns_empty() {
 #[test]
 fn fts_multi_token_and_semantics() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
     col.create_fts_index("text").unwrap();
 
     col.insert(vec![("text".into(), s("rust and wasm are both great"))])
@@ -132,7 +132,7 @@ fn fts_multi_token_and_semantics() {
 #[test]
 fn fts_multi_token_partial_match_returns_empty() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
     col.create_fts_index("text").unwrap();
 
     col.insert(vec![("text".into(), s("only rust here"))])
@@ -152,7 +152,7 @@ fn fts_multi_token_partial_match_returns_empty() {
 #[test]
 fn fts_backfill_on_create_index() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("articles");
+    let col = db.collection("articles").unwrap();
 
     // Insert before creating index
     col.insert(vec![("title".into(), s("Introduction to Rust"))])
@@ -179,7 +179,7 @@ fn fts_backfill_on_create_index() {
 #[test]
 fn fts_index_maintained_on_update() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("posts");
+    let col = db.collection("posts").unwrap();
     col.create_fts_index("body").unwrap();
 
     col.insert(vec![("body".into(), s("old content about databases"))])
@@ -214,7 +214,7 @@ fn fts_index_maintained_on_update() {
 #[test]
 fn fts_index_maintained_on_delete() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("posts");
+    let col = db.collection("posts").unwrap();
     col.create_fts_index("body").unwrap();
 
     col.insert(vec![("body".into(), s("this is about rust"))])
@@ -247,7 +247,7 @@ fn fts_index_maintained_on_delete() {
 #[test]
 fn fts_case_insensitive() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
     col.create_fts_index("name").unwrap();
 
     col.insert(vec![("name".into(), s("TalaDB is Awesome"))])
@@ -281,7 +281,7 @@ fn fts_case_insensitive() {
 #[test]
 fn fts_on_non_string_field_returns_empty() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
     col.create_fts_index("count").unwrap();
 
     col.insert(vec![("count".into(), i(42))]).unwrap();
@@ -299,7 +299,7 @@ fn fts_on_non_string_field_returns_empty() {
 #[test]
 fn fts_survives_snapshot_roundtrip() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("notes");
+    let col = db.collection("notes").unwrap();
     col.create_fts_index("content").unwrap();
 
     col.insert(vec![("content".into(), s("snapshot test with rust"))])
@@ -309,7 +309,7 @@ fn fts_survives_snapshot_roundtrip() {
 
     let snapshot = db.export_snapshot().unwrap();
     let db2 = Database::restore_from_snapshot(&snapshot).unwrap();
-    let col2 = db2.collection("notes");
+    let col2 = db2.collection("notes").unwrap();
 
     // FTS index tables are part of the snapshot — query should work
     let results = col2
@@ -326,8 +326,8 @@ fn fts_survives_snapshot_roundtrip() {
 fn fts_indexes_are_collection_scoped() {
     let db = Database::open_in_memory().unwrap();
 
-    let col_a = db.collection("colA");
-    let col_b = db.collection("colB");
+    let col_a = db.collection("colA").unwrap();
+    let col_b = db.collection("colB").unwrap();
 
     col_a.create_fts_index("text").unwrap();
     col_b.create_fts_index("text").unwrap();

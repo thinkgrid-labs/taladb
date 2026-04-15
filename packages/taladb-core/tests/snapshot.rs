@@ -23,9 +23,11 @@ fn list_collection_names_after_insert() {
     let db = Database::open_in_memory().unwrap();
 
     db.collection("users")
+        .unwrap()
         .insert(vec![("name".into(), s("Alice"))])
         .unwrap();
     db.collection("posts")
+        .unwrap()
         .insert(vec![("title".into(), s("Hello"))])
         .unwrap();
 
@@ -52,7 +54,7 @@ fn snapshot_empty_database() {
 #[test]
 fn snapshot_round_trip_preserves_documents() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     let id1 = col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
     let id2 = col.insert(vec![("x".into(), Value::Int(2))]).unwrap();
@@ -62,7 +64,7 @@ fn snapshot_round_trip_preserves_documents() {
 
     // Restore
     let db2 = Database::restore_from_snapshot(&bytes).unwrap();
-    let col2 = db2.collection("items");
+    let col2 = db2.collection("items").unwrap();
 
     let docs = col2.find(Filter::All).unwrap();
     assert_eq!(docs.len(), 2);
@@ -75,12 +77,15 @@ fn snapshot_round_trip_preserves_documents() {
 fn snapshot_round_trip_preserves_multiple_collections() {
     let db = Database::open_in_memory().unwrap();
     db.collection("users")
+        .unwrap()
         .insert(vec![("name".into(), s("Alice"))])
         .unwrap();
     db.collection("posts")
+        .unwrap()
         .insert(vec![("title".into(), s("Hello"))])
         .unwrap();
     db.collection("posts")
+        .unwrap()
         .insert(vec![("title".into(), s("World"))])
         .unwrap();
 
@@ -90,21 +95,27 @@ fn snapshot_round_trip_preserves_multiple_collections() {
     let mut names = db2.list_collection_names().unwrap();
     names.sort();
     assert_eq!(names, ["posts", "users"]);
-    assert_eq!(db2.collection("users").count(Filter::All).unwrap(), 1);
-    assert_eq!(db2.collection("posts").count(Filter::All).unwrap(), 2);
+    assert_eq!(
+        db2.collection("users").unwrap().count(Filter::All).unwrap(),
+        1
+    );
+    assert_eq!(
+        db2.collection("posts").unwrap().count(Filter::All).unwrap(),
+        2
+    );
 }
 
 #[test]
 fn snapshot_round_trip_preserves_secondary_index() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
     col.create_index("age").unwrap();
     col.insert(vec![("age".into(), Value::Int(30))]).unwrap();
     col.insert(vec![("age".into(), Value::Int(25))]).unwrap();
 
     let bytes = db.export_snapshot().unwrap();
     let db2 = Database::restore_from_snapshot(&bytes).unwrap();
-    let col2 = db2.collection("users");
+    let col2 = db2.collection("users").unwrap();
 
     // Index should be present and accelerate queries
     let found = col2.find(Filter::Eq("age".into(), Value::Int(30))).unwrap();

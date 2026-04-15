@@ -102,9 +102,9 @@ impl TalaDBWasm {
     }
 
     /// Get a collection handle by name.
-    pub fn collection(&self, name: &str) -> CollectionWasm {
-        let col = self.inner.collection(name);
-        CollectionWasm { inner: col }
+    pub fn collection(&self, name: &str) -> Result<CollectionWasm, JsValue> {
+        let col = self.inner.collection(name).map_err(err_to_js)?;
+        Ok(CollectionWasm { inner: col })
     }
 }
 
@@ -543,7 +543,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn in_memory_insert_find() {
         let db = TalaDBWasm::open_in_memory().unwrap();
-        let col = db.collection("users");
+        let col = db.collection("users").unwrap();
 
         let doc = js_sys::Object::new();
         js_sys::Reflect::set(&doc, &"name".into(), &"Alice".into()).unwrap();

@@ -16,7 +16,7 @@ fn db() -> Database {
 #[test]
 fn nested_field_eq() {
     let db = db();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![
         ("name".into(), Value::Str("Alice".into())),
@@ -48,7 +48,7 @@ fn nested_field_eq() {
 #[test]
 fn nested_field_three_levels() {
     let db = db();
-    let col = db.collection("deep");
+    let col = db.collection("deep").unwrap();
 
     col.insert(vec![(
         "a".into(),
@@ -68,7 +68,7 @@ fn nested_field_three_levels() {
 #[test]
 fn nested_field_missing_returns_no_match() {
     let db = db();
-    let col = db.collection("sparse_nested");
+    let col = db.collection("sparse_nested").unwrap();
 
     // document without the nested field
     col.insert(vec![("name".into(), Value::Str("Charlie".into()))])
@@ -86,7 +86,7 @@ fn nested_field_missing_returns_no_match() {
 #[test]
 fn nested_field_non_object_parent_returns_no_match() {
     let db = db();
-    let col = db.collection("non_obj");
+    let col = db.collection("non_obj").unwrap();
 
     // "address" is a string, not an object — dot lookup should not panic
     col.insert(vec![("address".into(), Value::Str("flat string".into()))])
@@ -104,7 +104,7 @@ fn nested_field_non_object_parent_returns_no_match() {
 #[test]
 fn nested_field_range_filter() {
     let db = db();
-    let col = db.collection("scores");
+    let col = db.collection("scores").unwrap();
 
     for (name, score) in [("Alice", 80i64), ("Bob", 55), ("Carol", 92)] {
         col.insert(vec![
@@ -134,7 +134,7 @@ fn nested_field_range_filter() {
 #[test]
 fn nested_field_exists_filter() {
     let db = db();
-    let col = db.collection("exists_nested");
+    let col = db.collection("exists_nested").unwrap();
 
     col.insert(vec![(
         "meta".into(),
@@ -155,7 +155,7 @@ fn nested_field_exists_filter() {
 #[test]
 fn nested_field_in_or_filter() {
     let db = db();
-    let col = db.collection("or_nested");
+    let col = db.collection("or_nested").unwrap();
 
     for (city, name) in [("London", "Alice"), ("Paris", "Bob"), ("Berlin", "Carol")] {
         col.insert(vec![
@@ -184,7 +184,7 @@ fn nested_field_in_or_filter() {
 #[test]
 fn regex_filter_basic() {
     let db = db();
-    let col = db.collection("emails");
+    let col = db.collection("emails").unwrap();
 
     col.insert(vec![(
         "email".into(),
@@ -207,7 +207,7 @@ fn regex_filter_basic() {
 #[test]
 fn regex_no_match_returns_empty() {
     let db = db();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
     col.insert(vec![("tag".into(), Value::Str("hello".into()))])
         .unwrap();
 
@@ -220,7 +220,7 @@ fn regex_no_match_returns_empty() {
 #[test]
 fn regex_multiple_matches() {
     let db = db();
-    let col = db.collection("urls");
+    let col = db.collection("urls").unwrap();
 
     for url in ["http://a.com", "https://b.com", "ftp://c.net"] {
         col.insert(vec![("url".into(), Value::Str(url.into()))])
@@ -236,7 +236,7 @@ fn regex_multiple_matches() {
 #[test]
 fn regex_anchors_and_character_classes() {
     let db = db();
-    let col = db.collection("greet");
+    let col = db.collection("greet").unwrap();
 
     col.insert(vec![("code".into(), Value::Str("ABC-123".into()))])
         .unwrap();
@@ -256,7 +256,7 @@ fn regex_anchors_and_character_classes() {
 #[test]
 fn regex_on_non_string_field_returns_empty() {
     let db = db();
-    let col = db.collection("nums_regex");
+    let col = db.collection("nums_regex").unwrap();
 
     col.insert(vec![("n".into(), Value::Int(42))]).unwrap();
 
@@ -267,7 +267,7 @@ fn regex_on_non_string_field_returns_empty() {
 #[test]
 fn regex_invalid_pattern_does_not_panic() {
     let db = db();
-    let col = db.collection("bad_regex");
+    let col = db.collection("bad_regex").unwrap();
 
     col.insert(vec![("s".into(), Value::Str("anything".into()))])
         .unwrap();
@@ -282,7 +282,7 @@ fn regex_invalid_pattern_does_not_panic() {
 #[test]
 fn regex_combined_with_and_filter() {
     let db = db();
-    let col = db.collection("combo_regex");
+    let col = db.collection("combo_regex").unwrap();
 
     for (name, tag) in [("Alice", "admin"), ("Bob", "admin"), ("Carol", "user")] {
         col.insert(vec![
@@ -309,7 +309,7 @@ fn regex_combined_with_and_filter() {
 #[test]
 fn find_with_options_sort_skip_limit() {
     let db = db();
-    let col = db.collection("nums");
+    let col = db.collection("nums").unwrap();
 
     for n in [5i64, 2, 8, 1, 9, 3] {
         col.insert(vec![("n".into(), Value::Int(n))]).unwrap();
@@ -336,7 +336,7 @@ fn find_with_options_sort_skip_limit() {
 #[test]
 fn find_with_options_projection() {
     let db = db();
-    let col = db.collection("proj");
+    let col = db.collection("proj").unwrap();
 
     col.insert(vec![
         ("name".into(), Value::Str("Alice".into())),
@@ -361,7 +361,7 @@ fn find_with_options_projection() {
 #[test]
 fn sort_descending() {
     let db = db();
-    let col = db.collection("desc");
+    let col = db.collection("desc").unwrap();
 
     for n in [1i64, 5, 3] {
         col.insert(vec![("v".into(), Value::Int(n))]).unwrap();
@@ -390,7 +390,7 @@ fn sort_descending() {
 #[test]
 fn multi_field_sort() {
     let db = db();
-    let col = db.collection("multi_sort");
+    let col = db.collection("multi_sort").unwrap();
 
     for (dept, salary) in [("eng", 80i64), ("hr", 60), ("eng", 70), ("hr", 90)] {
         col.insert(vec![
@@ -431,7 +431,7 @@ fn multi_field_sort() {
 #[test]
 fn skip_beyond_collection_size_returns_empty() {
     let db = db();
-    let col = db.collection("skip_overflow");
+    let col = db.collection("skip_overflow").unwrap();
 
     for n in 1i64..=3 {
         col.insert(vec![("n".into(), Value::Int(n))]).unwrap();
@@ -449,7 +449,7 @@ fn skip_beyond_collection_size_returns_empty() {
 #[test]
 fn limit_zero_returns_empty() {
     let db = db();
-    let col = db.collection("limit_zero");
+    let col = db.collection("limit_zero").unwrap();
 
     col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
 
@@ -465,7 +465,7 @@ fn limit_zero_returns_empty() {
 #[test]
 fn pagination_with_filter() {
     let db = db();
-    let col = db.collection("page_filter");
+    let col = db.collection("page_filter").unwrap();
 
     col.create_index("status").unwrap();
     for i in 1i64..=10 {
@@ -511,7 +511,7 @@ fn pagination_with_filter() {
 #[test]
 fn compound_index_eq_lookup() {
     let db = db();
-    let col = db.collection("people");
+    let col = db.collection("people").unwrap();
 
     col.create_compound_index(&["last", "first"]).unwrap();
 
@@ -546,7 +546,7 @@ fn compound_index_eq_lookup() {
 #[test]
 fn compound_index_survives_delete() {
     let db = db();
-    let col = db.collection("ci_del");
+    let col = db.collection("ci_del").unwrap();
 
     col.create_compound_index(&["a", "b"]).unwrap();
 
@@ -571,7 +571,7 @@ fn compound_index_survives_delete() {
 #[test]
 fn compound_index_backfills_existing_docs() {
     let db = db();
-    let col = db.collection("ci_backfill");
+    let col = db.collection("ci_backfill").unwrap();
 
     // Insert before index exists
     col.insert(vec![
@@ -594,7 +594,7 @@ fn compound_index_backfills_existing_docs() {
 #[test]
 fn compound_index_maintained_on_update() {
     let db = db();
-    let col = db.collection("ci_update");
+    let col = db.collection("ci_update").unwrap();
 
     col.create_compound_index(&["a", "b"]).unwrap();
 
@@ -632,7 +632,7 @@ fn compound_index_maintained_on_update() {
 #[test]
 fn compound_index_maintained_on_delete_many() {
     let db = db();
-    let col = db.collection("ci_delmany");
+    let col = db.collection("ci_delmany").unwrap();
 
     col.create_compound_index(&["cat", "item"]).unwrap();
 
@@ -664,7 +664,7 @@ fn compound_index_maintained_on_delete_many() {
 #[test]
 fn drop_compound_index_falls_back_to_full_scan() {
     let db = db();
-    let col = db.collection("ci_drop");
+    let col = db.collection("ci_drop").unwrap();
 
     col.create_compound_index(&["p", "q"]).unwrap();
 
@@ -689,7 +689,7 @@ fn drop_compound_index_falls_back_to_full_scan() {
 #[test]
 fn drop_nonexistent_compound_index_returns_error() {
     let db = db();
-    let col = db.collection("ci_no_drop");
+    let col = db.collection("ci_no_drop").unwrap();
 
     let err = col.drop_compound_index(&["x", "y"]);
     assert!(err.is_err());
@@ -698,7 +698,7 @@ fn drop_nonexistent_compound_index_returns_error() {
 #[test]
 fn compound_index_idempotent_create() {
     let db = db();
-    let col = db.collection("ci_idem");
+    let col = db.collection("ci_idem").unwrap();
 
     col.create_compound_index(&["m", "n"]).unwrap();
     // Second call is a no-op, not an error
@@ -708,7 +708,7 @@ fn compound_index_idempotent_create() {
 #[test]
 fn compound_index_with_int_fields() {
     let db = db();
-    let col = db.collection("ci_ints");
+    let col = db.collection("ci_ints").unwrap();
 
     col.create_compound_index(&["year", "month"]).unwrap();
 
@@ -733,7 +733,7 @@ fn compound_index_with_int_fields() {
 #[test]
 fn compound_index_doc_missing_field_not_indexed() {
     let db = db();
-    let col = db.collection("ci_sparse");
+    let col = db.collection("ci_sparse").unwrap();
 
     col.create_compound_index(&["a", "b"]).unwrap();
 
@@ -760,7 +760,7 @@ fn compound_index_doc_missing_field_not_indexed() {
 #[test]
 fn multiple_compound_indexes_on_same_collection() {
     let db = db();
-    let col = db.collection("ci_multi");
+    let col = db.collection("ci_multi").unwrap();
 
     col.create_compound_index(&["x", "y"]).unwrap();
     col.create_compound_index(&["y", "z"]).unwrap();
@@ -796,7 +796,7 @@ fn multiple_compound_indexes_on_same_collection() {
 #[test]
 fn aggregate_group_sum_count() {
     let db = db();
-    let col = db.collection("sales");
+    let col = db.collection("sales").unwrap();
 
     for (dept, amount) in [
         ("eng", 100i64),
@@ -841,7 +841,7 @@ fn aggregate_group_sum_count() {
 #[test]
 fn aggregate_match_then_group() {
     let db = db();
-    let col = db.collection("orders");
+    let col = db.collection("orders").unwrap();
 
     for (status, val) in [("open", 10i64), ("open", 20), ("closed", 5), ("open", 30)] {
         col.insert(vec![
@@ -868,7 +868,7 @@ fn aggregate_match_then_group() {
 #[test]
 fn aggregate_project_stage() {
     let db = db();
-    let col = db.collection("proj_agg");
+    let col = db.collection("proj_agg").unwrap();
 
     col.insert(vec![
         ("name".into(), Value::Str("Alice".into())),
@@ -890,7 +890,7 @@ fn aggregate_project_stage() {
 #[test]
 fn aggregate_sort_skip_limit() {
     let db = db();
-    let col = db.collection("pipeline_ops");
+    let col = db.collection("pipeline_ops").unwrap();
 
     for n in 1i64..=10 {
         col.insert(vec![("n".into(), Value::Int(n))]).unwrap();
@@ -918,7 +918,7 @@ fn aggregate_sort_skip_limit() {
 #[test]
 fn aggregate_avg_min_max() {
     let db = db();
-    let col = db.collection("stats");
+    let col = db.collection("stats").unwrap();
 
     for n in [10i64, 20, 30] {
         col.insert(vec![("v".into(), Value::Int(n))]).unwrap();
@@ -944,7 +944,7 @@ fn aggregate_avg_min_max() {
 #[test]
 fn aggregate_push_accumulator() {
     let db = db();
-    let col = db.collection("push_acc");
+    let col = db.collection("push_acc").unwrap();
 
     for tag in ["a", "b", "c"] {
         col.insert(vec![("tag".into(), Value::Str(tag.into()))])
@@ -968,7 +968,7 @@ fn aggregate_push_accumulator() {
 #[test]
 fn aggregate_add_to_set_deduplicates() {
     let db = db();
-    let col = db.collection("set_acc");
+    let col = db.collection("set_acc").unwrap();
 
     for color in ["red", "blue", "red", "green", "blue"] {
         col.insert(vec![("color".into(), Value::Str(color.into()))])
@@ -992,7 +992,7 @@ fn aggregate_add_to_set_deduplicates() {
 #[test]
 fn aggregate_first_and_last() {
     let db = db();
-    let col = db.collection("first_last");
+    let col = db.collection("first_last").unwrap();
 
     // Insert in order — ULID ensures insertion order is preserved on full scan
     for n in [10i64, 20, 30] {
@@ -1020,7 +1020,7 @@ fn aggregate_first_and_last() {
 #[test]
 fn aggregate_group_null_key_for_missing_field() {
     let db = db();
-    let col = db.collection("null_key");
+    let col = db.collection("null_key").unwrap();
 
     col.insert(vec![("v".into(), Value::Int(1))]).unwrap(); // no "cat" field
     col.insert(vec![
@@ -1043,7 +1043,7 @@ fn aggregate_group_null_key_for_missing_field() {
 #[test]
 fn aggregate_on_empty_collection_returns_empty() {
     let db = db();
-    let col = db.collection("empty_agg");
+    let col = db.collection("empty_agg").unwrap();
 
     let results = col
         .aggregate(vec![Stage::Group {
@@ -1058,7 +1058,7 @@ fn aggregate_on_empty_collection_returns_empty() {
 #[test]
 fn aggregate_avg_no_numeric_values_returns_null() {
     let db = db();
-    let col = db.collection("avg_null");
+    let col = db.collection("avg_null").unwrap();
 
     // Field "v" is a string — avg should return Null
     col.insert(vec![("v".into(), Value::Str("text".into()))])
@@ -1078,7 +1078,7 @@ fn aggregate_avg_no_numeric_values_returns_null() {
 #[test]
 fn aggregate_match_uses_secondary_index() {
     let db = db();
-    let col = db.collection("agg_idx");
+    let col = db.collection("agg_idx").unwrap();
 
     col.create_index("status").unwrap();
 
@@ -1112,7 +1112,7 @@ fn aggregate_match_uses_secondary_index() {
 #[test]
 fn aggregate_full_pipeline() {
     let db = db();
-    let col = db.collection("full_pipeline");
+    let col = db.collection("full_pipeline").unwrap();
 
     for (region, product, revenue) in [
         ("eu", "widget", 100i64),
@@ -1153,7 +1153,7 @@ fn aggregate_full_pipeline() {
 #[test]
 fn aggregate_group_by_nested_field() {
     let db = db();
-    let col = db.collection("nested_group");
+    let col = db.collection("nested_group").unwrap();
 
     for (country, n) in [("uk", 10i64), ("uk", 20), ("fr", 5)] {
         col.insert(vec![

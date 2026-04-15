@@ -18,6 +18,8 @@ pub mod watch;
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
 pub use collection::{Collection, CollectionIndexInfo, Update};
 pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
+#[cfg(feature = "encryption")]
+pub use crypto::migrate_encrypted_v0_to_v1;
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
@@ -93,11 +95,17 @@ impl Database {
     }
 
     /// Get a collection handle by name.
-    pub fn collection(&self, name: &str) -> Collection {
+    ///
+    /// # Errors
+    /// Returns [`TalaDbError::InvalidName`] if `name` is empty, longer than 128
+    /// characters, or contains the `"::"` separator reserved for internal table
+    /// naming.
+    pub fn collection(&self, name: &str) -> Result<Collection, TalaDbError> {
+        collection::validate_collection_name(name)?;
         let col = Collection::new(name, Arc::clone(&self.backend));
         #[cfg(feature = "vector-hnsw")]
         let col = col.with_hnsw_cache(Arc::clone(&self.hnsw_cache));
-        col
+        Ok(col)
     }
 
     /// Warm the in-memory HNSW cache by rebuilding all graphs whose options are
@@ -126,7 +134,7 @@ impl Database {
                 Some(s) => s.to_string(),
                 None => continue,
             };
-            self.collection(&col_name).upgrade_vector_index(&field)?;
+            self.collection(&col_name)?.upgrade_vector_index(&field)?;
         }
         Ok(())
     }
@@ -194,6 +202,11 @@ impl Database {
     /// Returns [`TalaDbError::InvalidSnapshot`] if the data is corrupt or from an
     /// incompatible snapshot version.
     pub fn restore_from_snapshot(data: &[u8]) -> Result<Self, TalaDbError> {
+        /// 10 GiB hard cap — prevents OOM from corrupted or crafted snapshots.
+        const MAX_SNAPSHOT_SIZE: usize = 10 * 1024 * 1024 * 1024;
+        if data.len() > MAX_SNAPSHOT_SIZE {
+            return Err(TalaDbError::InvalidSnapshot);
+        }
         if data.len() < 12 || &data[..4] != SNAPSHOT_MAGIC {
             return Err(TalaDbError::InvalidSnapshot);
         }

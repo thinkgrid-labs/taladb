@@ -131,7 +131,7 @@ fn encrypted_db(key: [u8; 32]) -> Database {
 fn encrypted_backend_insert_and_find() {
     let key = [7u8; 32];
     let db = encrypted_db(key);
-    let col = db.collection("secrets");
+    let col = db.collection("secrets").unwrap();
 
     col.insert(vec![("secret".into(), s("my password"))])
         .unwrap();
@@ -147,7 +147,7 @@ fn encrypted_backend_insert_and_find() {
 fn encrypted_backend_update_and_delete() {
     let key = [8u8; 32];
     let db = encrypted_db(key);
-    let col = db.collection("data");
+    let col = db.collection("data").unwrap();
 
     col.insert(vec![("value".into(), i(1))]).unwrap();
 
@@ -171,7 +171,7 @@ fn encrypted_backend_update_and_delete() {
 fn encrypted_backend_snapshot_round_trip() {
     let key = [9u8; 32];
     let db = encrypted_db(key);
-    let col = db.collection("notes");
+    let col = db.collection("notes").unwrap();
 
     col.insert(vec![("body".into(), s("encrypted note"))])
         .unwrap();
@@ -184,7 +184,7 @@ fn encrypted_backend_snapshot_round_trip() {
 
     // Restore directly into in-memory (snapshot stores plaintext-after-decrypt)
     let db3 = Database::restore_from_snapshot(&snapshot).unwrap();
-    let col3 = db3.collection("notes");
+    let col3 = db3.collection("notes").unwrap();
     let results = col3.find(Filter::All).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("body"), Some(&s("encrypted note")));
@@ -194,7 +194,7 @@ fn encrypted_backend_snapshot_round_trip() {
 fn encrypted_backend_index_works() {
     let key = [10u8; 32];
     let db = encrypted_db(key);
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.create_index("email").unwrap();
     col.insert(vec![
@@ -219,7 +219,7 @@ fn encrypted_backend_index_works() {
 fn encrypted_backend_multiple_docs() {
     let key = [11u8; 32];
     let db = encrypted_db(key);
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     for n in 0..20i64 {
         col.insert(vec![("n".into(), i(n))]).unwrap();

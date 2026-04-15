@@ -68,12 +68,12 @@ pub struct TalaDbHandle {
 
 impl TalaDbHandle {
     /// Get a collection, attaching the sync hook when one is configured.
-    fn collection(&self, name: &str) -> taladb_core::Collection {
-        let col = self.db.collection(name);
+    fn collection(&self, name: &str) -> Result<taladb_core::Collection, taladb_core::TalaDbError> {
+        let col = self.db.collection(name)?;
         if let Some(hook) = &self.sync_hook {
-            col.with_sync_hook(Arc::clone(hook))
+            Ok(col.with_sync_hook(Arc::clone(hook)))
         } else {
-            col
+            Ok(col)
         }
     }
 }
@@ -181,7 +181,14 @@ pub unsafe extern "C" fn taladb_insert(
         Some(f) => f,
         None => return std::ptr::null_mut(),
     };
-    match h.collection(&col_name).insert(fields) {
+    let col = match h.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    match col.insert(fields) {
         Ok(id) => to_cstring(id.to_string()),
         Err(e) => {
             set_last_error(e.to_string());
@@ -211,7 +218,14 @@ pub unsafe extern "C" fn taladb_insert_many(
         .iter()
         .filter_map(|v| json_to_fields(&v.to_string()))
         .collect();
-    match h.collection(&col_name).insert_many(items) {
+    let col = match h.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    match col.insert_many(items) {
         Ok(ids) => {
             let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
             to_cstring(serde_json::to_string(&id_strs).unwrap_or_default())
@@ -242,7 +256,14 @@ pub unsafe extern "C" fn taladb_find(
         None => return std::ptr::null_mut(),
     };
     let filter = parse_filter(&json);
-    match db.collection(&col_name).find(filter) {
+    let col = match db.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    match col.find(filter) {
         Ok(docs) => {
             let json_docs: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
             to_cstring(serde_json::to_string(&json_docs).unwrap_or_default())
@@ -267,7 +288,14 @@ pub unsafe extern "C" fn taladb_find_one(
         None => return std::ptr::null_mut(),
     };
     let filter = parse_filter(&json);
-    match db.collection(&col_name).find_one(filter) {
+    let col = match db.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    match col.find_one(filter) {
         Ok(Some(doc)) => to_cstring(doc_to_json(&doc).to_string()),
         Ok(None) => to_cstring("null".to_string()),
         Err(e) => {
@@ -297,8 +325,15 @@ pub unsafe extern "C" fn taladb_update_one(
     match (handle, col_name, filter_str, update_str) {
         (Some(h), Some(col), Some(fs), Some(us)) => {
             let filter = parse_filter(&fs);
+            let collection = match h.collection(&col) {
+                Ok(c) => c,
+                Err(e) => {
+                    set_last_error(e.to_string());
+                    return -1;
+                }
+            };
             match parse_update(&us) {
-                Some(update) => match h.collection(&col).update_one(filter, update) {
+                Some(update) => match collection.update_one(filter, update) {
                     Ok(true) => 1,
                     Ok(false) => 0,
                     Err(e) => {
@@ -329,8 +364,15 @@ pub unsafe extern "C" fn taladb_update_many(
     match (handle, col_name, filter_str, update_str) {
         (Some(h), Some(col), Some(fs), Some(us)) => {
             let filter = parse_filter(&fs);
+            let collection = match h.collection(&col) {
+                Ok(c) => c,
+                Err(e) => {
+                    set_last_error(e.to_string());
+                    return -1;
+                }
+            };
             match parse_update(&us) {
-                Some(update) => match h.collection(&col).update_many(filter, update) {
+                Some(update) => match collection.update_many(filter, update) {
                     Ok(n) => n as i32,
                     Err(e) => {
                         set_last_error(e.to_string());
@@ -360,7 +402,14 @@ pub unsafe extern "C" fn taladb_delete_one(
         Some(t) => t,
         None => return -1,
     };
-    match h.collection(&col_name).delete_one(parse_filter(&json)) {
+    let col = match h.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    match col.delete_one(parse_filter(&json)) {
         Ok(true) => 1,
         Ok(false) => 0,
         Err(e) => {
@@ -382,7 +431,14 @@ pub unsafe extern "C" fn taladb_delete_many(
         Some(t) => t,
         None => return -1,
     };
-    match h.collection(&col_name).delete_many(parse_filter(&json)) {
+    let col = match h.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    match col.delete_many(parse_filter(&json)) {
         Ok(n) => n as i32,
         Err(e) => {
             set_last_error(e.to_string());
@@ -407,7 +463,14 @@ pub unsafe extern "C" fn taladb_count(
         Some(t) => t,
         None => return -1,
     };
-    match db.collection(&col_name).count(parse_filter(&json)) {
+    let col = match db.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    match col.count(parse_filter(&json)) {
         Ok(n) => n as i32,
         Err(e) => {
             set_last_error(e.to_string());
@@ -432,7 +495,9 @@ pub unsafe extern "C" fn taladb_create_index(
         cstr_to_string(collection),
         cstr_to_string(field),
     ) {
-        let _ = h.db.collection(&col).create_index(&f);
+        if let Ok(c) = h.db.collection(&col) {
+            let _ = c.create_index(&f);
+        }
     }
 }
 
@@ -448,7 +513,9 @@ pub unsafe extern "C" fn taladb_drop_index(
         cstr_to_string(collection),
         cstr_to_string(field),
     ) {
-        let _ = h.db.collection(&col).drop_index(&f);
+        if let Ok(c) = h.db.collection(&col) {
+            let _ = c.drop_index(&f);
+        }
     }
 }
 
@@ -464,7 +531,9 @@ pub unsafe extern "C" fn taladb_create_fts_index(
         cstr_to_string(collection),
         cstr_to_string(field),
     ) {
-        let _ = h.db.collection(&col).create_fts_index(&f);
+        if let Ok(c) = h.db.collection(&col) {
+            let _ = c.create_fts_index(&f);
+        }
     }
 }
 
@@ -480,7 +549,9 @@ pub unsafe extern "C" fn taladb_drop_fts_index(
         cstr_to_string(collection),
         cstr_to_string(field),
     ) {
-        let _ = h.db.collection(&col).drop_fts_index(&f);
+        if let Ok(c) = h.db.collection(&col) {
+            let _ = c.drop_fts_index(&f);
+        }
     }
 }
 
