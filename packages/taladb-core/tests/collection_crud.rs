@@ -20,7 +20,7 @@ fn f(x: f64) -> Value {
 #[test]
 fn insert_and_find() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     let id = col
         .insert(vec![("name".into(), v("Alice")), ("age".into(), i(30))])
@@ -35,7 +35,7 @@ fn insert_and_find() {
 #[test]
 fn insert_many_and_count() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     let ids = col
         .insert_many(vec![
@@ -52,7 +52,7 @@ fn insert_many_and_count() {
 #[test]
 fn insert_returns_unique_ids() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     let id1 = col.insert(vec![("v".into(), i(1))]).unwrap();
     let id2 = col.insert(vec![("v".into(), i(2))]).unwrap();
@@ -66,7 +66,7 @@ fn insert_returns_unique_ids() {
 #[test]
 fn find_empty_collection_returns_empty_vec() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("empty");
+    let col = db.collection("empty").unwrap();
 
     let docs = col.find(Filter::All).unwrap();
     assert!(docs.is_empty());
@@ -75,7 +75,7 @@ fn find_empty_collection_returns_empty_vec() {
 #[test]
 fn find_one_returns_none_on_no_match() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("name".into(), v("Alice"))]).unwrap();
 
@@ -86,7 +86,7 @@ fn find_one_returns_none_on_no_match() {
 #[test]
 fn count_with_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("role".into(), v("admin"))]).unwrap();
     col.insert(vec![("role".into(), v("user"))]).unwrap();
@@ -104,7 +104,7 @@ fn count_with_filter() {
 #[test]
 fn find_with_eq_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("name".into(), v("Alice")), ("age".into(), i(30))])
         .unwrap();
@@ -119,7 +119,7 @@ fn find_with_eq_filter() {
 #[test]
 fn find_with_ne_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("status".into(), v("active"))]).unwrap();
     col.insert(vec![("status".into(), v("banned"))]).unwrap();
@@ -132,7 +132,7 @@ fn find_with_ne_filter() {
 #[test]
 fn find_with_gt_and_lt() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("scores");
+    let col = db.collection("scores").unwrap();
 
     for n in [10i64, 20, 30, 40, 50] {
         col.insert(vec![("score".into(), i(n))]).unwrap();
@@ -148,7 +148,7 @@ fn find_with_gt_and_lt() {
 #[test]
 fn find_with_gte_lte_range() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("ages");
+    let col = db.collection("ages").unwrap();
 
     for n in [18i64, 25, 30, 40, 65, 70] {
         col.insert(vec![("age".into(), i(n))]).unwrap();
@@ -171,7 +171,7 @@ fn find_with_gte_lte_range() {
 #[test]
 fn find_with_in_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     for role in ["admin", "editor", "viewer", "banned"] {
         col.insert(vec![("role".into(), v(role))]).unwrap();
@@ -187,7 +187,7 @@ fn find_with_in_filter() {
 #[test]
 fn find_with_nin_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     for tag in ["rust", "wasm", "spam", "low-quality"] {
         col.insert(vec![("tag".into(), v(tag))]).unwrap();
@@ -203,7 +203,7 @@ fn find_with_nin_filter() {
 #[test]
 fn find_with_exists_true_and_false() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("profiles");
+    let col = db.collection("profiles").unwrap();
 
     col.insert(vec![
         ("name".into(), v("Alice")),
@@ -228,7 +228,7 @@ fn find_with_exists_true_and_false() {
 #[test]
 fn find_with_and_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![
         ("role".into(), v("admin")),
@@ -258,7 +258,7 @@ fn find_with_and_filter() {
 #[test]
 fn find_with_or_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("events");
+    let col = db.collection("events").unwrap();
 
     for t in ["click", "scroll", "submit", "resize"] {
         col.insert(vec![("type".into(), v(t))]).unwrap();
@@ -277,7 +277,7 @@ fn find_with_or_filter() {
 #[test]
 fn find_with_not_filter() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("sessions");
+    let col = db.collection("sessions").unwrap();
 
     col.insert(vec![("expired".into(), b(false))]).unwrap();
     col.insert(vec![("expired".into(), b(true))]).unwrap();
@@ -293,7 +293,7 @@ fn find_with_not_filter() {
 #[test]
 fn find_with_float_values() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("prices");
+    let col = db.collection("prices").unwrap();
 
     col.insert(vec![("price".into(), f(9.99))]).unwrap();
     col.insert(vec![("price".into(), f(49.99))]).unwrap();
@@ -306,7 +306,7 @@ fn find_with_float_values() {
 #[test]
 fn find_with_bool_field() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("flags");
+    let col = db.collection("flags").unwrap();
 
     col.insert(vec![("verified".into(), b(true))]).unwrap();
     col.insert(vec![("verified".into(), b(false))]).unwrap();
@@ -328,7 +328,7 @@ fn find_with_bool_field() {
 #[test]
 fn update_one_set() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("name".into(), v("Alice")), ("age".into(), i(30))])
         .unwrap();
@@ -351,7 +351,7 @@ fn update_one_set() {
 #[test]
 fn update_one_set_multiple_fields() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![
         ("name".into(), v("Alice")),
@@ -377,7 +377,7 @@ fn update_one_set_multiple_fields() {
 #[test]
 fn update_one_set_adds_new_field() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("name".into(), v("Alice"))]).unwrap();
 
@@ -397,7 +397,7 @@ fn update_one_set_adds_new_field() {
 #[test]
 fn update_one_returns_false_when_no_match() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     let updated = col
         .update_one(
@@ -412,7 +412,7 @@ fn update_one_returns_false_when_no_match() {
 #[test]
 fn update_one_inc() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("counters");
+    let col = db.collection("counters").unwrap();
 
     col.insert(vec![("count".into(), i(5))]).unwrap();
     col.update_one(Filter::All, Update::Inc(vec![("count".into(), i(3))]))
@@ -425,7 +425,7 @@ fn update_one_inc() {
 #[test]
 fn update_one_inc_negative_decrements() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("counters");
+    let col = db.collection("counters").unwrap();
 
     col.insert(vec![("stock".into(), i(10))]).unwrap();
     col.update_one(Filter::All, Update::Inc(vec![("stock".into(), i(-3))]))
@@ -438,7 +438,7 @@ fn update_one_inc_negative_decrements() {
 #[test]
 fn update_one_unset_removes_field() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![
         ("name".into(), v("Alice")),
@@ -463,7 +463,7 @@ fn update_one_unset_removes_field() {
 #[test]
 fn update_one_push_appends_to_array() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("posts");
+    let col = db.collection("posts").unwrap();
 
     col.insert(vec![
         ("title".into(), v("Hello")),
@@ -492,7 +492,7 @@ fn update_one_push_appends_to_array() {
 #[test]
 fn update_one_pull_removes_from_array() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("posts");
+    let col = db.collection("posts").unwrap();
 
     col.insert(vec![
         ("title".into(), v("Hello")),
@@ -524,7 +524,7 @@ fn update_one_pull_removes_from_array() {
 #[test]
 fn update_many_updates_all_matching() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     for _ in 0..3 {
         col.insert(vec![("role".into(), v("trial"))]).unwrap();
@@ -551,7 +551,7 @@ fn update_many_updates_all_matching() {
 #[test]
 fn delete_one() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("name".into(), v("Alice"))]).unwrap();
     col.insert(vec![("name".into(), v("Bob"))]).unwrap();
@@ -569,7 +569,7 @@ fn delete_one() {
 #[test]
 fn delete_one_returns_false_when_no_match() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("users");
+    let col = db.collection("users").unwrap();
 
     col.insert(vec![("name".into(), v("Alice"))]).unwrap();
 
@@ -583,7 +583,7 @@ fn delete_one_returns_false_when_no_match() {
 #[test]
 fn delete_many() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     col.insert_many(vec![
         vec![("active".into(), b(true))],
@@ -602,7 +602,7 @@ fn delete_many() {
 #[test]
 fn delete_many_all_deletes_entire_collection() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("logs");
+    let col = db.collection("logs").unwrap();
 
     col.insert_many(vec![
         vec![("msg".into(), v("a"))],
@@ -619,7 +619,7 @@ fn delete_many_all_deletes_entire_collection() {
 #[test]
 fn delete_many_returns_zero_on_no_match() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     col.insert(vec![("x".into(), i(1))]).unwrap();
 
@@ -636,8 +636,8 @@ fn delete_many_returns_zero_on_no_match() {
 fn collections_are_isolated() {
     let db = Database::open_in_memory().unwrap();
 
-    let users = db.collection("users");
-    let posts = db.collection("posts");
+    let users = db.collection("users").unwrap();
+    let posts = db.collection("posts").unwrap();
 
     users.insert(vec![("name".into(), v("Alice"))]).unwrap();
     posts
@@ -660,7 +660,7 @@ fn collections_are_isolated() {
 #[test]
 fn null_value_round_trips() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     col.insert(vec![("field".into(), Value::Null)]).unwrap();
 
@@ -671,7 +671,7 @@ fn null_value_round_trips() {
 #[test]
 fn nested_array_round_trips() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     let arr = Value::Array(vec![i(1), i(2), i(3)]);
     col.insert(vec![("nums".into(), arr.clone())]).unwrap();
@@ -683,7 +683,7 @@ fn nested_array_round_trips() {
 #[test]
 fn bytes_value_round_trips() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
 
     let raw = Value::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
     col.insert(vec![("data".into(), raw.clone())]).unwrap();

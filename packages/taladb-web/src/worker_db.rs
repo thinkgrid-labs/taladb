@@ -349,18 +349,24 @@ impl WorkerDB {
 
     /// Get a collection handle, attaching the sync hook on write paths.
     #[cfg(target_arch = "wasm32")]
-    fn get_collection(&self, name: &str) -> taladb_core::Collection {
-        let col = self.db.collection(name);
+    fn get_collection(
+        &self,
+        name: &str,
+    ) -> Result<taladb_core::Collection, taladb_core::TalaDbError> {
+        let col = self.db.collection(name)?;
         if let Some(hook) = &self.sync_hook {
-            col.with_sync_hook(Arc::clone(hook))
+            Ok(col.with_sync_hook(Arc::clone(hook)))
         } else {
-            col
+            Ok(col)
         }
     }
 
     // When not targeting WASM (e.g. cargo check on host), fall back to no-hook.
     #[cfg(not(target_arch = "wasm32"))]
-    fn get_collection(&self, name: &str) -> taladb_core::Collection {
+    fn get_collection(
+        &self,
+        name: &str,
+    ) -> Result<taladb_core::Collection, taladb_core::TalaDbError> {
         self.db.collection(name)
     }
 
@@ -375,6 +381,7 @@ impl WorkerDB {
         let fields = json_obj_to_fields(&v)?;
         let id = self
             .get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .insert(fields)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(id.to_string())
@@ -388,6 +395,7 @@ impl WorkerDB {
         let items: Result<Vec<_>, _> = arr.iter().map(json_obj_to_fields).collect();
         let ids = self
             .get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .insert_many(items?)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
@@ -400,6 +408,7 @@ impl WorkerDB {
         let docs = self
             .db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .find(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let json: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
@@ -413,6 +422,7 @@ impl WorkerDB {
         let doc = self
             .db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .find_one(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let json = doc.as_ref().map(doc_to_json);
@@ -430,6 +440,7 @@ impl WorkerDB {
         let filter = parse_filter(filter_json)?;
         let update = parse_update(update_json)?;
         self.get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .update_one(filter, update)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -445,6 +456,7 @@ impl WorkerDB {
         let filter = parse_filter(filter_json)?;
         let update = parse_update(update_json)?;
         self.get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .update_many(filter, update)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -455,6 +467,7 @@ impl WorkerDB {
     pub fn delete_one(&self, collection: &str, filter_json: &str) -> Result<bool, JsValue> {
         let filter = parse_filter(filter_json)?;
         self.get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .delete_one(filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -464,6 +477,7 @@ impl WorkerDB {
     pub fn delete_many(&self, collection: &str, filter_json: &str) -> Result<u32, JsValue> {
         let filter = parse_filter(filter_json)?;
         self.get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .delete_many(filter)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -474,6 +488,7 @@ impl WorkerDB {
         let filter = parse_filter(filter_json)?;
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .count(filter)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -487,6 +502,7 @@ impl WorkerDB {
     pub fn create_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .create_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -495,6 +511,7 @@ impl WorkerDB {
     pub fn drop_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .drop_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -503,6 +520,7 @@ impl WorkerDB {
     pub fn create_fts_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .create_fts_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -511,6 +529,7 @@ impl WorkerDB {
     pub fn drop_fts_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .drop_fts_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -537,6 +556,7 @@ impl WorkerDB {
         let hnsw = parse_hnsw_opts(index_type, hnsw_m, hnsw_ef_construction);
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .create_vector_index(field, dimensions as usize, metric, hnsw)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -546,6 +566,7 @@ impl WorkerDB {
     pub fn drop_vector_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .drop_vector_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -558,6 +579,7 @@ impl WorkerDB {
     pub fn upgrade_vector_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .upgrade_vector_index(field)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -569,6 +591,7 @@ impl WorkerDB {
         let info = self
             .db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .list_indexes()
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let json = serde_json::json!({
@@ -603,6 +626,7 @@ impl WorkerDB {
         let results = self
             .db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .find_nearest(field, &query, top_k as usize, pre_filter)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
@@ -633,6 +657,7 @@ impl WorkerDB {
     pub fn compact_tombstones(&self, collection: &str, before_ms: f64) -> Result<u32, JsValue> {
         self.db
             .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
             .compact_tombstones(before_ms as u64)
             .map(|n| n as u32)
             .map_err(|e| JsValue::from_str(&e.to_string()))

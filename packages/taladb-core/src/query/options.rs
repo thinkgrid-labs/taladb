@@ -54,6 +54,7 @@ impl SortSpec {
 ///     skip: 20,
 ///     limit: Some(10),
 ///     fields: Some(vec!["name".into(), "email".into()]),
+///     timeout: Some(std::time::Duration::from_secs(5)),
 /// };
 /// ```
 #[derive(Debug, Default, Clone)]
@@ -68,6 +69,11 @@ pub struct FindOptions {
     /// If `Some`, only the listed fields (plus `_id`) are returned.
     /// Fields not in the list are stripped from each document.
     pub fields: Option<Vec<String>>,
+    /// If `Some`, the query will return [`TalaDbError::QueryTimeout`] if
+    /// it runs longer than the specified duration.  The check is performed
+    /// between documents in the filter loop, so the actual elapsed time may
+    /// slightly exceed the limit on very large individual documents.
+    pub timeout: Option<std::time::Duration>,
 }
 
 // ---------------------------------------------------------------------------

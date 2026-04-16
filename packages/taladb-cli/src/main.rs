@@ -188,7 +188,7 @@ fn cmd_inspect(file: &PathBuf) -> Result<()> {
     } else {
         println!("\nCollections ({}):", collections.len());
         for name in &collections {
-            let n = db.collection(name).count(Filter::All)?;
+            let n = db.collection(name)?.count(Filter::All)?;
             println!("  {name}  ({n} documents)");
         }
     }
@@ -215,7 +215,7 @@ fn cmd_collections(file: &PathBuf) -> Result<()> {
 
 fn cmd_count(file: &PathBuf, collection: &str) -> Result<()> {
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
-    let col = db.collection(collection);
+    let col = db.collection(collection)?;
     let n = col.count(Filter::All)?;
     println!("{}", n);
     Ok(())
@@ -232,7 +232,7 @@ fn cmd_export(
     out: Option<&std::path::Path>,
 ) -> Result<()> {
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
-    let col = db.collection(collection);
+    let col = db.collection(collection)?;
     let docs = col.find(Filter::All)?;
 
     let json_docs: Vec<serde_json::Value> = docs
@@ -295,7 +295,7 @@ fn cmd_export(
 
 fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
-    let col = db.collection(collection);
+    let col = db.collection(collection)?;
 
     let content = std::fs::read_to_string(data).with_context(|| format!("reading {:?}", data))?;
 
@@ -336,7 +336,7 @@ fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
 
 fn cmd_drop(file: &PathBuf, collection: &str) -> Result<()> {
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
-    let col = db.collection(collection);
+    let col = db.collection(collection)?;
     let n = col.delete_many(Filter::All)?;
     eprintln!("Deleted {} documents from '{}'", n, collection);
     Ok(())
@@ -348,7 +348,7 @@ fn cmd_drop(file: &PathBuf, collection: &str) -> Result<()> {
 
 fn cmd_upgrade_vector_index(file: &PathBuf, collection: &str, field: &str) -> Result<()> {
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
-    db.collection(collection)
+    db.collection(collection)?
         .upgrade_vector_index(field)
         .with_context(|| {
             format!(
@@ -422,7 +422,7 @@ fn cmd_sync(
     let mut total_sent = 0u64;
 
     for col_name in &col_names {
-        let docs = db.collection(col_name).find(Filter::All)?;
+        let docs = db.collection(col_name)?.find(Filter::All)?;
         let total = docs.len();
 
         if total == 0 {
@@ -610,6 +610,7 @@ mod tests {
         let db = Database::open(&db_path).unwrap();
         for i in 0..n {
             db.collection(col)
+                .unwrap()
                 .insert(vec![("name".into(), Value::Str(format!("doc-{i}")))])
                 .unwrap();
         }
@@ -797,12 +798,15 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let db = Database::open(&db_path).unwrap();
         db.collection("a")
+            .unwrap()
             .insert(vec![("x".into(), Value::Int(1))])
             .unwrap();
         db.collection("b")
+            .unwrap()
             .insert(vec![("x".into(), Value::Int(2))])
             .unwrap();
         db.collection("b")
+            .unwrap()
             .insert(vec![("x".into(), Value::Int(3))])
             .unwrap();
         drop(db);

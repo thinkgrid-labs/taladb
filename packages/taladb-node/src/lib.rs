@@ -25,6 +25,7 @@ fn err_to_napi(e: TalaDbError) -> napi::Error {
         TalaDbError::InvalidOperation(_) => "InvalidOperation",
         TalaDbError::Config(_) => "Config",
         TalaDbError::InvalidName(_) => "InvalidName",
+        TalaDbError::QueryTimeout => "QueryTimeout",
     };
     napi::Error::from_reason(format!("{}: {}", code, e))
 }
@@ -312,13 +313,13 @@ impl TalaDBNode {
     /// Get a collection by name. If an HTTP sync hook is configured it is
     /// automatically attached to the returned collection.
     #[napi]
-    pub fn collection(&self, name: String) -> CollectionNode {
-        let col = self.inner.collection(&name);
+    pub fn collection(&self, name: String) -> napi::Result<CollectionNode> {
+        let col = self.inner.collection(&name).map_err(err_to_napi)?;
         let col = match &self.sync_hook {
             Some(hook) => col.with_sync_hook(Arc::clone(hook)),
             None => col,
         };
-        CollectionNode { inner: col }
+        Ok(CollectionNode { inner: col })
     }
 }
 

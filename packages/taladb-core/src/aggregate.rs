@@ -240,10 +240,8 @@ fn update_state(state: &mut AccState, acc: &Accumulator, doc: &Document) {
                 }
             }
         }
-        (AccState::First(cur), Accumulator::First(f)) => {
-            if cur.is_none() {
-                *cur = doc.get(f).cloned();
-            }
+        (AccState::First(cur), Accumulator::First(f)) if cur.is_none() => {
+            *cur = doc.get(f).cloned();
         }
         (AccState::Last(cur), Accumulator::Last(f)) => {
             *cur = doc.get(f).cloned();

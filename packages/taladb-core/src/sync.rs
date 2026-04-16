@@ -204,7 +204,7 @@ impl SyncAdapter for LastWriteWins {
         let mut changes = Vec::new();
 
         for &col_name in collections {
-            let col = db.collection(col_name);
+            let col = db.collection(col_name)?;
             // Use the _changed_at secondary index for an O(log N) range scan
             // instead of a full table scan. The index is auto-created on first
             // mutation by ensure_changed_at_index().
@@ -245,9 +245,10 @@ impl SyncAdapter for LastWriteWins {
                     continue;
                 }
                 let ts: i64 = postcard::from_bytes(&val_bytes).unwrap_or_else(|e| {
-                    eprintln!(
-                        "[taladb] sync: corrupt tombstone timestamp in \"{col_name}\", \
-                         defaulting to 0 (epoch): {e}"
+                    tracing::warn!(
+                        collection = col_name,
+                        error = %e,
+                        "sync: corrupt tombstone timestamp, defaulting to epoch (0)"
                     );
                     0
                 });
@@ -277,7 +278,7 @@ impl SyncAdapter for LastWriteWins {
         let mut applied = 0u64;
 
         for change in changeset {
-            let col = db.collection(&change.collection);
+            let col = db.collection(&change.collection)?;
 
             match change.op {
                 ChangeOp::Upsert(remote_doc) => {

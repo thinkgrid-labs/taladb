@@ -175,7 +175,7 @@ mod tests {
 
         let db_clone = Arc::clone(&db);
         let handle = create_watch(&registry, Filter::All, move |filter| {
-            let col = db_clone.collection("users");
+            let col = db_clone.collection("users").unwrap();
             col.find(filter.clone())
         });
 

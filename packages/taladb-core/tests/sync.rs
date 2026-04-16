@@ -57,7 +57,7 @@ fn stamp_replaces_existing_changed_at() {
 #[test]
 fn export_changes_returns_docs_after_since_ms() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("tasks");
+    let col = db.collection("tasks").unwrap();
     let adapter = LastWriteWins::new();
 
     // Insert with known timestamps using insert_with_id so auto-stamping
@@ -98,7 +98,7 @@ fn export_changes_empty_collection_returns_empty() {
 #[test]
 fn export_changes_since_zero_returns_all() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
     let adapter = LastWriteWins::new();
 
     for n in 0..5 {
@@ -136,7 +136,7 @@ fn import_changes_inserts_new_document() {
     let applied = adapter.import_changes(&db, changeset).unwrap();
     assert_eq!(applied, 1);
 
-    let col = db.collection("tasks");
+    let col = db.collection("tasks").unwrap();
     let results = col.find(Filter::All).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("title"), Some(&s("remote doc")));
@@ -150,7 +150,7 @@ fn import_changes_inserts_new_document() {
 fn lww_remote_newer_wins() {
     let db = Database::open_in_memory().unwrap();
     let adapter = LastWriteWins::new();
-    let col = db.collection("notes");
+    let col = db.collection("notes").unwrap();
 
     // Insert a local doc with old timestamp
     let local_fields = vec![
@@ -171,7 +171,7 @@ fn lww_remote_newer_wins() {
     // Since local doc doesn't have "_id" field, let's insert with the same id via a new doc
     // Instead, test with a fresh collection where the local _id is set explicitly
     let db2 = Database::open_in_memory().unwrap();
-    let col2 = db2.collection("notes");
+    let col2 = db2.collection("notes").unwrap();
 
     // Insert a doc that has _changed_at
     let fields = vec![
@@ -209,7 +209,7 @@ fn lww_remote_newer_wins() {
 fn lww_local_newer_is_not_overwritten() {
     let db = Database::open_in_memory().unwrap();
     let adapter = LastWriteWins::new();
-    let col = db.collection("notes");
+    let col = db.collection("notes").unwrap();
 
     // Insert local doc with a very high timestamp
     let local_doc_id = Ulid::new();
@@ -267,7 +267,7 @@ fn lww_local_newer_is_not_overwritten() {
 fn import_delete_removes_existing_doc() {
     let db = Database::open_in_memory().unwrap();
     let adapter = LastWriteWins::new();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     // Insert a local doc via changeset (so we have control over its ID)
     let doc_id = Ulid::new();
@@ -327,7 +327,7 @@ fn export_import_round_trip() {
     let target_db = Database::open_in_memory().unwrap();
     let adapter = LastWriteWins::new();
 
-    let source_col = source_db.collection("data");
+    let source_col = source_db.collection("data").unwrap();
     for n in 0..5i64 {
         let mut fields = vec![("value".into(), i(n))];
         stamp(&mut fields);
@@ -338,7 +338,7 @@ fn export_import_round_trip() {
     let applied = adapter.import_changes(&target_db, changeset).unwrap();
     assert_eq!(applied, 5);
 
-    let target_col = target_db.collection("data");
+    let target_col = target_db.collection("data").unwrap();
     let docs = target_col.find(Filter::All).unwrap();
     assert_eq!(docs.len(), 5);
 }

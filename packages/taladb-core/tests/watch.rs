@@ -25,7 +25,7 @@ fn try_next_returns_none_when_no_event() {
     let db_clone = Arc::clone(&db);
 
     let handle = create_watch(&registry, Filter::All, move |filter| {
-        db_clone.collection("users").find(filter.clone())
+        db_clone.collection("users").unwrap().find(filter.clone())
     });
 
     // No write has occurred — try_next should return None
@@ -44,7 +44,7 @@ fn next_returns_snapshot_after_write() {
     let db_clone = Arc::clone(&db);
 
     let handle = create_watch(&registry, Filter::All, move |filter| {
-        db_clone.collection("items").find(filter.clone())
+        db_clone.collection("items").unwrap().find(filter.clone())
     });
 
     // Notify before inserting (watch fires, sees empty collection)
@@ -54,6 +54,7 @@ fn next_returns_snapshot_after_write() {
 
     // Insert and notify
     db.collection("items")
+        .unwrap()
         .insert(vec![("x".into(), i(1))])
         .unwrap();
     notify(&registry);
@@ -72,10 +73,11 @@ fn try_next_returns_snapshot_after_notify() {
     let db_clone = Arc::clone(&db);
 
     let handle = create_watch(&registry, Filter::All, move |filter| {
-        db_clone.collection("data").find(filter.clone())
+        db_clone.collection("data").unwrap().find(filter.clone())
     });
 
     db.collection("data")
+        .unwrap()
         .insert(vec![("v".into(), i(42))])
         .unwrap();
     notify(&registry);
@@ -94,10 +96,10 @@ fn rapid_writes_coalesce() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let registry = new_registry();
     let db_clone = Arc::clone(&db);
-    let col = db.collection("data");
+    let col = db.collection("data").unwrap();
 
     let handle = create_watch(&registry, Filter::All, move |filter| {
-        db_clone.collection("data").find(filter.clone())
+        db_clone.collection("data").unwrap().find(filter.clone())
     });
 
     // Send multiple notifications in rapid succession
@@ -132,7 +134,7 @@ fn watch_filter_applied_to_snapshots() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let registry = new_registry();
     let db_clone = Arc::clone(&db);
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     col.insert(vec![("status".into(), s("active"))]).unwrap();
     col.insert(vec![("status".into(), s("inactive"))]).unwrap();
@@ -140,7 +142,7 @@ fn watch_filter_applied_to_snapshots() {
     let handle = create_watch(
         &registry,
         Filter::Eq("status".into(), s("active")),
-        move |filter| db_clone.collection("items").find(filter.clone()),
+        move |filter| db_clone.collection("items").unwrap().find(filter.clone()),
     );
 
     notify(&registry);
@@ -161,15 +163,16 @@ fn multiple_subscribers_all_receive_event() {
 
     let db1 = Arc::clone(&db);
     let h1 = create_watch(&registry, Filter::All, move |f| {
-        db1.collection("col").find(f.clone())
+        db1.collection("col").unwrap().find(f.clone())
     });
 
     let db2 = Arc::clone(&db);
     let h2 = create_watch(&registry, Filter::All, move |f| {
-        db2.collection("col").find(f.clone())
+        db2.collection("col").unwrap().find(f.clone())
     });
 
     db.collection("col")
+        .unwrap()
         .insert(vec![("x".into(), i(1))])
         .unwrap();
     notify(&registry);
@@ -190,14 +193,14 @@ fn iter_yields_successive_snapshots() {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let registry = new_registry();
     let db_clone = Arc::clone(&db);
-    let _col = db.collection("log");
+    let _col = db.collection("log").unwrap();
 
     let handle = create_watch(&registry, Filter::All, move |f| {
-        db_clone.collection("log").find(f.clone())
+        db_clone.collection("log").unwrap().find(f.clone())
     });
 
     let registry_clone = Arc::clone(&registry);
-    let col_thread = db.collection("log");
+    let col_thread = db.collection("log").unwrap();
 
     // Spawn a thread that inserts 3 items with notifications
     let writer = thread::spawn(move || {
@@ -232,7 +235,7 @@ fn watch_closed_after_registry_dropped() {
     let db_clone = Arc::clone(&db);
 
     let handle = create_watch(&registry, Filter::All, move |f| {
-        db_clone.collection("x").find(f.clone())
+        db_clone.collection("x").unwrap().find(f.clone())
     });
 
     // Trigger one event so the channel isn't disconnected due to no sends

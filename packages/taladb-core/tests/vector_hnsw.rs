@@ -21,7 +21,7 @@ fn fv(floats: &[f32]) -> Vec<f32> {
 
 /// Insert `n` documents with a 4-D embedding equal to [i as f32, 0, 0, 0].
 fn seed_collection(db: &Database, col: &str, n: usize) {
-    let collection = db.collection(col);
+    let collection = db.collection(col).unwrap();
     for i in 0..n {
         collection
             .insert(vec![
@@ -39,7 +39,7 @@ fn seed_collection(db: &Database, col: &str, n: usize) {
 #[test]
 fn hnsw_create_and_search() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items");
+    let col = db.collection("items").unwrap();
 
     // Insert a handful of 4-D vectors
     for (i, v) in [
@@ -87,7 +87,7 @@ fn upgrade_vector_index_warms_cache() {
     seed_collection(&db, "docs", 20);
 
     // Create a flat index first (no HNSW)
-    let col = db.collection("docs");
+    let col = db.collection("docs").unwrap();
     col.create_vector_index("emb", 4, Some(VectorMetric::Cosine), None)
         .unwrap();
 
@@ -120,7 +120,7 @@ fn rebuild_hnsw_indexes_on_open() {
     seed_collection(&db, "vecs", 10);
 
     {
-        let col = db.collection("vecs");
+        let col = db.collection("vecs").unwrap();
         col.create_vector_index(
             "emb",
             4,
@@ -137,7 +137,7 @@ fn rebuild_hnsw_indexes_on_open() {
     db.rebuild_hnsw_indexes().unwrap();
 
     // A freshly obtained collection handle shares the same cache
-    let col2 = db.collection("vecs");
+    let col2 = db.collection("vecs").unwrap();
     let results = col2
         .find_nearest("emb", &fv(&[3.0, 0.0, 0.0, 0.0]), 1, None)
         .unwrap();
@@ -153,7 +153,7 @@ fn drop_vector_index_clears_cache() {
     let db = Database::open_in_memory().unwrap();
     seed_collection(&db, "drop_test", 5);
 
-    let col = db.collection("drop_test");
+    let col = db.collection("drop_test").unwrap();
     col.create_vector_index(
         "emb",
         4,
@@ -183,7 +183,7 @@ fn flat_fallback_when_no_graph_in_cache() {
     let db = Database::open_in_memory().unwrap();
     seed_collection(&db, "fallback", 8);
 
-    let col = db.collection("fallback");
+    let col = db.collection("fallback").unwrap();
     // Create flat-only index (no HNSW opts)
     col.create_vector_index("emb", 4, Some(VectorMetric::Cosine), None)
         .unwrap();
@@ -202,7 +202,7 @@ fn flat_fallback_when_no_graph_in_cache() {
 #[test]
 fn pre_filter_forces_flat_path() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("filtered");
+    let col = db.collection("filtered").unwrap();
 
     for i in 0..10_usize {
         col.insert(vec![
@@ -249,8 +249,8 @@ fn multiple_collections_independent() {
     seed_collection(&db, "col_a", 5);
     seed_collection(&db, "col_b", 5);
 
-    let col_a = db.collection("col_a");
-    let col_b = db.collection("col_b");
+    let col_a = db.collection("col_a").unwrap();
+    let col_b = db.collection("col_b").unwrap();
 
     col_a
         .create_vector_index(

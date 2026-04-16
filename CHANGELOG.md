@@ -5,6 +5,55 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-04-18
+
+### Added
+
+- **`rekey(backend, old_key, new_key)`** (`encryption` feature) — rotate the AES-GCM-256 encryption key on a live database without a full export/import cycle. Iterates every table in the raw backend, decrypts each value with `old_key`, and re-encrypts with `new_key` in an atomic transaction per table. Returns the count of re-encrypted values. Passing the wrong `old_key` fails immediately with `TalaDbError::Encryption`. Re-exported from the crate root as `taladb_core::rekey`.
+
+- **`Collection::with_field_encryption(fields, key)`** (`encryption` feature) — per-field AES-GCM-256 encryption. Listed field values are encrypted before storage (using `field:<name>` as AAD so ciphertexts cannot be transplanted between fields) and decrypted transparently on all read paths (`find`, `find_with_options`, `find_one`). All other fields remain in plaintext and fully indexable. Encrypted fields are stored as `Value::Bytes` and cannot be queried by value.
+
+- **`Collection::with_audit_log(caller)`** — opt-in append-only audit log. After every successful mutation (`insert`, `insert_many`, `update_one`, `update_many`, `delete_one`, `delete_many`) an entry is written to the `_audit` table containing: `collection`, `op` (`"insert"` | `"update"` | `"delete"`), `doc_id`, `ts` (ms since Unix epoch), and the `caller` identity string supplied by the application. No update or delete API exists for audit records. Read with `taladb_core::read_audit_log(backend, collection_filter, op_filter)`.
+
+- **`read_audit_log(backend, collection_filter, op_filter)`** — scan the `_audit` table and return `Vec<AuditEntry>`, optionally filtered by collection name and/or operation type. Returns entries in ULID insertion order.
+
+- **`AuditEntry`**, **`AuditOp`** — public types for working with audit log entries, re-exported from the crate root.
+
+## [Unreleased] — 0.7.1
+
+### Added
+
+- **Query timeouts** — `FindOptions` has a new optional `timeout: Option<std::time::Duration>` field. When set, `find_with_options` checks elapsed time between candidate documents and returns `Err(TalaDbError::QueryTimeout)` if the deadline is exceeded. No-op when `None` (default). Bindings for WASM, Node.js, and React Native surface this as a `"QueryTimeout"` error code.
+
+- **`TalaDbError::QueryTimeout` variant** — new error variant returned when a query exceeds its configured timeout.
+
+- **`tracing` spans on heavy operations** — `Collection::find`, `Collection::find_with_options`, `Collection::find_nearest`, and `Database::export_snapshot` are now annotated with `#[tracing::instrument]`. Operators using an OpenTelemetry or Jaeger subscriber will see per-call spans with `collection` and `top_k` fields automatically.
+
+- **Fuzz targets** (`packages/taladb-core/fuzz/`) — two `cargo-fuzz` targets added:
+  - `fuzz_snapshot`: feeds arbitrary bytes into `Database::restore_from_snapshot` to catch panics in the snapshot parser.
+  - `fuzz_filter`: deserializes arbitrary bytes as `Document` and runs filter evaluation, catching deserialization and matching panics.
+    Run with `cargo fuzz run fuzz_snapshot` from `packages/taladb-core/`.
+
+## [Unreleased] — 0.7.0
+
+### Breaking Changes
+
+- **`Database::collection()` now returns `Result<Collection, TalaDbError>`** instead of `Collection`. Call sites must handle the error with `?` (in functions returning `Result`) or `.unwrap()` (in tests). Returns `TalaDbError::InvalidName` if the name is empty, longer than 128 characters, or contains `"::"`.
+
+- **Encrypted data format v0 is unreadable by `>= 0.6.2`**. Any database encrypted before `0.6.2` (without the version byte and AAD binding) must be migrated with the new `migrate_encrypted_v0_to_v1` helper before the upgrade can be completed.
+
+### Added
+
+- **`migrate_encrypted_v0_to_v1(backend, key)`** — one-time migration helper for databases encrypted before `0.6.2`. Reads every stored value using the old format (`[12-byte nonce][ciphertext]`, no AAD), re-encrypts it with the current v1 format (version byte + AAD binding), and writes the result back atomically per table. Returns the count of values re-encrypted. Requires the `encryption` feature.
+
+- **Collection name validation at handle construction** — `Database::collection()` now validates the name eagerly (empty, >128 chars, contains `"::"`), surfacing errors at handle creation time rather than silently at index creation time. Also adds a 128-character maximum length check.
+
+- **`tracing` crate integration** — all internal `eprintln!` calls replaced with structured `tracing::warn!` / `tracing::error!` calls. Operators can now route TalaDB diagnostics through any `tracing` subscriber (JSON stdout, OpenTelemetry, Datadog). Zero overhead when no subscriber is installed.
+
+- **HTTP sync bounded thread pool** — `HttpSyncHook` no longer spawns a new OS thread per write event. A fixed pool of 4 background workers shares a bounded channel (capacity 256). Events are dropped with a `tracing::warn!` when the pool is saturated, rather than spawning unbounded threads. Each worker creates its own `reqwest::blocking::Client` to avoid the "cannot drop runtime in async context" panic in tokio test environments.
+
+- **Snapshot size guard** — `Database::restore_from_snapshot()` now rejects inputs larger than 10 GiB, preventing OOM conditions from corrupted or crafted snapshots.
+
 ## [0.6.1] - 2026-04-13
 
 ### Added
@@ -179,7 +228,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
 
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.1...v0.4.0
 [0.2.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.0...v0.2.1
