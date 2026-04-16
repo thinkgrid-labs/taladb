@@ -34,6 +34,13 @@
   --btn-radius: 8px;
 }
 
+/* Prevent full-bleed sections (width:100vw + negative margin trick)
+   from triggering horizontal scroll at any viewport width */
+html,
+body {
+  overflow-x: hidden;
+}
+
 /* ----------------------------------------------------------
    Hide VitePress default home layout elements —
    we use fully custom components
@@ -247,11 +254,19 @@
   user-select: all;
 }
 
+/* Grid cells must not blow out their column on any viewport */
+.hero-left,
+.hero-right {
+  min-width: 0;
+}
+
 /* Code window */
 .code-window {
   background: var(--code-bg);
   border-radius: 14px;
   overflow: hidden;
+  max-width: 100%;
+  box-sizing: border-box;
   box-shadow:
     0 0 0 1px rgba(255,255,255,0.06),
     0 24px 64px rgba(0,0,0,0.28),
@@ -863,7 +878,14 @@ a.sp-badge:hover { color: var(--vp-c-brand-1); }
 /* ----------------------------------------------------------
    Responsive
    ---------------------------------------------------------- */
+
+/* ── Tablet / large mobile (≤ 860px) ── */
 @media (max-width: 860px) {
+  :root {
+    --section-py: 60px;
+    --section-px: 24px;
+  }
+
   .hero-container {
     grid-template-columns: 1fr;
     padding-top: 48px;
@@ -871,21 +893,111 @@ a.sp-badge:hover { color: var(--vp-c-brand-1); }
     gap: 40px;
   }
 
-  .hero-right { order: -1; }
+  /* Code window appears above the copy on narrow screens */
+  .hero-right {
+    order: -1;
+    min-width: 0; /* prevent grid blowout */
+    max-width: 100%;
+  }
 
   .hero-headline { font-size: clamp(2rem, 6vw, 2.8rem); }
 
-  .code-window-body { font-size: 0.75rem; }
+  .code-window-body {
+    font-size: 0.75rem;
+    padding: 16px;
+  }
 
-  :root { --section-py: 60px; }
+  /* Comparison table: enable horizontal scroll and shrink columns */
+  .comparison-table-wrap {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .comparison-table .col-feature {
+    min-width: 160px;
+  }
+
+  /* Quick-start tabs: allow horizontal scroll on tight viewports */
+  .qs-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+    padding-bottom: 0;
+  }
+  .qs-tabs::-webkit-scrollbar { display: none; }
+
+  .qs-tab { white-space: nowrap; }
 }
 
+/* ── Small mobile (≤ 560px) ── */
 @media (max-width: 560px) {
+  :root {
+    --section-py: 48px;
+    --section-px: 16px;
+  }
+
+  /* Hero */
   .hero-actions { flex-direction: column; }
   .hero-actions .btn { width: 100%; justify-content: center; }
+  .hero-sub { font-size: 1rem; }
+  .hero-install code { font-size: 0.78rem; }
 
+  /* Code window */
+  .code-window-body { font-size: 0.72rem; padding: 12px; }
+  .code-window-header { padding: 10px 12px; }
+
+  /* Social proof */
   .sp-container { gap: 10px; }
   .sp-divider { display: none; }
 
+  /* Features / use-cases — single column on very small screens */
+  .features-grid,
+  .usecases-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Comparison table — switch to auto layout so columns shrink naturally */
+  .comparison-table { font-size: 0.8rem; table-layout: auto; }
+  .comparison-table .col-feature { width: auto; }
+  .comparison-table th:not(.col-feature),
+  .comparison-table td:not(.col-feature) { width: auto; }
+  .comparison-table th,
+  .comparison-table td { padding: 10px 10px; }
+  .comparison-table th.col-feature,
+  .comparison-table td.col-feature { min-width: 130px; padding-left: 12px; }
+
+  /* Quick-start tabs */
   .qs-tab { padding: 8px 12px; font-size: 0.82rem; }
+
+  /* Quick-start steps — tighter gap */
+  .qs-step { gap: 14px; }
+  .qs-step-num { width: 28px; height: 28px; font-size: 0.78rem; }
+
+  /* CTA */
+  .cta-headline { font-size: clamp(1.5rem, 7vw, 2rem); }
+  .cta-actions { flex-direction: column; align-items: center; }
+  .cta-actions .btn { width: 100%; max-width: 300px; justify-content: center; }
+  .cta-links { flex-wrap: wrap; justify-content: center; gap: 8px; }
+
+  /* Section headers */
+  .section-header { margin-bottom: 36px; }
+  .section-sub { font-size: 1rem; }
+
+  /* Footer links — stack on very narrow screens */
+  .VPFooter .message { line-height: 2; }
+}
+
+/* ── Extra-small (≤ 375px) ── */
+@media (max-width: 375px) {
+  :root { --section-px: 12px; }
+
+  .hero-headline { font-size: clamp(1.7rem, 8vw, 2.2rem); }
+
+  .badge { font-size: 0.65rem; padding: 2px 8px; }
+
+  .qs-tab { padding: 7px 10px; font-size: 0.78rem; }
+
+  .comparison-table { font-size: 0.75rem; }
+  .comparison-table th,
+  .comparison-table td { padding: 8px 8px; }
 }
