@@ -1,6 +1,6 @@
 use std::ops::Bound;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use redb::{Database, ReadableTable, TableDefinition, TableHandle};
 
@@ -16,6 +16,11 @@ pub type KvPairs = Vec<(Vec<u8>, Vec<u8>)>;
 pub trait StorageBackend: Send + Sync {
     fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, TalaDbError>;
     fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, TalaDbError>;
+    /// Compact the underlying storage, reclaiming space from deleted/updated
+    /// records. No-op on backends that manage compaction automatically.
+    fn compact(&self) -> Result<(), TalaDbError> {
+        Ok(())
+    }
 }
 
 pub trait WriteTxn {
@@ -49,18 +54,25 @@ pub trait ReadTxn {
 // ---------------------------------------------------------------------------
 
 pub struct RedbBackend {
-    db: Arc<Database>,
+    // Mutex is needed because redb::Database::compact() takes &mut self.
+    // begin_write/begin_read return owned transactions so the lock is held
+    // only for the duration of the call, not across the transaction lifetime.
+    db: Arc<Mutex<Database>>,
 }
 
 impl RedbBackend {
     pub fn open(path: &Path) -> Result<Self, TalaDbError> {
         let db = Database::create(path)?;
-        Ok(RedbBackend { db: Arc::new(db) })
+        Ok(RedbBackend {
+            db: Arc::new(Mutex::new(db)),
+        })
     }
 
     pub fn open_in_memory() -> Result<Self, TalaDbError> {
         let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
-        Ok(RedbBackend { db: Arc::new(db) })
+        Ok(RedbBackend {
+            db: Arc::new(Mutex::new(db)),
+        })
     }
 
     /// Open a database using any `redb::StorageBackend` (e.g. OPFS in WASM).
@@ -68,19 +80,38 @@ impl RedbBackend {
         backend: B,
     ) -> Result<Self, TalaDbError> {
         let db = Database::builder().create_with_backend(backend)?;
-        Ok(RedbBackend { db: Arc::new(db) })
+        Ok(RedbBackend {
+            db: Arc::new(Mutex::new(db)),
+        })
     }
 }
 
 impl StorageBackend for RedbBackend {
     fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, TalaDbError> {
-        let txn = self.db.begin_write()?;
+        let txn = self
+            .db
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .begin_write()?;
         Ok(Box::new(RedbWriteTxn { txn }))
     }
 
     fn begin_read(&self) -> Result<Box<dyn ReadTxn + '_>, TalaDbError> {
-        let txn = self.db.begin_read()?;
+        let txn = self
+            .db
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .begin_read()?;
         Ok(Box::new(RedbReadTxn { txn }))
+    }
+
+    fn compact(&self) -> Result<(), TalaDbError> {
+        self.db
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .compact()
+            .map_err(|e| TalaDbError::Storage(e.to_string()))?;
+        Ok(())
     }
 }
 

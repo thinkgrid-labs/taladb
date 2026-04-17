@@ -163,6 +163,7 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
 
   return {
     collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    compact: async () => {},
     close: async () => {},
   };
 }
@@ -327,6 +328,7 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
 
   return {
     collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    compact: () => proxy.send<void>('compact'),
     close: async () => {
       channel?.close();
       await proxy.send<void>('close');
@@ -382,6 +384,7 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
 
   return {
     collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    compact: async () => db.compact(),
     close: async () => {},
   };
 }
@@ -414,6 +417,7 @@ interface NativeCollection {
 
 interface NativeHostObject {
   collection(name: string): NativeCollection;
+  compact(): void;
   close(): void;
 }
 
@@ -462,6 +466,7 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
 
   return {
     collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    compact: async () => native.compact(),
     close: async () => native.close(),
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "@taladb/node",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "TalaDB Node.js native module — document queries and vector search via napi-rs",
   "main": "index.js",
   "types": "index.d.ts",
@@ -15,7 +15,9 @@
       "defaults": false,
       "additional": [
         "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
         "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
         "x86_64-pc-windows-msvc"
       ]
     }
@@ -35,7 +37,8 @@
     "url": "https://github.com/thinkgrid-labs/taladb/issues"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "bun": ">=1.0"
   },
   "license": "MIT",
   "devDependencies": {

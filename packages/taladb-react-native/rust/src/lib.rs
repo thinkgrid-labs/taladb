@@ -144,6 +144,22 @@ pub unsafe extern "C" fn taladb_open_with_config(
     }
 }
 
+/// Compact the underlying storage file for this database handle.
+/// No-op on in-memory databases. Returns 1 on success, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_compact(handle: *mut TalaDbHandle) -> i32 {
+    match ptr_to_ref(handle) {
+        Some(h) => match h.db.compact() {
+            Ok(()) => 1,
+            Err(e) => {
+                set_last_error(e.to_string());
+                -1
+            }
+        },
+        None => -1,
+    }
+}
+
 /// Close the database and free the handle.
 #[no_mangle]
 pub unsafe extern "C" fn taladb_close(handle: *mut TalaDbHandle) {

@@ -8,6 +8,8 @@
 //! `JSON.stringify` / `JSON.parse` — no complex serialisation on the JS side.
 
 use wasm_bindgen::prelude::*;
+
+#[cfg(not(feature = "cf-workers"))]
 use web_sys::FileSystemSyncAccessHandle;
 
 use taladb_core::engine::RedbBackend;
@@ -17,6 +19,7 @@ use taladb_core::{
 };
 
 use crate::doc_to_json;
+#[cfg(not(feature = "cf-workers"))]
 use crate::storage::opfs_backend::OpfsBackend;
 
 #[cfg(target_arch = "wasm32")]
@@ -301,11 +304,14 @@ impl WorkerDB {
 
     /// Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
     ///
+    /// Not available when compiled with the `cf-workers` feature.
+    ///
     /// Call sequence in the SharedWorker:
     /// ```js
     /// const handle = await file_handle.createSyncAccessHandle();
     /// const workerDb = WorkerDB.openWithOpfs(handle);
     /// ```
+    #[cfg(not(feature = "cf-workers"))]
     #[wasm_bindgen(js_name = openWithOpfs)]
     pub fn open_with_opfs(sync_handle: FileSystemSyncAccessHandle) -> Result<WorkerDB, JsValue> {
         let opfs = OpfsBackend::from_handle(sync_handle);
@@ -322,13 +328,15 @@ impl WorkerDB {
 
     /// Open a database backed by OPFS with HTTP push sync config.
     ///
+    /// Not available when compiled with the `cf-workers` feature.
+    ///
     /// `config_json` — JSON-serialised `TalaDbConfig`, or `null` to open without sync.
     ///
     /// ```js
     /// const handle = await file_handle.createSyncAccessHandle();
     /// const db = WorkerDB.openWithConfigAndOpfs(handle, JSON.stringify(config));
     /// ```
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
     #[wasm_bindgen(js_name = openWithConfigAndOpfs)]
     pub fn open_with_config_and_opfs(
         sync_handle: FileSystemSyncAccessHandle,
@@ -636,6 +644,25 @@ impl WorkerDB {
             .collect();
 
         serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    // ------------------------------------------------------------------
+    // Storage compaction
+    // ------------------------------------------------------------------
+
+    /// Compact the underlying OPFS / redb storage file, reclaiming space freed
+    /// by deletes and updates.
+    ///
+    /// Call this during idle periods (e.g. once on app startup after tombstone
+    /// compaction). No-op on in-memory (IDB-fallback) databases.
+    ///
+    /// ```js
+    /// db.compact();
+    /// ```
+    pub fn compact(&self) -> Result<(), JsValue> {
+        self.db
+            .compact()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     // ------------------------------------------------------------------

@@ -231,3 +231,220 @@ fn encrypted_backend_multiple_docs() {
     let filtered = col.find(Filter::Gte("n".into(), i(10))).unwrap();
     assert_eq!(filtered.len(), 10);
 }
+
+// ---------------------------------------------------------------------------
+// rekey — key rotation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rekey_returns_positive_count_on_non_empty_db() {
+    use taladb_core::rekey;
+    use taladb_core::engine::RedbBackend;
+    use zeroize::Zeroizing;
+
+    let old_key = Zeroizing::new([1u8; 32]);
+    let new_key = Zeroizing::new([2u8; 32]);
+
+    let inner = Arc::new(RedbBackend::open_in_memory().unwrap());
+    let enc = Box::new(taladb_core::crypto::EncryptedBackend::new(
+        Arc::clone(&inner),
+        Zeroizing::new([1u8; 32]),
+    ));
+    let db = taladb_core::Database::open_with_backend(enc).unwrap();
+    let col = db.collection("secrets").unwrap();
+    col.insert(vec![("v".into(), s("hello"))]).unwrap();
+    col.insert(vec![("v".into(), s("world"))]).unwrap();
+
+    // Rekey the raw (non-encrypted) backend that the encrypted backend wraps.
+    // We need access to the inner backend — use the inner RedbBackend directly.
+    let count = rekey(inner.as_ref(), &old_key, &new_key).unwrap();
+    assert!(count > 0, "rekey must report at least one re-encrypted value");
+}
+
+#[test]
+fn rekey_wrong_old_key_fails() {
+    use taladb_core::rekey;
+    use taladb_core::engine::RedbBackend;
+    use zeroize::Zeroizing;
+
+    let correct_key = Zeroizing::new([1u8; 32]);
+    let wrong_key = Zeroizing::new([99u8; 32]);
+    let new_key = Zeroizing::new([2u8; 32]);
+
+    let inner = Arc::new(RedbBackend::open_in_memory().unwrap());
+    let enc = Box::new(taladb_core::crypto::EncryptedBackend::new(
+        Arc::clone(&inner),
+        Zeroizing::new([1u8; 32]),
+    ));
+    let db = taladb_core::Database::open_with_backend(enc).unwrap();
+    db.collection("secrets").unwrap()
+        .insert(vec![("v".into(), s("hello"))]).unwrap();
+
+    let result = rekey(inner.as_ref(), &wrong_key, &new_key);
+    assert!(result.is_err(), "rekey with wrong old_key must fail");
+    // Correct key should still work (data untouched after failed rekey)
+    let ok = rekey(inner.as_ref(), &correct_key, &new_key);
+    assert!(ok.is_ok());
+}
+
+#[test]
+fn rekey_empty_db_returns_zero() {
+    use taladb_core::rekey;
+    use taladb_core::engine::RedbBackend;
+    use zeroize::Zeroizing;
+
+    let backend = RedbBackend::open_in_memory().unwrap();
+    let old_key = Zeroizing::new([1u8; 32]);
+    let new_key = Zeroizing::new([2u8; 32]);
+    let count = rekey(&backend, &old_key, &new_key).unwrap();
+    assert_eq!(count, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Field-level encryption on Collection
+// ---------------------------------------------------------------------------
+
+fn field_enc_db() -> (taladb_core::Database, zeroize::Zeroizing<[u8; 32]>) {
+    use zeroize::Zeroizing;
+    let key = Zeroizing::new([42u8; 32]);
+    let db = taladb_core::Database::open_in_memory().unwrap();
+    (db, key)
+}
+
+#[test]
+fn field_encryption_insert_find_round_trip() {
+    use zeroize::Zeroizing;
+    let (db, key) = field_enc_db();
+
+    let col = db
+        .collection("users")
+        .unwrap()
+        .with_field_encryption(vec!["ssn".into()], Zeroizing::new([42u8; 32]));
+
+    col.insert(vec![
+        ("name".into(), s("Alice")),
+        ("ssn".into(), s("123-45-6789")),
+    ])
+    .unwrap();
+
+    // Reading through same handle decrypts transparently
+    let docs = col.find(Filter::All).unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].get("name"), Some(&s("Alice")));
+    assert_eq!(docs[0].get("ssn"), Some(&s("123-45-6789")));
+
+    drop(key);
+}
+
+#[test]
+fn encrypted_field_not_queryable_by_plaintext_value() {
+    use zeroize::Zeroizing;
+    let (db, _key) = field_enc_db();
+
+    let col = db
+        .collection("records")
+        .unwrap()
+        .with_field_encryption(vec!["secret".into()], Zeroizing::new([42u8; 32]));
+
+    col.insert(vec![("secret".into(), s("topsecret"))]).unwrap();
+
+    // Querying by plaintext value on an encrypted field should return nothing
+    // (the stored value is ciphertext bytes, not a string)
+    let found = col
+        .find(Filter::Eq("secret".into(), s("topsecret")))
+        .unwrap();
+    assert!(
+        found.is_empty(),
+        "encrypted field must not be queryable by plaintext value"
+    );
+}
+
+#[test]
+fn non_encrypted_field_remains_indexable() {
+    use zeroize::Zeroizing;
+    let (db, _key) = field_enc_db();
+
+    let col = db
+        .collection("users")
+        .unwrap()
+        .with_field_encryption(vec!["ssn".into()], Zeroizing::new([42u8; 32]));
+    col.create_index("email").unwrap();
+
+    col.insert(vec![
+        ("email".into(), s("alice@example.com")),
+        ("ssn".into(), s("111-22-3333")),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("email".into(), s("bob@example.com")),
+        ("ssn".into(), s("444-55-6666")),
+    ])
+    .unwrap();
+
+    let found = col
+        .find(Filter::Eq("email".into(), s("alice@example.com")))
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    // Encrypted field still decrypts on this handle
+    assert_eq!(found[0].get("ssn"), Some(&s("111-22-3333")));
+}
+
+#[test]
+fn field_encryption_multiple_docs() {
+    use zeroize::Zeroizing;
+    let (db, _key) = field_enc_db();
+
+    let col = db
+        .collection("items")
+        .unwrap()
+        .with_field_encryption(vec!["pin".into()], Zeroizing::new([42u8; 32]));
+
+    for n in 0..10i64 {
+        col.insert(vec![
+            ("n".into(), i(n)),
+            ("pin".into(), s(&format!("pin-{n}"))),
+        ])
+        .unwrap();
+    }
+
+    let docs = col.find(Filter::All).unwrap();
+    assert_eq!(docs.len(), 10);
+    for doc in &docs {
+        let pin = doc.get("pin").unwrap();
+        if let Value::Str(p) = pin {
+            assert!(p.starts_with("pin-"), "pin must decrypt correctly: {p}");
+        } else {
+            panic!("pin field must decrypt to a string, got {:?}", pin);
+        }
+    }
+}
+
+#[test]
+fn field_encryption_survives_snapshot_round_trip() {
+    use zeroize::Zeroizing;
+    let (db, _key) = field_enc_db();
+
+    let col = db
+        .collection("secrets")
+        .unwrap()
+        .with_field_encryption(vec!["token".into()], Zeroizing::new([42u8; 32]));
+    col.insert(vec![
+        ("name".into(), s("Alice")),
+        ("token".into(), s("abc123")),
+    ])
+    .unwrap();
+
+    let bytes = db.export_snapshot().unwrap();
+    let db2 = taladb_core::Database::restore_from_snapshot(&bytes).unwrap();
+
+    // Open with same field encryption config on the restored db
+    let col2 = db2
+        .collection("secrets")
+        .unwrap()
+        .with_field_encryption(vec!["token".into()], Zeroizing::new([42u8; 32]));
+
+    let docs = col2.find(Filter::All).unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].get("name"), Some(&s("Alice")));
+    assert_eq!(docs[0].get("token"), Some(&s("abc123")));
+}

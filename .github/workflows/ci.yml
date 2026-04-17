@@ -74,6 +74,38 @@ jobs:
         run: node_modules/.bin/tsc -p packages/taladb-react/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
+  # Validate — @taladb/cloudflare (JS-only, no build step)
+  # ---------------------------------------------------------------------------
+  validate-cloudflare:
+    name: Validate — @taladb/cloudflare
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Verify package files exist
+        run: |
+          test -f packages/taladb-cloudflare/src/index.js  || (echo "Missing src/index.js"  && exit 1)
+          test -f packages/taladb-cloudflare/src/index.d.ts || (echo "Missing src/index.d.ts" && exit 1)
+
+      - name: tsc --noEmit (@taladb/cloudflare)
+        run: node_modules/.bin/tsc -p packages/taladb-cloudflare/tsconfig.json --noEmit
+
+  # ---------------------------------------------------------------------------
   # Build — WASM (wasm-pack)
   # ---------------------------------------------------------------------------
   build-wasm:
@@ -297,6 +329,7 @@ jobs:
     needs:
       - rust-check
       - ts-check
+      - validate-cloudflare
       - build-wasm
       - build-node
       - build-cli

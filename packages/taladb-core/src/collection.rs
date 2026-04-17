@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
-use crate::audit::{write_audit_entry, AuditOp};
 use crate::aggregate::{execute_pipeline, Stage};
+use crate::audit::{write_audit_entry, AuditOp};
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
@@ -1111,9 +1111,7 @@ impl Collection {
         filter: Filter,
         options: FindOptions,
     ) -> Result<Vec<Document>, TalaDbError> {
-        let deadline = options
-            .timeout
-            .map(|d| std::time::Instant::now() + d);
+        let deadline = options.timeout.map(|d| std::time::Instant::now() + d);
         let indexes = self.load_indexes()?;
         let fts = self.load_fts_indexes()?;
         let cidxs = self.load_compound_indexes()?;

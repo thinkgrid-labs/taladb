@@ -515,7 +515,7 @@ mod tests {
         assert_eq!(value_to_json(&Value::Null), JsonValue::Null);
         assert_eq!(value_to_json(&Value::Bool(true)), JsonValue::Bool(true));
         assert_eq!(value_to_json(&Value::Int(-5)), json!(-5));
-        assert_eq!(value_to_json(&Value::Float(3.14)), json!(3.14));
+        assert_eq!(value_to_json(&Value::Float(1.5)), json!(1.5));
         assert_eq!(
             value_to_json(&Value::Str("hi".into())),
             JsonValue::String("hi".into())

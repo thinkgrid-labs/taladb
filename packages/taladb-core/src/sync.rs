@@ -117,6 +117,17 @@ impl RecordingSyncHook {
     pub fn len(&self) -> usize {
         self.events.lock().unwrap().len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.lock().unwrap().is_empty()
+    }
+}
+
+#[cfg(test)]
+impl Default for RecordingSyncHook {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

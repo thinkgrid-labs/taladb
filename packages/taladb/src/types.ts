@@ -193,5 +193,16 @@ export interface Collection<T extends Document = Document> {
 
 export interface TalaDB {
   collection<T extends Document = Document>(name: string): Collection<T>;
+  /**
+   * Compact the underlying storage file, reclaiming space freed by deletes
+   * and updates.
+   *
+   * Call during idle periods — e.g. once on startup after `compactTombstones`.
+   * No-op on in-memory (IndexedDB-fallback) databases.
+   *
+   * @example
+   * await db.compact();
+   */
+  compact(): Promise<void>;
   close(): Promise<void>;
 }

@@ -91,8 +91,12 @@ impl Database {
         })
     }
 
-    /// Access the raw storage backend (crate-internal, used by sync adapters).
-    pub(crate) fn backend(&self) -> &dyn StorageBackend {
+    /// Access the raw storage backend.
+    ///
+    /// Useful for calling lower-level APIs such as [`read_audit_log`] and
+    /// [`rekey`] that operate directly on the backend rather than through a
+    /// `Collection` handle.
+    pub fn backend(&self) -> &dyn StorageBackend {
         self.backend.as_ref()
     }
 
@@ -139,6 +143,17 @@ impl Database {
             self.collection(&col_name)?.upgrade_vector_index(&field)?;
         }
         Ok(())
+    }
+
+    /// Compact the underlying storage file, reclaiming space freed by deletes
+    /// and updates. Useful after bulk deletes or large tombstone pruning.
+    ///
+    /// This is a blocking operation proportional to database size; call it
+    /// during idle periods (e.g. at startup after tombstone compaction).
+    ///
+    /// No-op on in-memory backends.
+    pub fn compact(&self) -> Result<(), TalaDbError> {
+        self.backend.compact()
     }
 
     /// Return the names of all collections stored in this database.

@@ -7,9 +7,6 @@ description: Use TalaDB in React Native apps for local-first document and vector
 
 TalaDB runs natively on iOS and Android via a JSI integration — calls from JavaScript go directly into the Rust engine without bridge overhead or JSON serialisation on the hot path.
 
-::: info Beta
-The React Native package is published and installable. The API is stable and reflects the final shape. Track progress on [GitHub](https://github.com/thinkgrid-labs/taladb).
-:::
 
 ## Requirements
 

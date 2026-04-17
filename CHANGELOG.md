@@ -5,7 +5,30 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.2] - 2026-04-18
+## [0.7.3] - 2026-04-17
+
+### Added
+
+- **`db.compact()`** — on-demand WAL compaction, exposed across every platform layer. Call during idle periods after bulk deletes or tombstone pruning to reclaim disk space.
+  - **`taladb-core`** — `StorageBackend::compact()` default no-op + `RedbBackend` implementation calling `redb::Database::compact()`. `Database::compact()` public method re-exported from the crate root. `Arc<Mutex<Database>>` wrapping ensures safe `&mut self` access without holding the lock across transaction lifetimes.
+  - **`@taladb/web`** — `WorkerDB.compact()` wasm-bindgen method; `'compact'` op dispatched in the SharedWorker. OPFS-specific imports (`FileSystemSyncAccessHandle`, `openWithOpfs`, `openWithConfigAndOpfs`) gated behind new `cf-workers` Cargo feature so the Cloudflare Workers WASM build is free of browser-only web-sys bindings.
+  - **`@taladb/node`** — `TalaDBNode.compact()` napi binding.
+  - **`@taladb/react-native`** — `taladb_compact(handle)` C FFI function; `"compact"` property dispatched from `TalaDBHostObject`; declared in `taladb.h`.
+  - **`taladb`** — `compact(): Promise<void>` added to the `TalaDB` interface and wired in all four adapter return objects (browser worker, Node.js, React Native, in-memory fallback).
+
+- **`@taladb/cloudflare`** — new package: TalaDB adapter for Cloudflare Workers Durable Objects.
+  - Runs the existing `@taladb/web` WASM core in in-memory mode (no OPFS required); state is persisted as a binary snapshot via Durable Objects `storage.put('__taladb_snapshot__')` between requests.
+  - `openDurableDB(storage)` — open a TalaDB-compatible database from `this.ctx.storage`; restores from the last saved snapshot on cold-start / hibernation wake-up.
+  - `CloudflareDB` — full TalaDB-compatible handle with `collection()`, `flush()`, `compact()`, and `close()`.
+  - `TalaDBDurableObject` — base class; extend and export from your Worker. Provides `getDB()` (lazy init, cached for isolate lifetime) and a default `fetch()` override point.
+  - `createVectorIndex` throws a clear error when `indexType === 'hnsw'` (requires native threads unavailable in Workers).
+  - Full TypeScript declarations (`index.d.ts`).
+
+- **Bun native module support** — `@taladb/node` now works on Bun out of the box via Bun's built-in N-API compatibility layer. No separate `bun:ffi` package needed — install `@taladb/node` and use it identically to Node.js. Added `"bun": ">=1.0"` to `engines`. Added Linux ARM64 (`aarch64-unknown-linux-gnu`) and Intel Mac (`x86_64-apple-darwin`) prebuilt targets alongside the existing ones.
+
+[0.7.3]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.2...v0.7.3
+
+## [Unreleased] — 0.7.2
 
 ### Added
 
@@ -228,7 +251,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
 
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.5.0...v0.6.0

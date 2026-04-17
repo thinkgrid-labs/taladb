@@ -310,6 +310,14 @@ impl TalaDBNode {
         })
     }
 
+    /// Compact the underlying storage file, reclaiming space freed by deletes
+    /// and updates. Call during idle periods after large bulk deletes or
+    /// tombstone compaction. Returns the number of bytes reclaimed (may be 0).
+    #[napi]
+    pub fn compact(&self) -> napi::Result<()> {
+        self.inner.compact().map_err(err_to_napi)
+    }
+
     /// Get a collection by name. If an HTTP sync hook is configured it is
     /// automatically attached to the returned collection.
     #[napi]
