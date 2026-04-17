@@ -72,8 +72,10 @@ fn compact_preserves_secondary_index() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("users").unwrap();
     col.create_index("age").unwrap();
-    col.insert(vec![("age".into(), i(30)), ("name".into(), s("Alice"))]).unwrap();
-    col.insert(vec![("age".into(), i(25)), ("name".into(), s("Bob"))]).unwrap();
+    col.insert(vec![("age".into(), i(30)), ("name".into(), s("Alice"))])
+        .unwrap();
+    col.insert(vec![("age".into(), i(25)), ("name".into(), s("Bob"))])
+        .unwrap();
 
     db.compact().unwrap();
 
@@ -88,7 +90,8 @@ fn compact_preserves_documents_after_updates() {
     let col = db.collection("counters").unwrap();
     col.insert(vec![("n".into(), i(0))]).unwrap();
     for _ in 0..10 {
-        col.update_one(Filter::All, Update::Inc(vec![("n".into(), i(1))])).unwrap();
+        col.update_one(Filter::All, Update::Inc(vec![("n".into(), i(1))]))
+            .unwrap();
     }
 
     db.compact().unwrap();
@@ -104,20 +107,32 @@ fn compact_preserves_fts_index() {
     let col = db.collection("articles").unwrap();
     col.create_fts_index("body").unwrap();
     col.insert(vec![("body".into(), s("hello world"))]).unwrap();
-    col.insert(vec![("body".into(), s("goodbye world"))]).unwrap();
+    col.insert(vec![("body".into(), s("goodbye world"))])
+        .unwrap();
 
     db.compact().unwrap();
 
-    let found = col.find(Filter::Contains("body".into(), "hello".into())).unwrap();
+    let found = col
+        .find(Filter::Contains("body".into(), "hello".into()))
+        .unwrap();
     assert_eq!(found.len(), 1);
 }
 
 #[test]
 fn compact_preserves_multiple_collections() {
     let db = Database::open_in_memory().unwrap();
-    db.collection("a").unwrap().insert(vec![("x".into(), i(1))]).unwrap();
-    db.collection("b").unwrap().insert(vec![("x".into(), i(2))]).unwrap();
-    db.collection("c").unwrap().insert(vec![("x".into(), i(3))]).unwrap();
+    db.collection("a")
+        .unwrap()
+        .insert(vec![("x".into(), i(1))])
+        .unwrap();
+    db.collection("b")
+        .unwrap()
+        .insert(vec![("x".into(), i(2))])
+        .unwrap();
+    db.collection("c")
+        .unwrap()
+        .insert(vec![("x".into(), i(3))])
+        .unwrap();
 
     db.compact().unwrap();
 

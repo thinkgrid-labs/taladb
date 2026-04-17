@@ -19,7 +19,10 @@ fn i(n: i64) -> Value {
 #[test]
 fn insert_writes_audit_entry() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("orders").unwrap().with_audit_log("svc:checkout".into());
+    let col = db
+        .collection("orders")
+        .unwrap()
+        .with_audit_log("svc:checkout".into());
 
     col.insert(vec![("amount".into(), i(42))]).unwrap();
 
@@ -33,7 +36,10 @@ fn insert_writes_audit_entry() {
 #[test]
 fn insert_many_writes_one_entry_per_doc() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("items").unwrap().with_audit_log("svc:bulk".into());
+    let col = db
+        .collection("items")
+        .unwrap()
+        .with_audit_log("svc:bulk".into());
 
     col.insert_many(vec![
         vec![("n".into(), i(1))],
@@ -50,7 +56,10 @@ fn insert_many_writes_one_entry_per_doc() {
 #[test]
 fn update_one_writes_audit_entry() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("tasks").unwrap().with_audit_log("svc:api".into());
+    let col = db
+        .collection("tasks")
+        .unwrap()
+        .with_audit_log("svc:api".into());
 
     col.insert(vec![("status".into(), s("pending"))]).unwrap();
     col.update_one(
@@ -68,10 +77,15 @@ fn update_one_writes_audit_entry() {
 #[test]
 fn update_many_writes_one_entry_per_matched_doc() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("posts").unwrap().with_audit_log("svc:pub".into());
+    let col = db
+        .collection("posts")
+        .unwrap()
+        .with_audit_log("svc:pub".into());
 
-    col.insert(vec![("pub".into(), Value::Bool(false))]).unwrap();
-    col.insert(vec![("pub".into(), Value::Bool(false))]).unwrap();
+    col.insert(vec![("pub".into(), Value::Bool(false))])
+        .unwrap();
+    col.insert(vec![("pub".into(), Value::Bool(false))])
+        .unwrap();
     col.insert(vec![("pub".into(), Value::Bool(true))]).unwrap();
 
     col.update_many(
@@ -87,10 +101,14 @@ fn update_many_writes_one_entry_per_matched_doc() {
 #[test]
 fn delete_one_writes_audit_entry() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("sessions").unwrap().with_audit_log("svc:auth".into());
+    let col = db
+        .collection("sessions")
+        .unwrap()
+        .with_audit_log("svc:auth".into());
 
     col.insert(vec![("token".into(), s("abc"))]).unwrap();
-    col.delete_one(Filter::Eq("token".into(), s("abc"))).unwrap();
+    col.delete_one(Filter::Eq("token".into(), s("abc")))
+        .unwrap();
 
     let deletes = read_audit_log(db.backend(), None, Some(AuditOp::Delete)).unwrap();
     assert_eq!(deletes.len(), 1);
@@ -100,7 +118,10 @@ fn delete_one_writes_audit_entry() {
 #[test]
 fn delete_many_writes_one_entry_per_deleted_doc() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("logs").unwrap().with_audit_log("svc:gc".into());
+    let col = db
+        .collection("logs")
+        .unwrap()
+        .with_audit_log("svc:gc".into());
 
     for n in 0..5i64 {
         col.insert(vec![("n".into(), i(n))]).unwrap();
@@ -118,7 +139,10 @@ fn delete_many_writes_one_entry_per_deleted_doc() {
 #[test]
 fn update_one_no_match_writes_no_audit_entry() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("things").unwrap().with_audit_log("svc".into());
+    let col = db
+        .collection("things")
+        .unwrap()
+        .with_audit_log("svc".into());
 
     col.update_one(
         Filter::Eq("missing".into(), s("val")),
@@ -133,9 +157,13 @@ fn update_one_no_match_writes_no_audit_entry() {
 #[test]
 fn delete_one_no_match_writes_no_audit_entry() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("things").unwrap().with_audit_log("svc".into());
+    let col = db
+        .collection("things")
+        .unwrap()
+        .with_audit_log("svc".into());
 
-    col.delete_one(Filter::Eq("missing".into(), s("val"))).unwrap();
+    col.delete_one(Filter::Eq("missing".into(), s("val")))
+        .unwrap();
 
     let entries = read_audit_log(db.backend(), None, Some(AuditOp::Delete)).unwrap();
     assert!(entries.is_empty());
@@ -148,10 +176,16 @@ fn delete_one_no_match_writes_no_audit_entry() {
 #[test]
 fn filter_by_collection() {
     let db = Database::open_in_memory().unwrap();
-    db.collection("orders").unwrap().with_audit_log("svc".into())
-        .insert(vec![("x".into(), i(1))]).unwrap();
-    db.collection("users").unwrap().with_audit_log("svc".into())
-        .insert(vec![("x".into(), i(2))]).unwrap();
+    db.collection("orders")
+        .unwrap()
+        .with_audit_log("svc".into())
+        .insert(vec![("x".into(), i(1))])
+        .unwrap();
+    db.collection("users")
+        .unwrap()
+        .with_audit_log("svc".into())
+        .insert(vec![("x".into(), i(2))])
+        .unwrap();
 
     let entries = read_audit_log(db.backend(), Some("orders"), None).unwrap();
     assert_eq!(entries.len(), 1);
@@ -163,7 +197,8 @@ fn filter_by_op_insert() {
     let db = Database::open_in_memory().unwrap();
     let col = db.collection("data").unwrap().with_audit_log("svc".into());
     col.insert(vec![("v".into(), i(1))]).unwrap();
-    col.update_one(Filter::All, Update::Inc(vec![("v".into(), i(1))])).unwrap();
+    col.update_one(Filter::All, Update::Inc(vec![("v".into(), i(1))]))
+        .unwrap();
 
     let inserts = read_audit_log(db.backend(), None, Some(AuditOp::Insert)).unwrap();
     assert_eq!(inserts.len(), 1);
@@ -185,12 +220,17 @@ fn filter_by_op_delete() {
 #[test]
 fn filter_collection_and_op_combined() {
     let db = Database::open_in_memory().unwrap();
-    let orders = db.collection("orders").unwrap().with_audit_log("svc".into());
+    let orders = db
+        .collection("orders")
+        .unwrap()
+        .with_audit_log("svc".into());
     let users = db.collection("users").unwrap().with_audit_log("svc".into());
 
     orders.insert(vec![("x".into(), i(1))]).unwrap();
     users.insert(vec![("x".into(), i(2))]).unwrap();
-    orders.update_one(Filter::All, Update::Inc(vec![("x".into(), i(1))])).unwrap();
+    orders
+        .update_one(Filter::All, Update::Inc(vec![("x".into(), i(1))]))
+        .unwrap();
 
     let entries = read_audit_log(db.backend(), Some("orders"), Some(AuditOp::Update)).unwrap();
     assert_eq!(entries.len(), 1);
@@ -231,7 +271,10 @@ fn entries_are_in_insertion_order() {
 #[test]
 fn doc_id_matches_inserted_document_id() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("things").unwrap().with_audit_log("svc".into());
+    let col = db
+        .collection("things")
+        .unwrap()
+        .with_audit_log("svc".into());
     let inserted_id = col.insert(vec![("x".into(), i(99))]).unwrap();
 
     let entries = read_audit_log(db.backend(), None, None).unwrap();
@@ -259,7 +302,8 @@ fn unaudited_collection_produces_no_entries() {
     let col = db.collection("silent").unwrap(); // no with_audit_log()
 
     col.insert(vec![("x".into(), i(1))]).unwrap();
-    col.update_one(Filter::All, Update::Inc(vec![("x".into(), i(1))])).unwrap();
+    col.update_one(Filter::All, Update::Inc(vec![("x".into(), i(1))]))
+        .unwrap();
     col.delete_one(Filter::All).unwrap();
 
     let entries = read_audit_log(db.backend(), None, None).unwrap();
@@ -273,7 +317,10 @@ fn unaudited_collection_produces_no_entries() {
 #[test]
 fn audit_log_survives_snapshot_round_trip() {
     let db = Database::open_in_memory().unwrap();
-    let col = db.collection("things").unwrap().with_audit_log("svc:snap".into());
+    let col = db
+        .collection("things")
+        .unwrap()
+        .with_audit_log("svc:snap".into());
     col.insert(vec![("x".into(), i(1))]).unwrap();
     col.insert(vec![("x".into(), i(2))]).unwrap();
 
@@ -293,12 +340,21 @@ fn audit_log_survives_snapshot_round_trip() {
 #[test]
 fn audit_log_spans_multiple_collections() {
     let db = Database::open_in_memory().unwrap();
-    db.collection("a").unwrap().with_audit_log("svc".into())
-        .insert(vec![("x".into(), i(1))]).unwrap();
-    db.collection("b").unwrap().with_audit_log("svc".into())
-        .insert(vec![("x".into(), i(2))]).unwrap();
-    db.collection("c").unwrap().with_audit_log("svc".into())
-        .insert(vec![("x".into(), i(3))]).unwrap();
+    db.collection("a")
+        .unwrap()
+        .with_audit_log("svc".into())
+        .insert(vec![("x".into(), i(1))])
+        .unwrap();
+    db.collection("b")
+        .unwrap()
+        .with_audit_log("svc".into())
+        .insert(vec![("x".into(), i(2))])
+        .unwrap();
+    db.collection("c")
+        .unwrap()
+        .with_audit_log("svc".into())
+        .insert(vec![("x".into(), i(3))])
+        .unwrap();
 
     let all = read_audit_log(db.backend(), None, None).unwrap();
     assert_eq!(all.len(), 3);

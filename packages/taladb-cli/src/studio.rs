@@ -3,8 +3,8 @@ use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use tiny_http::{Header, Method, Request, Response, Server};
 use taladb_core::{Database, Filter, FindOptions, Value};
+use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::value_to_json;
 
@@ -15,8 +15,8 @@ const HTML: &str = include_str!("../studio.html");
 pub fn cmd_studio(file: &Path, port: u16, no_open: bool) -> Result<()> {
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
     let addr = format!("0.0.0.0:{port}");
-    let server = Server::http(&addr)
-        .map_err(|e| anyhow::anyhow!("cannot bind to port {port}: {e}"))?;
+    let server =
+        Server::http(&addr).map_err(|e| anyhow::anyhow!("cannot bind to port {port}: {e}"))?;
 
     let url = format!("http://localhost:{port}");
     eprintln!();
@@ -44,7 +44,9 @@ fn open_browser(url: &str) {
     let result = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).spawn()
     } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn()
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", url])
+            .spawn()
     } else {
         std::process::Command::new("xdg-open").arg(url).spawn()
     };
@@ -54,29 +56,21 @@ fn open_browser(url: &str) {
 // ── Request dispatch ───────────────────────────────────────────────────────────
 
 fn handle(request: Request, db: &Database, file: &Path) {
-    let url    = request.url().to_owned();
+    let url = request.url().to_owned();
     let method = request.method().clone();
 
     let path = url.split('?').next().unwrap_or("/");
-    let qs   = parse_qs(&url);
+    let qs = parse_qs(&url);
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     let resp = match (&method, segs.as_slice()) {
         // Serve the UI
-        (Method::Get, []) | (Method::Get, ["index.html"]) => {
-            resp_html(HTML)
-        }
+        (Method::Get, []) | (Method::Get, ["index.html"]) => resp_html(HTML),
 
         // REST API
-        (Method::Get, ["api", "collections"]) => {
-            api_collections(db, file)
-        }
-        (Method::Get, ["api", "collections", name, "documents"]) => {
-            api_documents(db, name, &qs)
-        }
-        (Method::Delete, ["api", "collections", name, "documents", id]) => {
-            api_delete(db, name, id)
-        }
+        (Method::Get, ["api", "collections"]) => api_collections(db, file),
+        (Method::Get, ["api", "collections", name, "documents"]) => api_documents(db, name, &qs),
+        (Method::Delete, ["api", "collections", name, "documents", id]) => api_delete(db, name, id),
 
         _ => resp_error(404, "not found"),
     };
@@ -103,10 +97,13 @@ fn api_collections(db: &Database, file: &Path) -> Response<Cursor<Vec<u8>>> {
         })
         .collect();
 
-    resp_json(200, &serde_json::json!({
-        "db": file.display().to_string(),
-        "collections": collections,
-    }))
+    resp_json(
+        200,
+        &serde_json::json!({
+            "db": file.display().to_string(),
+            "collections": collections,
+        }),
+    )
 }
 
 fn api_documents(
@@ -160,13 +157,16 @@ fn api_documents(
 
     let pages = total.div_ceil(per_page).max(1);
 
-    resp_json(200, &serde_json::json!({
-        "documents": json_docs,
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "pages": pages,
-    }))
+    resp_json(
+        200,
+        &serde_json::json!({
+            "documents": json_docs,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": pages,
+        }),
+    )
 }
 
 fn api_delete(db: &Database, collection: &str, id: &str) -> Response<Cursor<Vec<u8>>> {
@@ -177,9 +177,9 @@ fn api_delete(db: &Database, collection: &str, id: &str) -> Response<Cursor<Vec<
 
     let filter = Filter::Eq("_id".into(), Value::Str(id.into()));
     match col.delete_one(filter) {
-        Ok(true)  => resp_json(200, &serde_json::json!({ "ok": true })),
+        Ok(true) => resp_json(200, &serde_json::json!({ "ok": true })),
         Ok(false) => resp_error(404, "document not found"),
-        Err(e)    => resp_error(500, &e.to_string()),
+        Err(e) => resp_error(500, &e.to_string()),
     }
 }
 
@@ -276,7 +276,10 @@ mod tests {
                 if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
                     break;
                 }
-                assert!(std::time::Instant::now() < deadline, "server did not start in time");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "server did not start in time"
+                );
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
 
@@ -304,7 +307,10 @@ mod tests {
 
     /// Convenience: build a `Vec<(String, Value)>` from a list of `(&str, Value)` pairs.
     fn doc(pairs: &[(&str, Value)]) -> Vec<(String, Value)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
     }
 
     // =========================================================================
@@ -415,16 +421,18 @@ mod tests {
 
     #[test]
     fn collections_count_matches_inserted_documents() {
-        let srv = TestServer::new(&[
-            ("users", vec![
+        let srv = TestServer::new(&[(
+            "users",
+            vec![
                 doc(&[("name", Value::Str("Alice".into()))]),
                 doc(&[("name", Value::Str("Bob".into()))]),
                 doc(&[("name", Value::Str("Carol".into()))]),
-            ]),
-        ]);
+            ],
+        )]);
         let body: serde_json::Value = srv.get("/api/collections").json().unwrap();
         let users = body["collections"]
-            .as_array().unwrap()
+            .as_array()
+            .unwrap()
             .iter()
             .find(|c| c["name"] == "users")
             .unwrap();
@@ -467,10 +475,7 @@ mod tests {
     fn documents_every_doc_has_id_field() {
         let srv = TestServer::new(&[(
             "things",
-            vec![
-                doc(&[("x", Value::Int(1))]),
-                doc(&[("x", Value::Int(2))]),
-            ],
+            vec![doc(&[("x", Value::Int(1))]), doc(&[("x", Value::Int(2))])],
         )]);
         let body: serde_json::Value = srv.get("/api/collections/things/documents").json().unwrap();
         for d in body["documents"].as_array().unwrap() {
@@ -483,8 +488,10 @@ mod tests {
     fn documents_total_pages_per_page_correct() {
         let docs: Vec<_> = (0..7i64).map(|i| doc(&[("n", Value::Int(i))])).collect();
         let srv = TestServer::new(&[("nums", docs)]);
-        let body: serde_json::Value =
-            srv.get("/api/collections/nums/documents?per_page=3").json().unwrap();
+        let body: serde_json::Value = srv
+            .get("/api/collections/nums/documents?per_page=3")
+            .json()
+            .unwrap();
         assert_eq!(body["total"], 7);
         assert_eq!(body["per_page"], 3);
         assert_eq!(body["pages"], 3); // ceil(7/3) = 3
@@ -496,8 +503,10 @@ mod tests {
     fn documents_page_two_returns_correct_slice() {
         let docs: Vec<_> = (0..10i64).map(|i| doc(&[("n", Value::Int(i))])).collect();
         let srv = TestServer::new(&[("nums", docs)]);
-        let body: serde_json::Value =
-            srv.get("/api/collections/nums/documents?page=2&per_page=4").json().unwrap();
+        let body: serde_json::Value = srv
+            .get("/api/collections/nums/documents?page=2&per_page=4")
+            .json()
+            .unwrap();
         assert_eq!(body["page"], 2);
         assert_eq!(body["documents"].as_array().unwrap().len(), 4);
     }
@@ -506,8 +515,10 @@ mod tests {
     fn documents_last_page_returns_remainder() {
         let docs: Vec<_> = (0..7i64).map(|i| doc(&[("n", Value::Int(i))])).collect();
         let srv = TestServer::new(&[("nums", docs)]);
-        let body: serde_json::Value =
-            srv.get("/api/collections/nums/documents?page=3&per_page=3").json().unwrap();
+        let body: serde_json::Value = srv
+            .get("/api/collections/nums/documents?page=3&per_page=3")
+            .json()
+            .unwrap();
         // Page 3 of ceil(7/3)=3 pages: should have 1 document (7 - 2*3 = 1)
         assert_eq!(body["documents"].as_array().unwrap().len(), 1);
     }
@@ -516,8 +527,10 @@ mod tests {
     fn documents_page_beyond_range_returns_empty() {
         let docs: Vec<_> = (0..3i64).map(|i| doc(&[("n", Value::Int(i))])).collect();
         let srv = TestServer::new(&[("nums", docs)]);
-        let body: serde_json::Value =
-            srv.get("/api/collections/nums/documents?page=99").json().unwrap();
+        let body: serde_json::Value = srv
+            .get("/api/collections/nums/documents?page=99")
+            .json()
+            .unwrap();
         assert_eq!(body["documents"].as_array().unwrap().len(), 0);
         assert_eq!(body["total"], 3);
     }
@@ -527,8 +540,10 @@ mod tests {
         let docs: Vec<_> = (0..5i64).map(|i| doc(&[("n", Value::Int(i))])).collect();
         let srv = TestServer::new(&[("nums", docs)]);
         // page=0 should clamp to 1
-        let body: serde_json::Value =
-            srv.get("/api/collections/nums/documents?page=0").json().unwrap();
+        let body: serde_json::Value = srv
+            .get("/api/collections/nums/documents?page=0")
+            .json()
+            .unwrap();
         assert_eq!(body["page"], 1);
     }
 
@@ -553,10 +568,7 @@ mod tests {
 
     #[test]
     fn delete_document_removes_it_from_collection() {
-        let srv = TestServer::new(&[(
-            "things",
-            vec![doc(&[("name", Value::Str("gone".into()))])],
-        )]);
+        let srv = TestServer::new(&[("things", vec![doc(&[("name", Value::Str("gone".into()))])])]);
         let list: serde_json::Value = srv.get("/api/collections/things/documents").json().unwrap();
         let id = list["documents"][0]["_id"].as_str().unwrap().to_owned();
 
@@ -595,7 +607,8 @@ mod tests {
         assert_eq!(after["total"], 2);
         // The deleted ID must not appear in the remaining documents.
         let remaining_ids: Vec<&str> = after["documents"]
-            .as_array().unwrap()
+            .as_array()
+            .unwrap()
             .iter()
             .map(|d| d["_id"].as_str().unwrap())
             .collect();

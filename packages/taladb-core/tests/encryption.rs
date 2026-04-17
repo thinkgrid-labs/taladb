@@ -238,8 +238,8 @@ fn encrypted_backend_multiple_docs() {
 
 #[test]
 fn rekey_returns_positive_count_on_non_empty_db() {
-    use taladb_core::rekey;
     use taladb_core::engine::RedbBackend;
+    use taladb_core::rekey;
     use zeroize::Zeroizing;
 
     let old_key = Zeroizing::new([1u8; 32]);
@@ -258,13 +258,16 @@ fn rekey_returns_positive_count_on_non_empty_db() {
     // Rekey the raw (non-encrypted) backend that the encrypted backend wraps.
     // We need access to the inner backend — use the inner RedbBackend directly.
     let count = rekey(inner.as_ref(), &old_key, &new_key).unwrap();
-    assert!(count > 0, "rekey must report at least one re-encrypted value");
+    assert!(
+        count > 0,
+        "rekey must report at least one re-encrypted value"
+    );
 }
 
 #[test]
 fn rekey_wrong_old_key_fails() {
-    use taladb_core::rekey;
     use taladb_core::engine::RedbBackend;
+    use taladb_core::rekey;
     use zeroize::Zeroizing;
 
     let correct_key = Zeroizing::new([1u8; 32]);
@@ -277,8 +280,10 @@ fn rekey_wrong_old_key_fails() {
         Zeroizing::new([1u8; 32]),
     ));
     let db = taladb_core::Database::open_with_backend(enc).unwrap();
-    db.collection("secrets").unwrap()
-        .insert(vec![("v".into(), s("hello"))]).unwrap();
+    db.collection("secrets")
+        .unwrap()
+        .insert(vec![("v".into(), s("hello"))])
+        .unwrap();
 
     let result = rekey(inner.as_ref(), &wrong_key, &new_key);
     assert!(result.is_err(), "rekey with wrong old_key must fail");
@@ -289,8 +294,8 @@ fn rekey_wrong_old_key_fails() {
 
 #[test]
 fn rekey_empty_db_returns_zero() {
-    use taladb_core::rekey;
     use taladb_core::engine::RedbBackend;
+    use taladb_core::rekey;
     use zeroize::Zeroizing;
 
     let backend = RedbBackend::open_in_memory().unwrap();

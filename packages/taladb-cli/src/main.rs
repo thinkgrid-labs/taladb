@@ -184,9 +184,11 @@ fn main() -> Result<()> {
             collection,
             field,
         } => cmd_upgrade_vector_index(&file, &collection, &field),
-        Command::Studio { file, port, no_open } => {
-            studio::cmd_studio(&file, port, no_open)
-        }
+        Command::Studio {
+            file,
+            port,
+            no_open,
+        } => studio::cmd_studio(&file, port, no_open),
         Command::Sync {
             file,
             collection,

@@ -461,13 +461,14 @@ fn vector_query_dimension_mismatch_returns_error() {
     let col = db.collection("vecs").unwrap();
     col.create_vector_index("embedding", 3, None, None).unwrap();
 
-    col.insert(vec![
-        ("embedding".into(), Value::Array(vec![
+    col.insert(vec![(
+        "embedding".into(),
+        Value::Array(vec![
             Value::Float(0.1),
             Value::Float(0.2),
             Value::Float(0.3),
-        ])),
-    ])
+        ]),
+    )])
     .unwrap();
 
     // Query with wrong dimension must return VectorDimensionMismatch

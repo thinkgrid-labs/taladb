@@ -9,7 +9,9 @@ thread_local! {
     static COUNTER: RefCell<u32> = const { RefCell::new(0) };
 }
 
-pub(crate) fn new_ulid_pub() -> Ulid { new_ulid() }
+pub(crate) fn new_ulid_pub() -> Ulid {
+    new_ulid()
+}
 
 fn new_ulid() -> Ulid {
     let ms = SystemTime::now()
@@ -21,7 +23,12 @@ fn new_ulid() -> Ulid {
         COUNTER.with(|cnt| {
             let mut p = prev.borrow_mut();
             let mut c = cnt.borrow_mut();
-            if ms == *p { *c = c.wrapping_add(1); } else { *p = ms; *c = 0; }
+            if ms == *p {
+                *c = c.wrapping_add(1);
+            } else {
+                *p = ms;
+                *c = 0;
+            }
             *c
         })
     });
