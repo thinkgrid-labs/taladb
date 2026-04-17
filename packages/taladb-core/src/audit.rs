@@ -81,7 +81,7 @@ pub(crate) fn write_audit_entry(
     doc_id: &str,
     caller: &str,
 ) -> Result<(), TalaDbError> {
-    let entry_id = Ulid::new();
+    let entry_id = crate::document::new_ulid_pub();
     let doc = Document {
         id: entry_id,
         fields: vec![

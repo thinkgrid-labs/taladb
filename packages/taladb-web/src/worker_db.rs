@@ -87,7 +87,7 @@ impl SyncHook for WasmSyncHook {
     }
 }
 
-/// Build the JSON payload for a sync event (WASM variant — uses js_sys::Date for timestamp).
+/// Build the JSON payload for a sync event (WASM variant - uses js_sys::Date for timestamp).
 #[cfg(target_arch = "wasm32")]
 fn build_wasm_payload(event: SyncEvent, exclude: &[String]) -> JsonValue {
     let ts = js_sys::Date::now() as u64;
@@ -153,7 +153,7 @@ fn wasm_value_to_json(v: &Value) -> JsonValue {
     value_to_json(v)
 }
 
-/// Simple sleep using globalThis.setTimeout — works in both window and worker contexts.
+/// Simple sleep using globalThis.setTimeout - works in both window and worker contexts.
 #[cfg(target_arch = "wasm32")]
 async fn sleep_ms_wasm(ms: u32) {
     use wasm_bindgen::JsCast;
@@ -271,7 +271,7 @@ impl WorkerDB {
 
     /// Open a database from an optional snapshot with HTTP push sync config.
     ///
-    /// `config_json` — JSON-serialised `TalaDbConfig`, or `null` to open without sync.
+    /// `config_json` - JSON-serialised `TalaDbConfig`, or `null` to open without sync.
     ///
     /// ```js
     /// const db = WorkerDB.openWithConfigAndSnapshot(snapshot, JSON.stringify(config));
@@ -330,7 +330,7 @@ impl WorkerDB {
     ///
     /// Not available when compiled with the `cf-workers` feature.
     ///
-    /// `config_json` — JSON-serialised `TalaDbConfig`, or `null` to open without sync.
+    /// `config_json` - JSON-serialised `TalaDbConfig`, or `null` to open without sync.
     ///
     /// ```js
     /// const handle = await file_handle.createSyncAccessHandle();
@@ -741,7 +741,7 @@ impl WorkerDB {
     /// ```js
     /// const resp = await fetch('/sync?since=' + lastSync);
     /// const applied = db.importChangeset(await resp.text());
-    /// if (applied > 0) { /* refresh UI */ }
+    /// if (applied > 0) { rerender(); }
     /// ```
     #[wasm_bindgen(js_name = importChangeset)]
     pub fn import_changeset(&self, changeset_json: &str) -> Result<u32, JsValue> {

@@ -1880,6 +1880,7 @@ name = "taladb-core"
 version = "0.7.3"
 dependencies = [
  "aes-gcm",
+ "getrandom 0.3.4",
  "hmac",
  "instant-distance",
  "pbkdf2",
@@ -1898,6 +1899,7 @@ dependencies = [
  "tracing",
  "ulid",
  "url",
+ "web-time",
  "wiremock",
  "zeroize",
 ]

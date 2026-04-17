@@ -28,7 +28,7 @@
 //! any number of replicas without coordination.
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;

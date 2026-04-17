@@ -1,14 +1,36 @@
 use std::cell::RefCell;
 
 use serde::{Deserialize, Serialize};
-use ulid::{Generator, Ulid};
+use ulid::Ulid;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 thread_local! {
-    static ULID_GEN: RefCell<Generator> = const { RefCell::new(Generator::new()) };
+    static PREV_MS: RefCell<u64> = const { RefCell::new(0) };
+    static COUNTER: RefCell<u32> = const { RefCell::new(0) };
 }
 
+pub(crate) fn new_ulid_pub() -> Ulid { new_ulid() }
+
 fn new_ulid() -> Ulid {
-    ULID_GEN.with(|gen| gen.borrow_mut().generate().unwrap_or_else(|_| Ulid::new()))
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    // Monotonic counter within the same millisecond keeps bulk inserts sortable.
+    let seq = PREV_MS.with(|prev| {
+        COUNTER.with(|cnt| {
+            let mut p = prev.borrow_mut();
+            let mut c = cnt.borrow_mut();
+            if ms == *p { *c = c.wrapping_add(1); } else { *p = ms; *c = 0; }
+            *c
+        })
+    });
+    let mut buf = [0u8; 10]; // 80-bit random payload
+    getrandom::fill(&mut buf).unwrap_or(());
+    // Upper 16 bits of the random field = monotonic sequence; lower 64 bits = random.
+    let rand_lo = u64::from_le_bytes(buf[..8].try_into().unwrap());
+    let random = ((seq as u128) << 64) | (rand_lo as u128);
+    Ulid::from_parts(ms, random)
 }
 
 /// A dynamically-typed value that maps to JSON conceptually but serializes via postcard.

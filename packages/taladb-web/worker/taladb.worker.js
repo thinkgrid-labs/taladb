@@ -505,7 +505,7 @@ async function dispatch(op, args) {
 // ---------------------------------------------------------------------------
 
 async function doInit(dbName, configJson) {
-  const wasm = await import('../pkg/taladb_web.js');
+  const wasm = await import(/* @vite-ignore */ '../pkg/taladb_web.js');
   await wasm.default();
 
   // Hoist to module scope so snapshot reloads in dispatch() can use it.
