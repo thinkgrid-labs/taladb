@@ -1,4 +1,4 @@
-import type { Collection, Document, TalaDB } from './types';
+import type { Collection, CollectionOptions, Document, TalaDB } from './types';
 import { loadConfig, validateConfig } from './config';
 import type { TalaDbConfig, SyncConfig } from './config';
 
@@ -6,8 +6,10 @@ import type { TalaDbConfig, SyncConfig } from './config';
 export type {
   Collection,
   CollectionIndexInfo,
+  CollectionOptions,
   Document,
   Filter,
+  Schema,
   Update,
   Value,
   TalaDB,
@@ -15,6 +17,78 @@ export type {
   VectorIndexOptions,
   VectorSearchResult,
 } from './types';
+
+// ============================================================
+// Validation
+// ============================================================
+
+/**
+ * Thrown when a document fails schema validation on `insert` or `insertMany`.
+ * The `cause` property holds the original error thrown by the schema library.
+ */
+export class TalaDbValidationError extends Error {
+  constructor(
+    public readonly cause: unknown,
+    context?: string,
+  ) {
+    const label = context ? ` (${context})` : '';
+    const msg = cause instanceof Error ? cause.message : String(cause);
+    super(`TalaDB schema validation failed${label}: ${msg}`);
+    this.name = 'TalaDbValidationError';
+  }
+}
+
+/**
+ * Wraps a `Collection<T>` to intercept writes (and optionally reads) through
+ * the provided schema validator. Throws `TalaDbValidationError` on failure.
+ */
+function applySchema<T extends Document>(
+  col: Collection<T>,
+  options: CollectionOptions<T>,
+): Collection<T> {
+  const { schema, validateOnRead = false } = options;
+  if (!schema) return col;
+
+  function parseWrite(doc: unknown, label: string): T {
+    try {
+      return schema!.parse(doc);
+    } catch (err) {
+      throw new TalaDbValidationError(err, label);
+    }
+  }
+
+  function parseRead(doc: unknown): T {
+    try {
+      return schema!.parse(doc);
+    } catch (err) {
+      throw new TalaDbValidationError(err, 'read');
+    }
+  }
+
+  return {
+    ...col,
+    insert: async (doc) => {
+      parseWrite(doc, 'insert');
+      return col.insert(doc);
+    },
+    insertMany: async (docs) => {
+      docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
+      return col.insertMany(docs);
+    },
+    find: validateOnRead
+      ? async (filter?) => {
+          const docs = await col.find(filter);
+          return docs.map((d) => parseRead(d));
+        }
+      : col.find.bind(col),
+    findOne: validateOnRead
+      ? async (filter) => {
+          const doc = await col.findOne(filter);
+          return doc === null ? null : parseRead(doc);
+        }
+      : col.findOne.bind(col),
+  };
+}
 
 export type { TalaDbConfig, SyncConfig } from './config';
 
@@ -124,9 +198,9 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
   await wasm.default();
   const db = wasm.TalaDBWasm.openInMemory();
 
-  function wrapCollection<T extends Document>(name: string): Collection<T> {
+  function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const col = db.collection(name);
-    return {
+    const wrapped: Collection<T> = {
       insert: async (doc) => col.insert(doc),
       insertMany: async (docs) => col.insertMany(docs),
       find: async (filter?) => col.find(filter ?? null),
@@ -159,10 +233,11 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
       subscribe: (filter, callback) =>
         makePoller(async () => col.find(filter ?? null) as T[], callback),
     };
+    return opts ? applySchema(wrapped, opts) : wrapped;
   }
 
   return {
-    collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => {},
     close: async () => {},
   };
@@ -195,9 +270,9 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
     };
   }
 
-  function wrapCollection<T extends Document>(name: string): Collection<T> {
+  function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const s = JSON.stringify;
-    return {
+    const wrapped: Collection<T> = {
       insert: (doc) =>
         proxy.send<string>('insert', { collection: name, docJson: s(doc) }),
 
@@ -324,10 +399,11 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
         };
       },
     };
+    return opts ? applySchema(wrapped, opts) : wrapped;
   }
 
   return {
-    collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: () => proxy.send<void>('compact'),
     close: async () => {
       channel?.close();
@@ -349,9 +425,9 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
   const configJson = config !== undefined ? JSON.stringify(config) : null;
   const db = TalaDBNode.open(dbName, configJson);
 
-  function wrapCollection<T extends Document>(name: string): Collection<T> {
+  function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const col = db.collection(name);
-    return {
+    const wrapped: Collection<T> = {
       insert: async (doc) => col.insert(doc as Record<string, unknown>),
       insertMany: async (docs) => col.insertMany(docs as Record<string, unknown>[]),
       find: async (filter?) => col.find(filter ?? null),
@@ -380,10 +456,11 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
       subscribe: (filter, callback) =>
         makePoller(async () => col.find(filter ?? null) as T[], callback),
     };
+    return opts ? applySchema(wrapped, opts) : wrapped;
   }
 
   return {
-    collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => db.compact(),
     close: async () => {},
   };
@@ -434,9 +511,9 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
   }
   const native: NativeHostObject = maybeNative;
 
-  function wrapCollection<T extends Document>(name: string): Collection<T> {
+  function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const col = native.collection(name);
-    return {
+    const wrapped: Collection<T> = {
       insert: async (doc) => col.insert(doc as Record<string, unknown>),
       insertMany: async (docs) => col.insertMany(docs as Record<string, unknown>[]),
       find: async (filter?) => col.find(filter ?? {}) as T[],
@@ -462,10 +539,11 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
       subscribe: (filter, callback) =>
         makePoller(async () => col.find(filter ?? {}) as T[], callback),
     };
+    return opts ? applySchema(wrapped, opts) : wrapped;
   }
 
   return {
-    collection: <T extends Document>(name: string) => wrapCollection<T>(name),
+    collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
   };

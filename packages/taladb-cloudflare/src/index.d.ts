@@ -1,11 +1,20 @@
-import type { Collection, Document, Filter, TalaDB } from 'taladb';
+import type { Collection, CollectionOptions, Document, Filter, TalaDB } from 'taladb';
+
+/**
+ * Thrown when a document fails schema validation on `insert` or `insertMany`.
+ * Mirrors `TalaDbValidationError` from the `taladb` package.
+ */
+export declare class TalaDbValidationError extends Error {
+  readonly cause: unknown;
+  constructor(cause: unknown, context?: string);
+}
 
 // ---------------------------------------------------------------------------
 // CloudflareDB — TalaDB-compatible handle for Cloudflare Workers
 // ---------------------------------------------------------------------------
 
 export interface CloudflareDB extends Omit<TalaDB, 'compact' | 'close'> {
-  collection<T extends Document = Document>(name: string): Collection<T>;
+  collection<T extends Document = Document>(name: string, options?: CollectionOptions<T>): Collection<T>;
   /** Persist the current snapshot to Durable Objects storage. */
   flush(): Promise<void>;
   /** Compact the in-memory redb instance (no-op on in-memory backend). */

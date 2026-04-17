@@ -69,6 +69,70 @@ async function loadWasm() {
 const SNAPSHOT_KEY = '__taladb_snapshot__';
 
 // ---------------------------------------------------------------------------
+// Schema validation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a document fails schema validation on insert.
+ * Compatible with the `TalaDbValidationError` exported from `taladb`.
+ */
+export class TalaDbValidationError extends Error {
+  constructor(cause, context) {
+    const label = context ? ` (${context})` : '';
+    const msg = cause instanceof Error ? cause.message : String(cause);
+    super(`TalaDB schema validation failed${label}: ${msg}`);
+    this.name = 'TalaDbValidationError';
+    this.cause = cause;
+  }
+}
+
+/**
+ * Wraps a CloudflareCollection to run writes through a schema.parse() call.
+ * @template T
+ * @param {CloudflareCollection} col
+ * @param {{ schema: { parse(data: unknown): T }, validateOnRead?: boolean }} options
+ * @returns {CloudflareCollection}
+ */
+function applyCloudflareSchema(col, options) {
+  const { schema, validateOnRead = false } = options;
+
+  function parseWrite(doc, label) {
+    try {
+      return schema.parse(doc);
+    } catch (err) {
+      throw new TalaDbValidationError(err, label);
+    }
+  }
+
+  function parseRead(doc) {
+    try {
+      return schema.parse(doc);
+    } catch (err) {
+      throw new TalaDbValidationError(err, 'read');
+    }
+  }
+
+  return Object.assign(Object.create(Object.getPrototypeOf(col)), col, {
+    async insert(doc) {
+      parseWrite(doc, 'insert');
+      return col.insert(doc);
+    },
+    async insertMany(docs) {
+      docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
+      return col.insertMany(docs);
+    },
+    async find(filter) {
+      const docs = await col.find(filter);
+      return validateOnRead ? docs.map(parseRead) : docs;
+    },
+    async findOne(filter) {
+      const doc = await col.findOne(filter);
+      return validateOnRead && doc !== null ? parseRead(doc) : doc;
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // openDurableDB — create a TalaDB-compatible database backed by DO storage
 // ---------------------------------------------------------------------------
 
@@ -104,8 +168,9 @@ class CloudflareDB {
     this._storage = storage;
   }
 
-  collection(name) {
-    return new CloudflareCollection(this._db, name, this);
+  collection(name, options) {
+    const col = new CloudflareCollection(this._db, name, this);
+    return options?.schema ? applyCloudflareSchema(col, options) : col;
   }
 
   /**

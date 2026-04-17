@@ -26,7 +26,7 @@ Better DX drives adoption and reduces time-to-production.
 
 A browser-based GUI (served by `taladb-cli`) for browsing collections, running ad-hoc queries, inspecting indexes, and visualising query plans — similar to MongoDB Compass but for local files.
 
-### Zod / Valibot schema validation
+### ~~Zod / Valibot schema validation~~ ✓ Shipped in 0.7.3
 
 An optional `schema` option on `collection()` that validates documents with a Zod or Valibot schema before insert and after find, providing runtime type safety without a compile step.
 
@@ -48,7 +48,7 @@ Multi-device and collaborative data sync beyond simple API push.
 
 A `CrdtSyncAdapter` that uses per-field logical clocks (LWW-register or grow-only sets) to merge concurrent writes from multiple devices without conflicts — suitable for collaborative offline-first apps.
 
-### Delta snapshots
+### ~~Delta snapshots~~ ✓ Shipped in 0.7.3
 
 Instead of exporting the full database on every sync, export only the records that changed since a given ULID watermark — reducing bandwidth for incremental sync scenarios. Foundation for the sync server below.
 
