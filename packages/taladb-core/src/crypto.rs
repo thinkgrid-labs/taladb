@@ -326,6 +326,10 @@ impl<'a> ReadTxn for EncryptedReadTxn<'a> {
     fn list_tables(&self) -> Result<Vec<String>, TalaDbError> {
         self.inner.list_tables()
     }
+
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        self.inner.count_entries(table)
+    }
 }
 
 // ---------------------------------------------------------------------------

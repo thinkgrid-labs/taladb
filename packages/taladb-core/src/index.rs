@@ -3,8 +3,11 @@
 //! Index keys are structured as:
 //!   [type_prefix: 1 byte] [encoded_value: N bytes] [ulid: 16 bytes]
 //!
-//! The fixed-width 16-byte ULID suffix means there is no ambiguity in key
-//! boundaries even for variable-length types like strings.
+//! Variable-length types (Str, Bytes) use null-escape + terminator encoding so
+//! range scans for exact-equality never spuriously include longer prefixes:
+//!   • 0x00 inside the value → [0x00, 0xFF]
+//!   • end of value          → [0x00]
+//! Fixed-width types have known widths, so no terminator is needed.
 //!
 //! Type prefixes ensure cross-type sort order:
 //!   0x00 = Null
@@ -12,8 +15,8 @@
 //!   0x11 = Bool(true)
 //!   0x20 = Int  (i64 big-endian, XOR 0x8000_0000_0000_0000 for correct signed sort)
 //!   0x30 = Float (IEEE 754 bits, sign-magnitude encoded for sort correctness)
-//!   0x40 = Str  (raw UTF-8 bytes; ULID suffix provides unambiguous boundary)
-//!   0x50 = Bytes
+//!   0x40 = Str  (null-escaped UTF-8 bytes + 0x00 terminator)
+//!   0x50 = Bytes (null-escaped bytes + 0x00 terminator)
 //!   0x60 = Array / Object (not indexable — skipped silently)
 
 use std::ops::Bound;
@@ -67,11 +70,25 @@ fn encode_value_prefix(value: &Value, buf: &mut Vec<u8>) -> Option<()> {
         }
         Value::Str(s) => {
             buf.push(0x40);
-            buf.extend_from_slice(s.as_bytes());
+            for &b in s.as_bytes() {
+                if b == 0x00 {
+                    buf.extend_from_slice(&[0x00, 0xFF]);
+                } else {
+                    buf.push(b);
+                }
+            }
+            buf.push(0x00); // terminator
         }
         Value::Bytes(b) => {
             buf.push(0x50);
-            buf.extend_from_slice(b);
+            for &byte in b {
+                if byte == 0x00 {
+                    buf.extend_from_slice(&[0x00, 0xFF]);
+                } else {
+                    buf.push(byte);
+                }
+            }
+            buf.push(0x00); // terminator
         }
         Value::Array(_) | Value::Object(_) => return None, // not indexable
     }
@@ -196,66 +213,16 @@ pub fn compound_table_name(collection: &str, fields: &[&str]) -> String {
 //
 // Key layout: [field1_encoded][field2_encoded]...[ulid: 16 B]
 //
-// Each field is encoded with its type prefix.  Variable-length types (Str,
-// Bytes) use null-escape encoding so the terminator 0x00 marks the end:
-//   • 0x00 inside the value → [0x00, 0xFF]
-//   • end of value          → [0x00]
-// Fixed-width types (Null, Bool, Int, Float) have known widths from the type
-// prefix, so no terminator is needed and sort order is preserved.
+// Each field uses the same `encode_value_prefix` format as single-field
+// indexes — the null-escape terminator for variable-length types is what
+// allows safe concatenation of multiple fields without ambiguity.
 // ---------------------------------------------------------------------------
-
-fn encode_compound_field(value: &Value, buf: &mut Vec<u8>) -> Option<()> {
-    match value {
-        Value::Null => buf.push(0x00),
-        Value::Bool(false) => buf.push(0x10),
-        Value::Bool(true) => buf.push(0x11),
-        Value::Int(n) => {
-            buf.push(0x20);
-            let sortable = (*n as u64) ^ 0x8000_0000_0000_0000u64;
-            buf.extend_from_slice(&sortable.to_be_bytes());
-        }
-        Value::Float(f) => {
-            buf.push(0x30);
-            let bits = f.to_bits();
-            let sortable = if bits >> 63 == 1 {
-                !bits
-            } else {
-                bits ^ 0x8000_0000_0000_0000
-            };
-            buf.extend_from_slice(&sortable.to_be_bytes());
-        }
-        Value::Str(s) => {
-            buf.push(0x40);
-            for &b in s.as_bytes() {
-                if b == 0x00 {
-                    buf.extend_from_slice(&[0x00, 0xFF]);
-                } else {
-                    buf.push(b);
-                }
-            }
-            buf.push(0x00); // terminator
-        }
-        Value::Bytes(b) => {
-            buf.push(0x50);
-            for &byte in b {
-                if byte == 0x00 {
-                    buf.extend_from_slice(&[0x00, 0xFF]);
-                } else {
-                    buf.push(byte);
-                }
-            }
-            buf.push(0x00); // terminator
-        }
-        Value::Array(_) | Value::Object(_) => return None,
-    }
-    Some(())
-}
 
 /// Encode a compound index key from `values` (one per field) plus the ULID.
 pub fn encode_compound_key(values: &[&Value], id: Ulid) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
     for v in values {
-        encode_compound_field(v, &mut buf)?;
+        encode_value_prefix(v, &mut buf)?;
     }
     buf.extend_from_slice(&id.to_bytes());
     Some(buf)
@@ -267,7 +234,7 @@ pub fn encode_compound_key(values: &[&Value], id: Ulid) -> Option<Vec<u8>> {
 pub fn compound_range_eq(values: &[&Value]) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut prefix = Vec::new();
     for v in values {
-        encode_compound_field(v, &mut prefix)?;
+        encode_value_prefix(v, &mut prefix)?;
     }
     let mut start = prefix.clone();
     start.extend_from_slice(&[0x00u8; 16]);
@@ -343,5 +310,28 @@ mod tests {
         let obj = Value::Object(vec![]);
         assert!(encode_index_key(&arr, Ulid::nil()).is_none());
         assert!(encode_index_key(&obj, Ulid::nil()).is_none());
+    }
+
+    #[test]
+    fn eq_range_does_not_match_longer_prefixes() {
+        // "alpha" equality scan must NOT pull in "alphabet".
+        let (start, end) = index_range_eq(&Value::Str("alpha".into())).unwrap();
+        let longer_key =
+            encode_index_key(&Value::Str("alphabet".into()), Ulid::from_bytes([0xAA; 16])).unwrap();
+        assert!(
+            longer_key < start || longer_key > end,
+            "longer prefix 'alphabet' must fall outside the 'alpha' range"
+        );
+    }
+
+    #[test]
+    fn eq_range_matches_exact_value() {
+        let id = Ulid::from_bytes([0x55; 16]);
+        let (start, end) = index_range_eq(&Value::Str("alpha".into())).unwrap();
+        let exact = encode_index_key(&Value::Str("alpha".into()), id).unwrap();
+        assert!(
+            exact >= start && exact <= end,
+            "exact value must lie inside its own range"
+        );
     }
 }

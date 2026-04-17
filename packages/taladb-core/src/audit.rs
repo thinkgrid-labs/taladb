@@ -110,8 +110,31 @@ pub fn read_audit_log(
     collection_filter: Option<&str>,
     op_filter: Option<AuditOp>,
 ) -> Result<Vec<AuditEntry>, TalaDbError> {
+    read_audit_log_since(backend, None, collection_filter, op_filter)
+}
+
+/// Like [`read_audit_log`], but skips entries with `id <= since`.  This
+/// uses a ULID range scan, so tailing the log with `since = last_seen_id`
+/// is O(new_entries) instead of O(total_entries).
+pub fn read_audit_log_since(
+    backend: &dyn StorageBackend,
+    since: Option<Ulid>,
+    collection_filter: Option<&str>,
+    op_filter: Option<AuditOp>,
+) -> Result<Vec<AuditEntry>, TalaDbError> {
     let rtxn = backend.begin_read()?;
-    let pairs = rtxn.scan_all(AUDIT_TABLE).unwrap_or_default();
+    let pairs = match since {
+        Some(s) => {
+            let start_bytes = s.to_bytes();
+            rtxn.range(
+                AUDIT_TABLE,
+                std::ops::Bound::Excluded(&start_bytes[..]),
+                std::ops::Bound::Unbounded,
+            )
+            .unwrap_or_default()
+        }
+        None => rtxn.scan_all(AUDIT_TABLE).unwrap_or_default(),
+    };
     drop(rtxn);
 
     let mut entries = Vec::with_capacity(pairs.len());

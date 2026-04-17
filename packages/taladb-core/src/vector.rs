@@ -202,11 +202,23 @@ mod hnsw_impl {
     // ------------------------------------------------------------------
 
     /// Build an HNSW graph from `vectors` and return it ready for search.
+    ///
+    /// `VectorMetric::Dot` is rejected here because raw dot product is not a
+    /// valid HNSW distance (can be arbitrarily negative, violating the
+    /// greedy-descent invariant). Callers that want magnitude-sensitive
+    /// similarity should L2-normalise their vectors and use `Cosine`, which is
+    /// mathematically equivalent on unit vectors.
     pub fn build_hnsw(
         vectors: &[(Ulid, Vec<f32>)],
         metric: &VectorMetric,
         ef_construction: u32,
     ) -> Result<Arc<HnswGraph>, TalaDbError> {
+        if matches!(metric, VectorMetric::Dot) {
+            return Err(TalaDbError::InvalidOperation(
+                "HNSW indexes do not support the Dot metric; L2-normalise vectors and use Cosine instead"
+                    .into(),
+            ));
+        }
         set_metric(metric);
 
         let points: Vec<HnswPoint> = vectors

@@ -17,7 +17,7 @@ pub mod vector;
 pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
-pub use audit::{read_audit_log, AuditEntry, AuditOp};
+pub use audit::{read_audit_log, read_audit_log_since, AuditEntry, AuditOp};
 pub use collection::{Collection, CollectionIndexInfo, Update};
 pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
 #[cfg(feature = "encryption")]

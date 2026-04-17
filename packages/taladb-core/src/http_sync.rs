@@ -38,8 +38,10 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value as JsonValue};
@@ -53,10 +55,16 @@ use crate::sync::{now_ms, SyncEvent, SyncHook};
 // ---------------------------------------------------------------------------
 
 /// Number of background worker threads in the sync thread pool.
+///
+/// Each worker owns its own bounded channel; `on_event` shards tasks by
+/// (collection, id) so events for the same document are always processed by
+/// the same worker in arrival order. This preserves per-document causal
+/// ordering (insert → update → delete) without a global lock.
 const WORKER_THREADS: usize = 4;
 
-/// Capacity of the bounded task channel. Back-pressure kicks in when the pool
-/// is saturated — `on_event` will drop events rather than block the writer.
+/// Per-worker channel capacity. Back-pressure kicks in when any one shard is
+/// saturated — `on_event` will drop the event for that shard rather than
+/// block the writer.
 const TASK_CHANNEL_CAPACITY: usize = 256;
 
 struct SyncTask {
@@ -83,29 +91,30 @@ struct SyncTask {
 /// ```
 pub struct HttpSyncHook {
     config: Arc<SyncConfig>,
-    /// Sender half of the bounded worker channel. `None` when sync is disabled.
-    tx: Option<std::sync::mpsc::SyncSender<SyncTask>>,
+    /// One sender per worker; indexed by shard (`hash(collection,id) % N`).
+    /// Empty when sync is disabled.
+    senders: Vec<std::sync::mpsc::SyncSender<SyncTask>>,
 }
 
 impl HttpSyncHook {
     /// Build the hook from a `SyncConfig`.
     ///
     /// When `config.enabled` is `true`, spawns [`WORKER_THREADS`] background
-    /// threads that share one `reqwest::blocking::Client`.
+    /// threads, each with its own bounded channel. Tasks are sharded by
+    /// (collection, id) so all events for one document run on the same
+    /// worker in arrival order.
     pub fn new(config: SyncConfig) -> Self {
         if !config.enabled {
             return HttpSyncHook {
                 config: Arc::new(config),
-                tx: None,
+                senders: Vec::new(),
             };
         }
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<SyncTask>(TASK_CHANNEL_CAPACITY);
-        // Wrap receiver in Arc<Mutex> so it can be shared across worker threads.
-        let rx = Arc::new(Mutex::new(rx));
-
+        let mut senders = Vec::with_capacity(WORKER_THREADS);
         for _ in 0..WORKER_THREADS {
-            let rx = Arc::clone(&rx);
+            let (tx, rx) = std::sync::mpsc::sync_channel::<SyncTask>(TASK_CHANNEL_CAPACITY);
+            senders.push(tx);
             std::thread::spawn(move || {
                 // Build the reqwest client inside the worker thread.
                 // This avoids the "cannot drop runtime in async context" panic
@@ -121,23 +130,15 @@ impl HttpSyncHook {
                         return;
                     }
                 };
-                loop {
-                    let task = {
-                        let guard = rx.lock().unwrap_or_else(|p| p.into_inner());
-                        guard.recv()
-                    };
-                    match task {
-                        Ok(t) => fire_with_retry(&client, &t.endpoint, &t.headers, &t.payload),
-                        // Channel closed — all senders dropped, shut down.
-                        Err(_) => break,
-                    }
+                while let Ok(t) = rx.recv() {
+                    fire_with_retry(&client, &t.endpoint, &t.headers, &t.payload);
                 }
             });
         }
 
         HttpSyncHook {
             config: Arc::new(config),
-            tx: Some(tx),
+            senders,
         }
     }
 
@@ -159,31 +160,53 @@ impl HttpSyncHook {
 
 impl SyncHook for HttpSyncHook {
     fn on_event(&self, event: SyncEvent) {
-        let Some(tx) = &self.tx else {
+        if self.senders.is_empty() {
             return;
-        };
+        }
         let Some(endpoint) = self.endpoint_for(&event) else {
             return;
         };
-        let payload = event_to_payload(event, &self.config.exclude_fields);
+        let shard = shard_for(&event, self.senders.len());
+        let exclude: HashSet<&str> = self
+            .config
+            .exclude_fields
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let payload = event_to_payload(event, &exclude);
         let headers = self.config.headers.clone();
         let task = SyncTask {
             endpoint,
             headers,
             payload,
         };
-        // try_send: drops the event if the channel is full rather than blocking.
-        if let Err(e) = tx.try_send(task) {
+        // try_send: drops the event if the shard is saturated rather than
+        // blocking the writer. Dropping here preserves causal ordering only
+        // for events that *do* make it through — a dropped update is
+        // permanently lost, just as before.
+        if let Err(e) = self.senders[shard].try_send(task) {
             tracing::warn!(error = %e, "sync: task channel full; dropping sync event");
         }
     }
+}
+
+fn shard_for(event: &SyncEvent, num_shards: usize) -> usize {
+    let (collection, id) = match event {
+        SyncEvent::Insert { collection, id, .. }
+        | SyncEvent::Update { collection, id, .. }
+        | SyncEvent::Delete { collection, id } => (collection.as_str(), id.as_str()),
+    };
+    let mut h = DefaultHasher::new();
+    collection.hash(&mut h);
+    id.hash(&mut h);
+    (h.finish() as usize) % num_shards
 }
 
 // ---------------------------------------------------------------------------
 // Payload builder
 // ---------------------------------------------------------------------------
 
-pub(crate) fn event_to_payload(event: SyncEvent, exclude: &[String]) -> JsonValue {
+pub(crate) fn event_to_payload(event: SyncEvent, exclude: &HashSet<&str>) -> JsonValue {
     let ts = now_ms();
     match event {
         SyncEvent::Insert {
@@ -219,10 +242,10 @@ pub(crate) fn event_to_payload(event: SyncEvent, exclude: &[String]) -> JsonValu
 
 /// Convert a document's fields (not including `_id`) to a JSON object,
 /// omitting any field listed in `exclude`.
-fn doc_fields_to_json(doc: &Document, exclude: &[String]) -> JsonValue {
+fn doc_fields_to_json(doc: &Document, exclude: &HashSet<&str>) -> JsonValue {
     let mut obj = Map::new();
     for (k, v) in &doc.fields {
-        if !exclude.contains(k) {
+        if !exclude.contains(k.as_str()) {
             obj.insert(k.clone(), value_to_json(v));
         }
     }
@@ -230,10 +253,10 @@ fn doc_fields_to_json(doc: &Document, exclude: &[String]) -> JsonValue {
 }
 
 /// Convert a field map to a JSON object, omitting any field listed in `exclude`.
-fn map_to_json(fields: &HashMap<String, Value>, exclude: &[String]) -> JsonValue {
+fn map_to_json(fields: &HashMap<String, Value>, exclude: &HashSet<&str>) -> JsonValue {
     let mut obj = Map::new();
     for (k, v) in fields {
-        if !exclude.contains(k) {
+        if !exclude.contains(k.as_str()) {
             obj.insert(k.clone(), value_to_json(v));
         }
     }
@@ -374,7 +397,7 @@ mod tests {
             id: doc.id.to_string(),
             document: doc,
         };
-        let p = event_to_payload(event, &[]);
+        let p = event_to_payload(event, &HashSet::new());
         assert_eq!(p["_taladb_event"], "insert");
         assert_eq!(p["collection"], "users");
         assert_eq!(p["document"]["name"], "Alice");
@@ -396,7 +419,7 @@ mod tests {
             .into_iter()
             .collect(),
         };
-        let p = event_to_payload(event, &[]);
+        let p = event_to_payload(event, &HashSet::new());
         assert_eq!(p["_taladb_event"], "update");
         assert_eq!(p["changes"]["age"], 31);
         assert!(p["changes"]["old_field"].is_null());
@@ -411,7 +434,7 @@ mod tests {
             collection: "items".into(),
             id: "xyz".into(),
         };
-        let p = event_to_payload(event, &[]);
+        let p = event_to_payload(event, &HashSet::new());
         assert_eq!(p["_taladb_event"], "delete");
         assert_eq!(p["collection"], "items");
         assert_eq!(p["id"], "xyz");
@@ -439,7 +462,7 @@ mod tests {
             id: doc.id.to_string(),
             document: doc,
         };
-        let exclude = vec!["embedding".to_string(), "score".to_string()];
+        let exclude: HashSet<&str> = ["embedding", "score"].into_iter().collect();
         let p = event_to_payload(event, &exclude);
 
         // Excluded fields absent.
@@ -463,7 +486,7 @@ mod tests {
             .into_iter()
             .collect(),
         };
-        let exclude = vec!["embedding".to_string()];
+        let exclude: HashSet<&str> = ["embedding"].into_iter().collect();
         let p = event_to_payload(event, &exclude);
 
         assert!(p["changes"].get("embedding").is_none());
@@ -482,7 +505,7 @@ mod tests {
             document: doc,
         };
         // Excluding a field that doesn't exist in the document is silently ignored.
-        let exclude = vec!["nonexistent_field".to_string()];
+        let exclude: HashSet<&str> = ["nonexistent_field"].into_iter().collect();
         let p = event_to_payload(event, &exclude);
 
         assert_eq!(p["document"]["name"], "Alice");
@@ -502,7 +525,7 @@ mod tests {
             id: doc.id.to_string(),
             document: doc,
         };
-        let p = event_to_payload(event, &[]);
+        let p = event_to_payload(event, &HashSet::new());
 
         assert_eq!(p["document"]["name"], "Bob");
         assert!(p["document"]["embedding"].is_array());

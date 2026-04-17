@@ -118,32 +118,63 @@ fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
+/// Multi-key comparator that follows the `sort` spec list.
+fn cmp_by_spec(a: &Document, b: &Document, sort: &[SortSpec]) -> std::cmp::Ordering {
+    for spec in sort {
+        let av = a.get(&spec.field);
+        let bv = b.get(&spec.field);
+        let ord = match (av, bv) {
+            (Some(x), Some(y)) => cmp_values(x, y),
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        let ord = if spec.direction == SortDirection::Desc {
+            ord.reverse()
+        } else {
+            ord
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 /// Sort `docs` in-place according to the given `sort` specs.
 pub fn sort_documents(docs: &mut [Document], sort: &[SortSpec]) {
     if sort.is_empty() {
         return;
     }
-    docs.sort_by(|a, b| {
-        for spec in sort {
-            let av = a.get(&spec.field);
-            let bv = b.get(&spec.field);
-            let ord = match (av, bv) {
-                (Some(x), Some(y)) => cmp_values(x, y),
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            };
-            let ord = if spec.direction == SortDirection::Desc {
-                ord.reverse()
-            } else {
-                ord
-            };
-            if ord != std::cmp::Ordering::Equal {
-                return ord;
-            }
-        }
-        std::cmp::Ordering::Equal
-    });
+    docs.sort_by(|a, b| cmp_by_spec(a, b, sort));
+}
+
+/// Sort only the first `keep` documents — the rest are discarded.
+///
+/// Complexity: O(n + k log k) where n = docs.len() and k = keep. Use when
+/// the caller only needs the smallest/first `keep` documents (e.g. `find`
+/// with sort + limit), instead of paying for a full O(n log n) sort.
+///
+/// Returns with `docs.len() == min(keep, docs.len())` and the first `keep`
+/// elements sorted according to `sort`.
+pub fn partial_sort_documents(docs: &mut Vec<Document>, sort: &[SortSpec], keep: usize) {
+    if sort.is_empty() {
+        docs.truncate(keep);
+        return;
+    }
+    if keep >= docs.len() {
+        docs.sort_by(|a, b| cmp_by_spec(a, b, sort));
+        return;
+    }
+    if keep == 0 {
+        docs.clear();
+        return;
+    }
+    // Partition so the first `keep` slots contain the `keep` smallest docs
+    // (in arbitrary order), then sort just those.
+    docs.select_nth_unstable_by(keep - 1, |a, b| cmp_by_spec(a, b, sort));
+    docs.truncate(keep);
+    docs.sort_by(|a, b| cmp_by_spec(a, b, sort));
 }
 
 // ---------------------------------------------------------------------------

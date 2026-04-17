@@ -210,8 +210,41 @@ fn parse_qs(url: &str) -> HashMap<String, String> {
     let qs = url.split_once('?').map(|(_, q)| q).unwrap_or("");
     qs.split('&')
         .filter_map(|kv| kv.split_once('='))
-        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .map(|(k, v)| (percent_decode(k), percent_decode(v)))
         .collect()
+}
+
+/// Decode a `application/x-www-form-urlencoded` fragment: `%XX` → byte,
+/// `+` → space.  Malformed `%` sequences are passed through verbatim so
+/// parsing never fails — the caller gets whatever bytes the client sent.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h * 16 + l) as u8);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

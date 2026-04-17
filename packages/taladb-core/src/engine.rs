@@ -47,6 +47,10 @@ pub trait ReadTxn {
     fn scan_all(&self, table: &str) -> Result<KvPairs, TalaDbError>;
     /// Return the names of every table in the database.
     fn list_tables(&self) -> Result<Vec<String>, TalaDbError>;
+    /// Count entries in `table` without loading them. Returns 0 if the table
+    /// does not exist. Used by `Collection::count(Filter::All)` to skip the
+    /// load-and-deserialise-everything path.
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,12 +136,9 @@ const MAX_INTERNED_NAMES: usize = 4096;
 /// Each unique name is leaked exactly once; subsequent calls return the same
 /// pointer. The intern set is bounded by [`MAX_INTERNED_NAMES`] to prevent
 /// unbounded memory growth when a workload generates many distinct names.
-///
-/// # Panics
-/// Panics if more than `MAX_INTERNED_NAMES` distinct names are interned in a
-/// single process — this indicates a programming error (e.g. dynamically
-/// generating thousands of collection names).
-fn intern_name(name: &str) -> &'static str {
+/// Returns [`TalaDbError::InvalidOperation`] if the cap is exceeded — the
+/// caller then sees the limit as a runtime error rather than a process crash.
+fn intern_name(name: &str) -> Result<&'static str, TalaDbError> {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
 
@@ -150,37 +151,40 @@ fn intern_name(name: &str) -> &'static str {
         p.into_inner()
     });
     if let Some(&existing) = guard.get(name) {
-        return existing;
+        return Ok(existing);
     }
-    assert!(
-        guard.len() < MAX_INTERNED_NAMES,
-        "[taladb] intern_name: exceeded {MAX_INTERNED_NAMES} interned table names; \
-         avoid dynamically generating unbounded collection or index names"
-    );
+    if guard.len() >= MAX_INTERNED_NAMES {
+        return Err(TalaDbError::InvalidOperation(format!(
+            "exceeded {MAX_INTERNED_NAMES} interned table names; avoid dynamically \
+             generating unbounded collection or index names"
+        )));
+    }
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
     guard.insert(leaked);
-    leaked
+    Ok(leaked)
 }
 
-fn table_def(name: &str) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
-    TableDefinition::new(intern_name(name))
+fn table_def(
+    name: &str,
+) -> Result<TableDefinition<'static, &'static [u8], &'static [u8]>, TalaDbError> {
+    Ok(TableDefinition::new(intern_name(name)?))
 }
 
 impl WriteTxn for RedbWriteTxn {
     fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), TalaDbError> {
-        let mut tbl = self.txn.open_table(table_def(table))?;
+        let mut tbl = self.txn.open_table(table_def(table)?)?;
         tbl.insert(key, value)?;
         Ok(())
     }
 
     fn delete(&mut self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
-        let mut tbl = self.txn.open_table(table_def(table))?;
+        let mut tbl = self.txn.open_table(table_def(table)?)?;
         let old = tbl.remove(key)?.map(|v| v.value().to_vec());
         Ok(old)
     }
 
     fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
-        match self.txn.open_table(table_def(table)) {
+        match self.txn.open_table(table_def(table)?) {
             Ok(tbl) => Ok(tbl.get(key)?.map(|v| v.value().to_vec())),
             Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
             Err(e) => Err(e.into()),
@@ -193,7 +197,7 @@ impl WriteTxn for RedbWriteTxn {
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
     ) -> Result<KvPairs, TalaDbError> {
-        match self.txn.open_table(table_def(table)) {
+        match self.txn.open_table(table_def(table)?) {
             Ok(tbl) => {
                 let iter = tbl.range::<&[u8]>((start, end))?;
                 let mut out = Vec::new();
@@ -231,7 +235,7 @@ impl ReadTxn for RedbReadTxn {
     }
 
     fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, TalaDbError> {
-        match self.txn.open_table(table_def(table)) {
+        match self.txn.open_table(table_def(table)?) {
             Ok(tbl) => Ok(tbl.get(key)?.map(|v| v.value().to_vec())),
             Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
             Err(e) => Err(e.into()),
@@ -244,7 +248,7 @@ impl ReadTxn for RedbReadTxn {
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
     ) -> Result<KvPairs, TalaDbError> {
-        match self.txn.open_table(table_def(table)) {
+        match self.txn.open_table(table_def(table)?) {
             Ok(tbl) => {
                 let iter = tbl.range::<&[u8]>((start, end))?;
                 let mut out = Vec::new();
@@ -260,7 +264,7 @@ impl ReadTxn for RedbReadTxn {
     }
 
     fn scan_all(&self, table: &str) -> Result<KvPairs, TalaDbError> {
-        match self.txn.open_table(table_def(table)) {
+        match self.txn.open_table(table_def(table)?) {
             Ok(tbl) => {
                 let iter = tbl.iter()?;
                 let mut out = Vec::new();
@@ -271,6 +275,15 @@ impl ReadTxn for RedbReadTxn {
                 Ok(out)
             }
             Err(redb::TableError::TableDoesNotExist(_)) => Ok(vec![]),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        use redb::ReadableTableMetadata;
+        match self.txn.open_table(table_def(table)?) {
+            Ok(tbl) => Ok(tbl.len()?),
+            Err(redb::TableError::TableDoesNotExist(_)) => Ok(0),
             Err(e) => Err(e.into()),
         }
     }

@@ -1,13 +1,14 @@
-use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 use web_time::{SystemTime, UNIX_EPOCH};
 
-thread_local! {
-    static PREV_MS: RefCell<u64> = const { RefCell::new(0) };
-    static COUNTER: RefCell<u32> = const { RefCell::new(0) };
-}
+/// Packs `(prev_ms_48 << 16) | seq_16` into a single u64 so that the common
+/// path is one lock-free CAS.  48 bits for the millisecond timestamp are
+/// sufficient until year 10895; 16 bits allow 65 536 distinct IDs per ms
+/// per process (any more would exceed even a very hot write loop).
+static ULID_STATE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn new_ulid_pub() -> Ulid {
     new_ulid()
@@ -18,20 +19,27 @@ fn new_ulid() -> Ulid {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    // Monotonic counter within the same millisecond keeps bulk inserts sortable.
-    let seq = PREV_MS.with(|prev| {
-        COUNTER.with(|cnt| {
-            let mut p = prev.borrow_mut();
-            let mut c = cnt.borrow_mut();
-            if ms == *p {
-                *c = c.wrapping_add(1);
-            } else {
-                *p = ms;
-                *c = 0;
-            }
-            *c
-        })
-    });
+
+    // Monotonic per-process counter within the same millisecond keeps bulk
+    // inserts from any thread sortable by ULID.
+    let seq = loop {
+        let cur = ULID_STATE.load(Ordering::Relaxed);
+        let cur_ms = cur >> 16;
+        let cur_seq = (cur & 0xFFFF) as u16;
+        let (next_ms, next_seq) = if ms == cur_ms {
+            (cur_ms, cur_seq.wrapping_add(1))
+        } else {
+            (ms, 0u16)
+        };
+        let packed = (next_ms << 16) | (next_seq as u64);
+        if ULID_STATE
+            .compare_exchange_weak(cur, packed, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            break next_seq;
+        }
+    };
+
     let mut buf = [0u8; 10]; // 80-bit random payload
     getrandom::fill(&mut buf).unwrap_or(());
     // Upper 16 bits of the random field = monotonic sequence; lower 64 bits = random.
