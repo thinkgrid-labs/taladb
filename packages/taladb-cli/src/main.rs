@@ -8,6 +8,9 @@
 //!   taladb count   <file> <collection>          — count documents
 //!   taladb drop    <file> <collection>          — drop an entire collection
 //!   taladb sync    <file> [collection]           — push all docs to configured HTTP endpoint
+//!   taladb studio  <file> [--port]               — start a local web UI
+
+mod studio;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -100,6 +103,25 @@ enum Command {
         field: String,
     },
 
+    /// Start a local web UI for browsing and editing the database.
+    ///
+    /// Serves a browser-based studio on http://localhost:<port> (default 4321).
+    /// Opens a browser window automatically unless --no-open is passed.
+    ///
+    /// Example:
+    ///   taladb studio myapp.db
+    ///   taladb studio myapp.db --port 8080
+    Studio {
+        /// Path to the TalaDB database file.
+        file: PathBuf,
+        /// Port to listen on (default: 4321).
+        #[arg(long, default_value_t = 4321)]
+        port: u16,
+        /// Do not open a browser window automatically.
+        #[arg(long)]
+        no_open: bool,
+    },
+
     /// Push all local documents to the configured HTTP endpoint.
     ///
     /// Reads `taladb.config.yml` / `taladb.config.json` from the database
@@ -162,6 +184,9 @@ fn main() -> Result<()> {
             collection,
             field,
         } => cmd_upgrade_vector_index(&file, &collection, &field),
+        Command::Studio { file, port, no_open } => {
+            studio::cmd_studio(&file, port, no_open)
+        }
         Command::Sync {
             file,
             collection,
@@ -539,7 +564,7 @@ fn http_post_with_retry(
 // Conversion helpers
 // ---------------------------------------------------------------------------
 
-fn value_to_json(v: &Value) -> serde_json::Value {
+pub(crate) fn value_to_json(v: &Value) -> serde_json::Value {
     match v {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),

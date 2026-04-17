@@ -38,6 +38,69 @@ taladb --version
 
 ## Commands
 
+### `studio` — local web UI
+
+Start a local browser-based UI for exploring and editing a TalaDB database. The server runs until you press Ctrl+C.
+
+```sh
+taladb studio ./myapp.db
+```
+
+A browser window opens automatically at `http://localhost:4321`. The UI shows all collections in the sidebar, displays documents in a paginated table, lets you filter with the search bar, inspect the full JSON of any document, and delete individual documents.
+
+```sh
+# Use a different port
+taladb studio ./myapp.db --port 8080
+
+# Print the URL but do not open a browser
+taladb studio ./myapp.db --no-open
+```
+
+**Flags**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `4321` | Port to listen on |
+| `--no-open` | `false` | Skip opening a browser window |
+
+The database file is opened read-write. Deletions made through the UI are permanent and cannot be undone.
+
+**Platform compatibility**
+
+`taladb studio` opens any `.db` file on disk using the Rust core directly — it is not specific to any one SDK.
+
+| Platform | Works? | Notes |
+|---|---|---|
+| **Node.js** (`@taladb/node`) | ✅ Yes | Primary use case — point at the same `.db` file your app uses |
+| **React Native** | ✅ Yes | Copy the `.db` off the device first (see below) |
+| **Browser / OPFS** | ✗ No | OPFS files live inside the browser's sandboxed filesystem, unreachable from the CLI |
+| **Cloudflare Workers** | ✗ No | State lives in Durable Objects storage, not a local file |
+
+For **React Native**, pull the file with `adb` (Android) or Xcode's device file browser (iOS), then open it:
+
+```sh
+adb pull /data/data/com.myapp/files/myapp.db ./myapp.db
+taladb studio ./myapp.db
+```
+
+For **browser / OPFS**, export a snapshot from within your app and download it, then open the downloaded file:
+
+```ts
+// In your app — export to a downloadable file
+const bytes = await db.exportSnapshot()
+const a = Object.assign(document.createElement('a'), {
+  href: URL.createObjectURL(new Blob([bytes])),
+  download: 'myapp.db',
+})
+a.click()
+```
+
+```sh
+taladb studio ~/Downloads/myapp.db
+```
+
+---
+
 ### `inspect` — database overview
 
 Print all collections, their document counts, and any vector indexes defined on them.

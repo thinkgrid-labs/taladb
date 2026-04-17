@@ -15,14 +15,14 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 Better DX drives adoption and reduces time-to-production.
 
-### HTTP push sync 
+### Sync 
 
 **Future extensions** of this feature (not in scope for initial release):
 - Native NoSQL adapters (`sync.adapter: mongodb | firestore | dynamodb`) with direct connection strings, removing the need for an intermediate API
 - Bi-directional pull: `taladb sync --pull` fetches from the remote and merges locally
 - Per-collection sync config (sync some collections, skip others)
 
-### `taladb studio` — local web UI
+### ~~`taladb studio` — local web UI~~ ✓ Shipped in 0.7.3
 
 A browser-based GUI (served by `taladb-cli`) for browsing collections, running ad-hoc queries, inspecting indexes, and visualising query plans — similar to MongoDB Compass but for local files.
 
