@@ -1,6 +1,13 @@
+use std::ops::Bound;
+
+use crate::document::{Document, Value};
 use crate::engine::{StorageBackend, WriteTxn};
 use crate::error::TalaDbError;
-use crate::index::{META_VERSION_KEY, META_VERSION_TABLE};
+use crate::index::{
+    compound_table_name, docs_table_name, encode_compound_key, encode_index_key, index_table_name,
+    CompoundIndexDef, IndexDef, META_COMPOUND_TABLE, META_INDEXES_TABLE, META_VERSION_KEY,
+    META_VERSION_TABLE,
+};
 
 /// A single schema migration step.
 pub struct Migration {
@@ -9,6 +16,25 @@ pub struct Migration {
     pub description: &'static str,
     pub up: fn(&mut dyn WriteTxn) -> Result<(), TalaDbError>,
 }
+
+/// Schema version this build of TalaDB targets — bump whenever a
+/// [`BUILTIN_MIGRATIONS`] entry is added.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Migrations TalaDB runs automatically on every [`Database::open*`].
+///
+/// v0 → v1 rewrites every single-field and compound secondary index using the
+/// current [`encode_index_key`]/[`encode_compound_key`] output.  An earlier
+/// release stored string index keys without a null-escape terminator; after
+/// that encoder was fixed, old keys fell outside the range produced by
+/// `index_range_eq`, so equality filters against persisted data returned zero
+/// rows.  This migration re-derives every index from the live docs table.
+pub const BUILTIN_MIGRATIONS: &[Migration] = &[Migration {
+    from_version: 0,
+    to_version: 1,
+    description: "re-encode secondary indexes after string null-terminator fix",
+    up: rebuild_all_secondary_indexes,
+}];
 
 /// Read the current database version (0 if unset).
 pub fn read_version(txn: &dyn crate::engine::ReadTxn) -> Result<u32, TalaDbError> {
@@ -63,5 +89,78 @@ pub fn run_migrations(
         current_version = migration.to_version;
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Built-in migration bodies
+// ---------------------------------------------------------------------------
+
+fn rebuild_all_secondary_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
+    rebuild_secondary_indexes(txn)?;
+    rebuild_compound_indexes(txn)?;
+    Ok(())
+}
+
+/// Clear and re-derive every single-field secondary index from the current
+/// docs table using the current [`encode_index_key`] output.
+pub fn rebuild_secondary_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
+    let meta = txn.range(META_INDEXES_TABLE, Bound::Unbounded, Bound::Unbounded)?;
+    let mut defs: Vec<IndexDef> = Vec::with_capacity(meta.len());
+    for (_, v) in meta {
+        defs.push(postcard::from_bytes(&v)?);
+    }
+
+    for def in &defs {
+        let idx_table = index_table_name(&def.collection, &def.field);
+        let old_keys = txn.range(&idx_table, Bound::Unbounded, Bound::Unbounded)?;
+        for (k, _) in old_keys {
+            txn.delete(&idx_table, &k)?;
+        }
+
+        let docs_table = docs_table_name(&def.collection);
+        let docs = txn.range(&docs_table, Bound::Unbounded, Bound::Unbounded)?;
+        for (_, doc_bytes) in docs {
+            let doc: Document = postcard::from_bytes(&doc_bytes)?;
+            if let Some(val) = doc.get(&def.field) {
+                if let Some(idx_key) = encode_index_key(val, doc.id) {
+                    txn.put(&idx_table, &idx_key, &[])?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Clear and re-derive every compound secondary index from the current docs
+/// table using the current [`encode_compound_key`] output.
+pub fn rebuild_compound_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbError> {
+    let meta = txn.range(META_COMPOUND_TABLE, Bound::Unbounded, Bound::Unbounded)?;
+    let mut defs: Vec<CompoundIndexDef> = Vec::with_capacity(meta.len());
+    for (_, v) in meta {
+        defs.push(postcard::from_bytes(&v)?);
+    }
+
+    for def in &defs {
+        let fields: Vec<&str> = def.fields.iter().map(|s| s.as_str()).collect();
+        let ctable = compound_table_name(&def.collection, &fields);
+
+        let old_keys = txn.range(&ctable, Bound::Unbounded, Bound::Unbounded)?;
+        for (k, _) in old_keys {
+            txn.delete(&ctable, &k)?;
+        }
+
+        let docs_table = docs_table_name(&def.collection);
+        let docs = txn.range(&docs_table, Bound::Unbounded, Bound::Unbounded)?;
+        for (_, doc_bytes) in docs {
+            let doc: Document = postcard::from_bytes(&doc_bytes)?;
+            let vals: Option<Vec<&Value>> = def.fields.iter().map(|f| doc.get(f)).collect();
+            if let Some(v) = vals {
+                if let Some(key) = encode_compound_key(&v, doc.id) {
+                    txn.put(&ctable, &key, &[])?;
+                }
+            }
+        }
+    }
     Ok(())
 }

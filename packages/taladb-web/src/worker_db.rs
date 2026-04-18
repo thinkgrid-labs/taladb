@@ -12,6 +12,8 @@ use wasm_bindgen::prelude::*;
 #[cfg(not(feature = "cf-workers"))]
 use web_sys::FileSystemSyncAccessHandle;
 
+#[cfg(not(feature = "cf-workers"))]
+use taladb_core::engine::RedbBackend;
 use taladb_core::{
     Changeset, Database, Filter, HnswOptions, LastWriteWins, SyncAdapter, Update, Value,
     VectorMetric,
