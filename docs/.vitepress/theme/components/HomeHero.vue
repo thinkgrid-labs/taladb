@@ -6,7 +6,6 @@
         <div class="hero-eyebrow">
           <span class="badge badge-rust">Built in Rust</span>
           <span class="badge badge-open">Open Source</span>
-          <span class="badge badge-beta">Beta</span>
         </div>
 
         <h1 class="hero-headline">
