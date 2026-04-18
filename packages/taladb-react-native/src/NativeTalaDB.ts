@@ -60,6 +60,51 @@ export interface Spec extends TurboModule {
   dropIndex(collection: string, field: string): void;
   createFtsIndex(collection: string, field: string): void;
   dropFtsIndex(collection: string, field: string): void;
+
+  // ------------------------------------------------------------------
+  // Vector index + similarity search
+  //
+  // Sync CRUD is routed through the JSI HostObject; these stubs exist so
+  // TurboModule Codegen sees the full surface area. At runtime, all calls
+  // hit `global.__TalaDB__` directly — the spec types are advisory.
+  // ------------------------------------------------------------------
+
+  createVectorIndex(
+    collection: string,
+    field: string,
+    dimensions: number,
+    opts: Object | null,
+  ): void;
+  dropVectorIndex(collection: string, field: string): void;
+  upgradeVectorIndex(collection: string, field: string): void;
+
+  /**
+   * Hybrid similarity search. `query` accepts a `Float32Array` (zero-copy
+   * fast path) or `number[]` — the HostObject handles both at runtime.
+   */
+  findNearest(
+    collection: string,
+    field: string,
+    query: Array<number>,
+    topK: number,
+    filter: Object | null,
+  ): Array<Object>;
+
+  // ------------------------------------------------------------------
+  // Async variants — work runs on a background OS thread. Use these for
+  // large collection scans or unfiltered vector searches to keep the JS
+  // thread responsive.
+  // ------------------------------------------------------------------
+
+  findNearestAsync(
+    collection: string,
+    field: string,
+    query: Array<number>,
+    topK: number,
+    filter: Object | null,
+  ): Promise<Array<Object>>;
+
+  findAsync(collection: string, filter: Object | null): Promise<Array<Object>>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('TalaDB');

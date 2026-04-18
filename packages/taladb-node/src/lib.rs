@@ -1,9 +1,11 @@
+use napi::bindgen_prelude::{AsyncTask, Float32Array};
+use napi::{Env, Task};
 use napi_derive::napi;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use taladb_core::{
     Collection, Database, Filter, HnswOptions, HttpSyncHook, TalaDbConfig, TalaDbError, Update,
-    Value, VectorMetric,
+    Value, VectorMetric, VectorSearchResult,
 };
 
 fn err_to_napi(e: TalaDbError) -> napi::Error {
@@ -327,7 +329,9 @@ impl TalaDBNode {
             Some(hook) => col.with_sync_hook(Arc::clone(hook)),
             None => col,
         };
-        Ok(CollectionNode { inner: col })
+        Ok(CollectionNode {
+            inner: Arc::new(col),
+        })
     }
 }
 
@@ -358,7 +362,7 @@ fn build_sync_hook(
 
 #[napi]
 pub struct CollectionNode {
-    inner: Collection,
+    inner: Arc<Collection>,
 }
 
 #[napi]
@@ -509,9 +513,119 @@ impl CollectionNode {
             .find_nearest(&field, &query_f32, top_k as usize, pre_filter)
             .map_err(err_to_napi)?;
 
-        Ok(results
-            .iter()
-            .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
-            .collect())
+        Ok(format_nearest(&results))
+    }
+
+    /// Zero-copy Float32Array fast path. Avoids the f64→f32 conversion loop
+    /// used by `findNearest(number[])`, which matters for large embeddings
+    /// (768/1024/1536 dims) called on the hot path.
+    #[napi(js_name = "findNearestF32")]
+    pub fn find_nearest_f32(
+        &self,
+        field: String,
+        query: Float32Array,
+        top_k: u32,
+        filter: Option<JsonValue>,
+    ) -> napi::Result<Vec<JsonValue>> {
+        let pre_filter = match filter {
+            Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
+            _ => None,
+        };
+
+        let results = self
+            .inner
+            .find_nearest(&field, query.as_ref(), top_k as usize, pre_filter)
+            .map_err(err_to_napi)?;
+
+        Ok(format_nearest(&results))
+    }
+
+    /// Async variant of `findNearest` — runs on the libuv thread pool so large
+    /// scans or unfiltered HNSW queries don't block the JS thread. Accepts a
+    /// `Float32Array` for zero-copy embedding transfer.
+    #[napi(js_name = "findNearestAsync", ts_return_type = "Promise<Array<any>>")]
+    pub fn find_nearest_async(
+        &self,
+        field: String,
+        query: Float32Array,
+        top_k: u32,
+        filter: Option<JsonValue>,
+    ) -> napi::Result<AsyncTask<FindNearestTask>> {
+        let pre_filter = match filter {
+            Some(ref v) if !v.is_null() => Some(json_to_filter(v)?),
+            _ => None,
+        };
+        Ok(AsyncTask::new(FindNearestTask {
+            collection: Arc::clone(&self.inner),
+            field,
+            query: query.as_ref().to_vec(),
+            top_k: top_k as usize,
+            filter: pre_filter,
+        }))
+    }
+
+    /// Async variant of `find` — runs on the libuv thread pool so large
+    /// collection scans don't block the JS thread.
+    #[napi(js_name = "findAsync", ts_return_type = "Promise<Array<any>>")]
+    pub fn find_async(&self, filter: JsonValue) -> napi::Result<AsyncTask<FindTask>> {
+        let f = json_to_filter(&filter)?;
+        Ok(AsyncTask::new(FindTask {
+            collection: Arc::clone(&self.inner),
+            filter: f,
+        }))
+    }
+}
+
+fn format_nearest(results: &[VectorSearchResult]) -> Vec<JsonValue> {
+    results
+        .iter()
+        .map(|r| serde_json::json!({ "document": doc_to_json(&r.document), "score": r.score }))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// AsyncTask impls — background work on the libuv thread pool
+// ---------------------------------------------------------------------------
+
+pub struct FindNearestTask {
+    collection: Arc<Collection>,
+    field: String,
+    query: Vec<f32>,
+    top_k: usize,
+    filter: Option<Filter>,
+}
+
+impl Task for FindNearestTask {
+    type Output = Vec<VectorSearchResult>;
+    type JsValue = Vec<JsonValue>;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.collection
+            .find_nearest(&self.field, &self.query, self.top_k, self.filter.clone())
+            .map_err(err_to_napi)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(format_nearest(&output))
+    }
+}
+
+pub struct FindTask {
+    collection: Arc<Collection>,
+    filter: Filter,
+}
+
+impl Task for FindTask {
+    type Output = Vec<taladb_core::Document>;
+    type JsValue = Vec<JsonValue>;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.collection
+            .find(self.filter.clone())
+            .map_err(err_to_napi)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output.iter().map(doc_to_json).collect())
     }
 }

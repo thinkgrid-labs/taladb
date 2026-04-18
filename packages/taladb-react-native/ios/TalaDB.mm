@@ -149,4 +149,39 @@ RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(void, dropIndex:(NSString *)collection field
 RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(void, createFtsIndex:(NSString *)collection field:(NSString *)field) {}
 RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(void, dropFtsIndex:(NSString *)collection field:(NSString *)field) {}
 
+// Vector index + findNearest — JSI-only; stubs exist to satisfy TurboModule Codegen.
+
+RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(void, createVectorIndex:(NSString *)collection
+                                                       field:(NSString *)field
+                                                  dimensions:(double)dimensions
+                                                        opts:(NSDictionary *)opts) {}
+RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(void, dropVectorIndex:(NSString *)collection field:(NSString *)field) {}
+RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(void, upgradeVectorIndex:(NSString *)collection field:(NSString *)field) {}
+RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(NSArray *, findNearest:(NSString *)collection
+                                                      field:(NSString *)field
+                                                      query:(NSArray *)query
+                                                       topK:(double)topK
+                                                     filter:(NSDictionary *)filter) {
+    return @[];
+}
+
+// Async variants use the standard Promise bridge — JSI-only at runtime.
+
+RCT_EXPORT_METHOD(findNearestAsync:(NSString *)collection
+                              field:(NSString *)field
+                              query:(NSArray *)query
+                               topK:(double)topK
+                             filter:(NSDictionary *)filter
+                            resolve:(RCTPromiseResolveBlock)resolve
+                             reject:(RCTPromiseRejectBlock)reject) {
+    resolve(@[]);
+}
+
+RCT_EXPORT_METHOD(findAsync:(NSString *)collection
+                     filter:(NSDictionary *)filter
+                    resolve:(RCTPromiseResolveBlock)resolve
+                     reject:(RCTPromiseRejectBlock)reject) {
+    resolve(@[]);
+}
+
 @end

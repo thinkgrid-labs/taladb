@@ -30,9 +30,15 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::Path;
-use std::sync::Arc;
+use std::slice;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 
-use taladb_core::{Database, Filter, HttpSyncHook, SyncHook, TalaDbConfig, Update, Value};
+use taladb_core::{
+    Database, Filter, HnswOptions, HttpSyncHook, SyncHook, TalaDbConfig, Update, Value,
+    VectorMetric,
+};
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -751,6 +757,426 @@ fn json_to_filter(v: &serde_json::Value) -> Option<Filter> {
         _ => Some(Filter::And(filters)),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Vector index management
+// ---------------------------------------------------------------------------
+
+fn parse_vector_metric(m: *const c_char) -> Option<VectorMetric> {
+    if m.is_null() {
+        return None;
+    }
+    let s = match unsafe { CStr::from_ptr(m) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    match s {
+        "cosine" => Some(VectorMetric::Cosine),
+        "dot" => Some(VectorMetric::Dot),
+        "euclidean" => Some(VectorMetric::Euclidean),
+        _ => None,
+    }
+}
+
+fn parse_hnsw_opts(json: *const c_char) -> Option<HnswOptions> {
+    if json.is_null() {
+        return None;
+    }
+    let s = unsafe { CStr::from_ptr(json) }.to_str().ok()?;
+    serde_json::from_str::<HnswOptions>(s).ok()
+}
+
+/// Create a vector index. `metric` and `hnsw_json` may be NULL.
+/// Returns 1 on success, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_create_vector_index(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    field: *const c_char,
+    dimensions: usize,
+    metric: *const c_char,
+    hnsw_json: *const c_char,
+) -> i32 {
+    let (h, col, fld) = match (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(field),
+    ) {
+        (Some(h), Some(c), Some(f)) => (h, c, f),
+        _ => return -1,
+    };
+    let m = parse_vector_metric(metric);
+    let hnsw = parse_hnsw_opts(hnsw_json);
+    let c = match h.db.collection(&col) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    match c.create_vector_index(&fld, dimensions, m, hnsw) {
+        Ok(()) => 1,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+/// Drop a vector index. Returns 1 on success, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_drop_vector_index(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    field: *const c_char,
+) -> i32 {
+    let (h, col, fld) = match (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(field),
+    ) {
+        (Some(h), Some(c), Some(f)) => (h, c, f),
+        _ => return -1,
+    };
+    match h.db.collection(&col).and_then(|c| c.drop_vector_index(&fld)) {
+        Ok(()) => 1,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+/// Rebuild the HNSW graph for a vector index. No-op when HNSW is disabled or
+/// the index is flat-only. Returns 1 on success, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_upgrade_vector_index(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    field: *const c_char,
+) -> i32 {
+    let (h, col, fld) = match (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(field),
+    ) {
+        (Some(h), Some(c), Some(f)) => (h, c, f),
+        _ => return -1,
+    };
+    match h.db.collection(&col).and_then(|c| c.upgrade_vector_index(&fld)) {
+        Ok(()) => 1,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// findNearest — Float32 raw-pointer fast path
+// ---------------------------------------------------------------------------
+
+/// Internal: run a find_nearest given a borrowed Database + raw query pointer.
+///
+/// # Safety
+/// `query_ptr` must point to `query_len` consecutive `f32` values.
+fn run_find_nearest(
+    db: &Database,
+    collection: &str,
+    field: &str,
+    query: &[f32],
+    top_k: usize,
+    filter_json: Option<&str>,
+) -> Result<String, taladb_core::TalaDbError> {
+    let pre_filter = filter_json.and_then(|s| {
+        let v: serde_json::Value = serde_json::from_str(s).ok()?;
+        if v.is_null() || (v.is_object() && v.as_object().is_some_and(|m| m.is_empty())) {
+            None
+        } else {
+            json_to_filter(&v)
+        }
+    });
+    let col = db.collection(collection)?;
+    let results = col.find_nearest(field, query, top_k, pre_filter)?;
+    let arr: Vec<serde_json::Value> = results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "document": doc_to_json(&r.document),
+                "score": r.score,
+            })
+        })
+        .collect();
+    Ok(serde_json::to_string(&arr).unwrap_or_default())
+}
+
+/// Synchronous `find_nearest` with a zero-copy Float32 query vector.
+///
+/// `query_ptr` — pointer to `query_len` consecutive f32 values (caller-owned).
+/// `filter_json` — optional pre-filter JSON (may be NULL / "{}" / "null").
+///
+/// Returns a JSON array string `[{document, score}, ...]`, or NULL on error.
+/// Caller must free with `taladb_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_find_nearest(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    field: *const c_char,
+    query_ptr: *const f32,
+    query_len: usize,
+    top_k: usize,
+    filter_json: *const c_char,
+) -> *mut c_char {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return std::ptr::null_mut(),
+    };
+    let col = match cstr_to_string(collection) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+    let fld = match cstr_to_string(field) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+    if query_ptr.is_null() && query_len != 0 {
+        set_last_error("null query pointer".to_string());
+        return std::ptr::null_mut();
+    }
+    let query: &[f32] = if query_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(query_ptr, query_len) }
+    };
+    let filter = if filter_json.is_null() {
+        None
+    } else {
+        match unsafe { CStr::from_ptr(filter_json) }.to_str() {
+            Ok(s) => Some(s),
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+    match run_find_nearest(&h.db, &col, &fld, query, top_k, filter) {
+        Ok(json) => to_cstring(json),
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Async job API — background-thread dispatch for heavy queries
+//
+// The JS wrapper calls `*_start` to kick a job, then polls `taladb_job_poll`
+// (non-blocking) via `setImmediate` until the job reports done. It then
+// takes the result with `taladb_job_take_result`, which also frees the job.
+//
+// Lifetime contract: the `TalaDbHandle` passed to `*_start` **must outlive**
+// any in-flight job that references it. The C++ HostObject enforces this by
+// not calling `taladb_close` while any job is pending.
+// ---------------------------------------------------------------------------
+
+/// A background job handle. Opaque to the caller.
+pub struct TalaDbJob {
+    done: Arc<AtomicBool>,
+    result: Arc<Mutex<Option<Result<String, String>>>>,
+    // Join handle kept so we can join on take_result to avoid races.
+    thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+fn spawn_job<F>(handle: *mut TalaDbHandle, work: F) -> *mut TalaDbJob
+where
+    F: FnOnce(&TalaDbHandle) -> Result<String, String> + Send + 'static,
+{
+    let done = Arc::new(AtomicBool::new(false));
+    let result = Arc::new(Mutex::new(None));
+
+    let done_thread = Arc::clone(&done);
+    let result_thread = Arc::clone(&result);
+    // Pass the pointer as an integer — `usize` is Send, raw pointers are not.
+    // The C++ HostObject guarantees the handle outlives the worker thread.
+    let handle_addr = handle as usize;
+
+    let t = thread::spawn(move || {
+        // Safety: the C++ caller guarantees the handle outlives the job.
+        let h = unsafe { &*(handle_addr as *mut TalaDbHandle) };
+        let r = work(h);
+        if let Ok(mut slot) = result_thread.lock() {
+            *slot = Some(r);
+        }
+        done_thread.store(true, Ordering::Release);
+    });
+
+    Box::into_raw(Box::new(TalaDbJob {
+        done,
+        result,
+        thread: Mutex::new(Some(t)),
+    }))
+}
+
+/// Non-blocking poll. Returns 1 if the job has finished, 0 if still running.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_job_poll(job: *mut TalaDbJob) -> i32 {
+    if job.is_null() {
+        return -1;
+    }
+    let job = unsafe { &*job };
+    if job.done.load(Ordering::Acquire) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Wait for the job to complete, take its result, and free the job.
+/// Returns the result JSON string on success, or NULL on error (see
+/// `taladb_last_error`). Always consumes and frees the job.
+/// Caller must free the returned string with `taladb_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_job_take_result(job: *mut TalaDbJob) -> *mut c_char {
+    if job.is_null() {
+        return std::ptr::null_mut();
+    }
+    let job = unsafe { Box::from_raw(job) };
+    // Join the worker thread so the result is definitely present.
+    // Take + drop the guard in its own scope so it doesn't outlive `job`.
+    let thread_opt = {
+        let mut g = match job.thread.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        g.take()
+    };
+    if let Some(t) = thread_opt {
+        let _ = t.join();
+    }
+    let r = {
+        let mut g = match job.result.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        g.take()
+    };
+    let r = match r {
+        Some(r) => r,
+        None => {
+            set_last_error("job produced no result".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    match r {
+        Ok(json) => to_cstring(json),
+        Err(e) => {
+            set_last_error(e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Cancel (detach) the job and free the handle without waiting for the result.
+/// The worker thread continues to completion in the background; its result is
+/// dropped. Safe to call at any time.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_job_cancel(job: *mut TalaDbJob) {
+    if job.is_null() {
+        return;
+    }
+    let job = unsafe { Box::from_raw(job) };
+    // Detach — don't join. The thread will exit on its own; AtomicBool + Arc
+    // keep its writes safe even after the job struct drops.
+    let detached = {
+        let mut g = match job.thread.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        g.take()
+    };
+    drop(detached);
+}
+
+/// Start a `find_nearest` in a background thread. Returns a job handle, or
+/// NULL on immediate error (bad args). The Float32 query vector is copied
+/// into the thread before the call returns, so `query_ptr` may be freed
+/// immediately after this function returns.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_find_nearest_start(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    field: *const c_char,
+    query_ptr: *const f32,
+    query_len: usize,
+    top_k: usize,
+    filter_json: *const c_char,
+) -> *mut TalaDbJob {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    let col = match cstr_to_string(collection) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+    let fld = match cstr_to_string(field) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+    if query_ptr.is_null() && query_len != 0 {
+        return std::ptr::null_mut();
+    }
+    // Copy the query vector so the caller doesn't have to keep it alive.
+    let query_owned: Vec<f32> = if query_len == 0 {
+        Vec::new()
+    } else {
+        unsafe { slice::from_raw_parts(query_ptr, query_len) }.to_vec()
+    };
+    let filter_owned: Option<String> = if filter_json.is_null() {
+        None
+    } else {
+        cstr_to_string(filter_json)
+    };
+
+    spawn_job(handle, move |h| {
+        run_find_nearest(
+            &h.db,
+            &col,
+            &fld,
+            &query_owned,
+            top_k,
+            filter_owned.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+}
+
+/// Start a `find` in a background thread. Returns a job handle, or NULL on
+/// immediate error.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_find_start(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    filter_json: *const c_char,
+) -> *mut TalaDbJob {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    let col = match cstr_to_string(collection) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+    let filter_owned = cstr_to_string(filter_json).unwrap_or_else(|| "{}".to_string());
+
+    spawn_job(handle, move |h| {
+        let collection = h.db.collection(&col).map_err(|e| e.to_string())?;
+        let filter = parse_filter(&filter_owned);
+        let docs = collection.find(filter).map_err(|e| e.to_string())?;
+        let json_docs: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
+        serde_json::to_string(&json_docs).map_err(|e| e.to_string())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Update helper (existing)
+// ---------------------------------------------------------------------------
 
 fn parse_update(json: &str) -> Option<Update> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;

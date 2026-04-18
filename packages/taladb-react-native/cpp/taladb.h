@@ -150,6 +150,94 @@ void taladb_drop_index      (TalaDbHandle *handle, const char *collection, const
 void taladb_create_fts_index(TalaDbHandle *handle, const char *collection, const char *field);
 void taladb_drop_fts_index  (TalaDbHandle *handle, const char *collection, const char *field);
 
+/* -------------------------------------------------------------------------
+ * Vector index management
+ *
+ *   metric    — "cosine" (default), "dot", or "euclidean". NULL ⇒ cosine.
+ *   hnsw_json — JSON-encoded HnswOptions, or NULL for flat index.
+ * ---------------------------------------------------------------------- */
+
+int32_t taladb_create_vector_index(TalaDbHandle *handle,
+                                   const char   *collection,
+                                   const char   *field,
+                                   size_t        dimensions,
+                                   const char   *metric,
+                                   const char   *hnsw_json);
+
+int32_t taladb_drop_vector_index   (TalaDbHandle *handle, const char *collection, const char *field);
+int32_t taladb_upgrade_vector_index(TalaDbHandle *handle, const char *collection, const char *field);
+
+/* -------------------------------------------------------------------------
+ * findNearest — Float32 zero-copy fast path
+ *
+ * query_ptr / query_len address `query_len` consecutive f32 values. Caller
+ * retains ownership; the buffer may be freed immediately after the call.
+ * filter_json may be NULL / "{}" / "null" to search without a pre-filter.
+ *
+ * Returns a JSON array string `[{document, score}, ...]`, or NULL on error.
+ * Caller must free with taladb_free_string.
+ * ---------------------------------------------------------------------- */
+
+char *taladb_find_nearest(TalaDbHandle *handle,
+                          const char   *collection,
+                          const char   *field,
+                          const float  *query_ptr,
+                          size_t        query_len,
+                          size_t        top_k,
+                          const char   *filter_json);
+
+/* -------------------------------------------------------------------------
+ * Async job API — run heavy queries on a background thread.
+ *
+ * Flow
+ * ----
+ *   TalaDbJob *j = taladb_find_nearest_start(...);  // spawns worker thread
+ *   while (taladb_job_poll(j) == 0) { /* yield to JS event loop */ }
+ *   char *json = taladb_job_take_result(j);         // frees the job
+ *
+ * Lifetime contract
+ * -----------------
+ * The handle passed to `*_start` MUST remain valid until the job has been
+ * taken (via take_result) or cancelled (via cancel). The C++ HostObject
+ * enforces this by not calling taladb_close while jobs are outstanding.
+ * ---------------------------------------------------------------------- */
+
+typedef struct TalaDbJob TalaDbJob;
+
+/** Kick a background `find_nearest`. Returns NULL on immediate arg error. */
+TalaDbJob *taladb_find_nearest_start(TalaDbHandle *handle,
+                                     const char   *collection,
+                                     const char   *field,
+                                     const float  *query_ptr,
+                                     size_t        query_len,
+                                     size_t        top_k,
+                                     const char   *filter_json);
+
+/** Kick a background `find`. Returns NULL on immediate arg error. */
+TalaDbJob *taladb_find_start(TalaDbHandle *handle,
+                             const char   *collection,
+                             const char   *filter_json);
+
+/** Non-blocking. Returns 1 if complete, 0 if still running, -1 on NULL job. */
+int32_t taladb_job_poll(TalaDbJob *job);
+
+/**
+ * Join the worker, take its result, and free the job.
+ * Returns a JSON string on success, or NULL on error (see taladb_last_error).
+ * Caller must free with taladb_free_string. Always frees the job.
+ */
+char *taladb_job_take_result(TalaDbJob *job);
+
+/** Detach the job and free the handle without waiting. */
+void taladb_job_cancel(TalaDbJob *job);
+
+/**
+ * Last error message for the current thread, or NULL.
+ * The returned pointer is valid until the next taladb_* call on this thread.
+ * Do NOT free.
+ */
+const char *taladb_last_error(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
