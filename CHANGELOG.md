@@ -5,7 +5,28 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.3] - 2026-04-18
+## [0.7.4] - 2026-04-18
+
+### Added
+
+- **`@taladb/react-native` — Float32Array zero-copy fast path** — `findNearest` now accepts a `Float32Array` directly via JSI `ArrayBuffer` introspection, bypassing JSON serialisation entirely. Eliminates the per-call f64→f32 conversion loop for large embeddings (768 / 1024 / 1536 dimensions). Falls back to `number[]` automatically for callers that pass plain arrays.
+
+- **`@taladb/react-native` — async vector search + full-scan** — two new JSI methods dispatched to background OS threads via a `TalaDbJob` handle:
+  - `findNearestAsync(collection, field, query, topK, filter?)` → `Promise<Array>` — runs HNSW / flat ANN search off the JS thread; avoids dropping frames during large unfiltered scans.
+  - `findAsync(collection, filter?)` → `Promise<Array>` — full collection scan on a background thread; keeps the JS thread responsive for paginated or unbounded queries.
+  - Both return native Promises polled via `setImmediate` — no CallInvoker plumbing required, compatible with Hermes and JSC without changes to the Android or iOS module layer.
+
+- **`@taladb/node` — Float32Array zero-copy fast path** — new `findNearestF32(field, query: Float32Array, topK, filter?)` method on `CollectionNode`. Passes the underlying `f32` slice directly to `Collection::find_nearest` without allocating a conversion buffer.
+
+- **`@taladb/node` — async variants via napi `AsyncTask`** — two new methods that run on the libuv thread pool:
+  - `findNearestAsync(field, query: Float32Array, topK, filter?)` → `Promise<Array<{ document, score }>>` — offloads ANN search to a worker thread; resolves on the JS thread.
+  - `findAsync(filter?)` → `Promise<Array>` — offloads full collection scan; useful for large datasets where blocking the event loop would be noticeable.
+
+- **Vector index management — React Native** — `createVectorIndex`, `dropVectorIndex`, and `upgradeVectorIndex` are now exposed through the JSI HostObject and declared in the TurboModule Codegen spec (`NativeTalaDB.ts`). Supports `flat` and `hnsw` index types; `opts` accepts `{ metric, m, efConstruction }`.
+
+[0.7.4]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.3...v0.7.4
+
+## [0.7.3] - 2026-04-17
 
 ### Added
 

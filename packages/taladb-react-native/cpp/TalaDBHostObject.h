@@ -50,6 +50,23 @@ private:
     // Returns "{}" when the value is null/undefined.
     static std::string valueToFilterJson(facebook::jsi::Runtime &rt,
                                          const facebook::jsi::Value &val);
+
+    // ------------------------------------------------------------------
+    // Float32Array helpers — zero-copy extraction from JSI
+    // ------------------------------------------------------------------
+    //
+    // Accepts a JS `Float32Array` *or* a plain `number[]`. Populates `out`
+    // with a copy of the values (kept alive by the caller for the FFI call).
+    // Throws JSError when the value is neither.
+    static void extractF32Query(facebook::jsi::Runtime &rt,
+                                const facebook::jsi::Value &val,
+                                std::vector<float> &out);
+
+    // Poll a TalaDbJob from the JS thread via setImmediate until done,
+    // then resolve / reject a Promise with the result / error.
+    static facebook::jsi::Value awaitJobAsPromise(facebook::jsi::Runtime &rt,
+                                                  TalaDbJob *job,
+                                                  bool parseAsJson);
 };
 
 } // namespace taladb

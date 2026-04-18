@@ -125,4 +125,37 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
     override fun dropIndex(collection: String, field: String) {}
     override fun createFtsIndex(collection: String, field: String) {}
     override fun dropFtsIndex(collection: String, field: String) {}
+
+    // Vector index + findNearest — JSI-only; stubs satisfy Codegen.
+
+    override fun createVectorIndex(
+        collection: String,
+        field: String,
+        dimensions: Double,
+        opts: ReadableMap?,
+    ) {}
+    override fun dropVectorIndex(collection: String, field: String) {}
+    override fun upgradeVectorIndex(collection: String, field: String) {}
+    override fun findNearest(
+        collection: String,
+        field: String,
+        query: ReadableArray,
+        topK: Double,
+        filter: ReadableMap?,
+    ): WritableArray = WritableNativeArray()
+
+    override fun findNearestAsync(
+        collection: String,
+        field: String,
+        query: ReadableArray,
+        topK: Double,
+        filter: ReadableMap?,
+        promise: Promise,
+    ) {
+        promise.resolve(WritableNativeArray())
+    }
+
+    override fun findAsync(collection: String, filter: ReadableMap?, promise: Promise) {
+        promise.resolve(WritableNativeArray())
+    }
 }
