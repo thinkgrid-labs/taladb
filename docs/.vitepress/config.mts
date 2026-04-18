@@ -86,7 +86,7 @@ export default defineConfig({
       { text: "Roadmap", link: "/roadmap" },
       { text: "Live Demo", link: "https://taladb-playground.vercel.app/" },
       {
-        text: "v0.7.2",
+        text: "v0.7.3",
         items: [
           {
             text: "Changelog",
@@ -119,6 +119,7 @@ export default defineConfig({
           { text: "Web (Browser / WASM)", link: "/guide/web" },
           { text: "Node.js", link: "/guide/node" },
           { text: "React Native", link: "/guide/react-native" },
+          { text: "Cloudflare Workers", link: "/guide/cloudflare" },
           { text: "CLI Dev Tools", link: "/guide/cli" },
           { text: "HTTP Push Sync", link: "/guide/http-sync" },
         ],
@@ -131,6 +132,7 @@ export default defineConfig({
         text: "API Reference",
         items: [
           { text: "Collection", link: "/api/collection" },
+          { text: "Schema Validation", link: "/api/schema" },
           { text: "Filters", link: "/api/filters" },
           { text: "Updates", link: "/api/updates" },
           { text: "Migrations", link: "/api/migrations" },

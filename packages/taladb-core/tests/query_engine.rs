@@ -265,18 +265,20 @@ fn regex_on_non_string_field_returns_empty() {
 }
 
 #[test]
-fn regex_invalid_pattern_does_not_panic() {
+fn regex_invalid_pattern_returns_error() {
     let db = db();
     let col = db.collection("bad_regex").unwrap();
 
     col.insert(vec![("s".into(), Value::Str("anything".into()))])
         .unwrap();
 
-    // Invalid regex — `matches()` should return false gracefully, not panic
-    let results = col
-        .find(Filter::Regex("s".into(), r"[invalid".into()))
-        .unwrap();
-    assert!(results.is_empty());
+    // Invalid regex — fails fast at query time instead of silently returning
+    // zero matches (which would mask bugs).
+    let result = col.find(Filter::Regex("s".into(), r"[invalid".into()));
+    assert!(matches!(
+        result,
+        Err(taladb_core::TalaDbError::InvalidFilter(_))
+    ));
 }
 
 #[test]

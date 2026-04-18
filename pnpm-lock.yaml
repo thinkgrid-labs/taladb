@@ -47,6 +47,22 @@ importers:
         specifier: workspace:*
         version: link:../taladb-web
 
+  packages/taladb-cloudflare:
+    dependencies:
+      '@taladb/web':
+        specifier: workspace:*
+        version: link:../taladb-web
+      taladb:
+        specifier: workspace:*
+        version: link:../taladb
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.0.0
+        version: 4.20260417.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/taladb-node:
     devDependencies:
       '@napi-rs/cli':
@@ -358,6 +374,9 @@ packages:
 
   '@bcoe/v8-coverage@0.2.3':
     resolution: {integrity: sha512-0hYQ8SB4Db5zvZB4axdMHGwEaQjkZzFjQiN9LVYvIFB2nSUHW9tYpxWriPrWDASIxiaXax83REcLxuSdnGPZtw==}
+
+  '@cloudflare/workers-types@4.20260417.1':
+    resolution: {integrity: sha512-ke3GkFfFyfSxdLRR6LPbnfYAu3RNKqX0eYfu/FNnluBN9rLgYVqT+QEPgSEx1yq7XTOok+Bub1td9xvknaOz4A==}
 
   '@csstools/color-helpers@5.1.0':
     resolution: {integrity: sha512-S11EXWJyy0Mz5SYvRmY8nJYTFFd1LCNV+7cXyAgQtOOuzb4EsgfqDufL+9esx72/eLhsRdGZwaldu/h+E4t4BA==}
@@ -3752,6 +3771,8 @@ snapshots:
       '@babel/helper-validator-identifier': 7.28.5
 
   '@bcoe/v8-coverage@0.2.3': {}
+
+  '@cloudflare/workers-types@4.20260417.1': {}
 
   '@csstools/color-helpers@5.1.0': {}
 

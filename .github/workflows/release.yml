@@ -94,6 +94,7 @@ jobs:
 
       - run: pnpm install
       - run: node_modules/.bin/tsc -p packages/taladb/tsconfig.json --noEmit
+      - run: node_modules/.bin/tsc -p packages/taladb-cloudflare/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
   # Build WASM
@@ -508,6 +509,13 @@ jobs:
 
       - name: Publish @taladb/react
         working-directory: packages/taladb-react
+        run: pnpm publish --no-git-checks --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # -- @taladb/cloudflare --------------------------------------------------
+      - name: Publish @taladb/cloudflare
+        working-directory: packages/taladb-cloudflare
         run: pnpm publish --no-git-checks --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

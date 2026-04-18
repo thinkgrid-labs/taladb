@@ -76,7 +76,7 @@ impl TalaDBWasm {
     /// ```js
     /// const bytes = await opfs_load_snapshot('myapp.db');   // null on first open
     /// const db = TalaDBWasm.openWithSnapshot(bytes);
-    /// // … mutations …
+    /// // ... mutations ...
     /// await opfs_flush_snapshot('myapp.db', db.exportSnapshot());
     /// ```
     #[wasm_bindgen(js_name = openWithSnapshot)]
@@ -212,11 +212,11 @@ impl CollectionWasm {
 
     /// Create a vector index on `field`.
     ///
-    /// `dimensions`           — expected vector length.
-    /// `metric`               — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
-    /// `index_type`           — optional: `"flat"` (default) or `"hnsw"`.
-    /// `hnsw_m`               — HNSW connectivity (default 16).
-    /// `hnsw_ef_construction` — build quality (default 200).
+    /// `dimensions`           - expected vector length.
+    /// `metric`               - optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.
+    /// `index_type`           - optional: `"flat"` (default) or `"hnsw"`.
+    /// `hnsw_m`               - HNSW connectivity (default 16).
+    /// `hnsw_ef_construction` - build quality (default 200).
     #[wasm_bindgen(js_name = createVectorIndex)]
     pub fn create_vector_index(
         &self,
@@ -248,7 +248,7 @@ impl CollectionWasm {
 
     /// Find the `top_k` nearest documents to `query` on a vector index.
     ///
-    /// `filter` — optional pre-filter (same format as `find`). Pass `null` to
+    /// `filter` - optional pre-filter (same format as `find`). Pass `null` to
     ///            search across all documents that have the vector field.
     ///
     /// Returns a JSON array of `{ document: {...}, score: number }` objects.

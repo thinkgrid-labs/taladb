@@ -422,6 +422,70 @@ fn update_push_on_non_array_returns_type_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Collection name validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_collection_name_returns_error() {
+    let db = Database::open_in_memory().unwrap();
+    assert!(db.collection("").is_err());
+}
+
+#[test]
+fn collection_name_over_128_chars_returns_error() {
+    let db = Database::open_in_memory().unwrap();
+    let long = "a".repeat(129);
+    assert!(db.collection(&long).is_err());
+}
+
+#[test]
+fn collection_name_with_double_colon_returns_error() {
+    let db = Database::open_in_memory().unwrap();
+    assert!(db.collection("bad::name").is_err());
+}
+
+#[test]
+fn collection_name_exactly_128_chars_is_valid() {
+    let db = Database::open_in_memory().unwrap();
+    let name = "a".repeat(128);
+    assert!(db.collection(&name).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Vector dimension mismatch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vector_query_dimension_mismatch_returns_error() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("vecs").unwrap();
+    col.create_vector_index("embedding", 3, None, None).unwrap();
+
+    col.insert(vec![(
+        "embedding".into(),
+        Value::Array(vec![
+            Value::Float(0.1),
+            Value::Float(0.2),
+            Value::Float(0.3),
+        ]),
+    )])
+    .unwrap();
+
+    // Query with wrong dimension must return VectorDimensionMismatch
+    let wrong_query = vec![0.1f32, 0.2];
+    let result = col.find_nearest("embedding", &wrong_query, 1, None);
+    assert!(
+        result.is_err(),
+        "querying with a wrong-dimension vector must return an error"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("dimension"),
+        "error must mention dimension mismatch, got: {err_msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot faithfulness after writes
 // ---------------------------------------------------------------------------
 

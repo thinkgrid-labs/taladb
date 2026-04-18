@@ -70,6 +70,7 @@ std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
         "count",
         "createIndex", "dropIndex",
         "createFtsIndex", "dropFtsIndex",
+        "compact",
         "close",
     };
     std::vector<PropNameID> result;
@@ -260,6 +261,19 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 else if (name == "dropIndex")      taladb_drop_index      (db_, col.c_str(), field.c_str());
                 else if (name == "createFtsIndex") taladb_create_fts_index(db_, col.c_str(), field.c_str());
                 else                               taladb_drop_fts_index  (db_, col.c_str(), field.c_str());
+                return Value::undefined();
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // compact(): void
+    // ------------------------------------------------------------------
+    if (name == "compact") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "compact"), 0,
+            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                int32_t res = taladb_compact(db_);
+                if (res < 0) throw JSError(rt, "taladb_compact failed");
                 return Value::undefined();
             });
     }

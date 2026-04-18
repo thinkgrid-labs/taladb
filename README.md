@@ -5,7 +5,7 @@
 **The embedded database for local-first JavaScript apps.**<br/>
 Documents + vector search built in Rust — browser, Node.js, and React Native. No cloud. No compromise.
 
-[![Status: Beta](https://img.shields.io/badge/Status-Beta-orange)](https://github.com/thinkgrid-labs/taladb)
+[![Status: Stable](https://img.shields.io/badge/Status-Stable-green)](https://github.com/thinkgrid-labs/taladb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
@@ -16,8 +16,6 @@ Documents + vector search built in Rust — browser, Node.js, and React Native. 
 
 </div>
 
-> [!NOTE]
-> **TalaDB is in beta.** Core APIs are stable but may change before v1.0. Not yet recommended for production use.
 
 ---
 

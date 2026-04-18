@@ -15,6 +15,7 @@ const packages = [
   "packages/taladb-node",
   "packages/taladb-react-native",
   "packages/taladb-react",
+  "packages/taladb-cloudflare",
 ];
 
 for (const pkg of packages) {

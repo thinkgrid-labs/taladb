@@ -49,6 +49,7 @@
  * upgradeVectorIndex { collection, field }
  * findNearest       { collection, field, queryJson, topK, filterJson? }
  * listCollections   {}                             → JSON string[]
+ * compact           {}                             → null
  * compactTombstones { collection, beforeMs }       → number pruned
  * exportChangeset   { collectionsJson, sinceMs? }  → JSON changeset string
  * importChangeset   { changesetJson }              → number of applied changes
@@ -459,6 +460,11 @@ async function dispatch(op, args) {
     case 'listCollections':
       return db.listCollections();
 
+    case 'compact':
+      // Compact the storage file, reclaiming freed space. No-op on IDB fallback.
+      db.compact();
+      return null;
+
     case 'compactTombstones':
       // Prune tombstones older than beforeMs from a collection.
       // Returns the count of tombstones removed.
@@ -499,7 +505,7 @@ async function dispatch(op, args) {
 // ---------------------------------------------------------------------------
 
 async function doInit(dbName, configJson) {
-  const wasm = await import('../pkg/taladb_web.js');
+  const wasm = await import(/* @vite-ignore */ '../pkg/taladb_web.js');
   await wasm.default();
 
   // Hoist to module scope so snapshot reloads in dispatch() can use it.

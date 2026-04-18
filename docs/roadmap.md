@@ -15,18 +15,18 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 Better DX drives adoption and reduces time-to-production.
 
-### HTTP push sync 
+### Sync 
 
 **Future extensions** of this feature (not in scope for initial release):
 - Native NoSQL adapters (`sync.adapter: mongodb | firestore | dynamodb`) with direct connection strings, removing the need for an intermediate API
 - Bi-directional pull: `taladb sync --pull` fetches from the remote and merges locally
 - Per-collection sync config (sync some collections, skip others)
 
-### `taladb studio` — local web UI
+### ~~`taladb studio` — local web UI~~ ✓ Shipped in 0.7.3
 
 A browser-based GUI (served by `taladb-cli`) for browsing collections, running ad-hoc queries, inspecting indexes, and visualising query plans — similar to MongoDB Compass but for local files.
 
-### Zod / Valibot schema validation
+### ~~Zod / Valibot schema validation~~ ✓ Shipped in 0.7.3
 
 An optional `schema` option on `collection()` that validates documents with a Zod or Valibot schema before insert and after find, providing runtime type safety without a compile step.
 
@@ -48,7 +48,7 @@ Multi-device and collaborative data sync beyond simple API push.
 
 A `CrdtSyncAdapter` that uses per-field logical clocks (LWW-register or grow-only sets) to merge concurrent writes from multiple devices without conflicts — suitable for collaborative offline-first apps.
 
-### Delta snapshots
+### ~~Delta snapshots~~ ✓ Shipped in 0.7.3
 
 Instead of exporting the full database on every sync, export only the records that changed since a given ULID watermark — reducing bandwidth for incremental sync scenarios. Foundation for the sync server below.
 
@@ -62,9 +62,9 @@ A reference sync server (`taladb-sync-server`) that accepts snapshot diffs over 
 
 Internal improvements that improve efficiency and interoperability.
 
-### Write-ahead log compaction
+### ~~Write-ahead log compaction~~ ✓ Shipped in 0.7.3
 
-redb already handles WAL compaction internally, but exposing a `db.compact()` API for explicit compaction (e.g. after bulk deletes) would let long-running applications reclaim disk space on demand.
+`db.compact()` is now available on all platforms. It calls redb's built-in compaction and is exposed via the WASM worker (`compact` op), the Node.js napi binding, and the React Native C FFI (`taladb_compact`). Call it during idle periods after bulk deletes or tombstone pruning to reclaim disk space on demand.
 
 ### Pluggable serialisation
 
@@ -76,13 +76,13 @@ Allow the caller to swap `postcard` for `MessagePack` or `CBOR` via a `Codec` tr
 
 Expanding the runtimes TalaDB can target.
 
-### Cloudflare Workers / Deno Deploy
+### ~~Cloudflare Workers~~ ✓ Shipped in 0.7.3
 
-A `StorageBackend` implementation backed by Cloudflare's `KV` or `Durable Objects` API, letting TalaDB run as the persistence layer inside an edge function with zero external dependencies.
+`@taladb/cloudflare` is now available. It runs TalaDB's existing WASM core (in-memory mode — no OPFS required) inside Cloudflare Workers Durable Objects. State is persisted as a binary snapshot in Durable Objects `storage.put()` between requests. The `TalaDBDurableObject` base class handles lazy init and snapshot restore. See the [Cloudflare guide](/guide/cloudflare) for usage.
 
-### Bun native module
+### ~~Bun native module~~ ✓ Shipped in 0.7.3
 
-A Bun-native binding (using Bun's `bun:ffi`) that avoids the N-API layer for better startup performance and smaller binary size in Bun-first projects.
+`@taladb/node` now works on Bun out of the box via Bun's built-in N-API compatibility layer. No separate `bun:ffi` package is needed — install `@taladb/node` and use it identically to Node.js. Added Linux ARM64 (`aarch64-unknown-linux-gnu`) and Intel Mac (`x86_64-apple-darwin`) prebuilt targets alongside the existing ones.
 
 ### Swift / Kotlin native packages
 
@@ -98,14 +98,14 @@ Compile `taladb-core` to WASI (`wasm32-wasip1`) so it can run inside WASI runtim
 
 Hardening for apps that handle sensitive data.
 
-### Key rotation
+### ~~Key rotation~~ ✓ Shipped in 0.7.2
 
-A `db.rekey(newKey)` method that re-encrypts all stored values in a single atomic transaction without requiring an export/import cycle.
+`db.rekey(backend, old_key, new_key)` re-encrypts all stored values atomically. See the [encryption API](/api/encryption) for usage.
 
-### Field-level encryption
+### ~~Field-level encryption~~ ✓ Shipped in 0.7.2
 
-Encrypt individual fields rather than entire values, so that unencrypted fields can still be indexed and used in range queries while sensitive fields (e.g. `ssn`, `creditCard`) are protected at rest.
+`Collection.with_field_encryption(fields, key)` encrypts individual fields with AES-GCM-256. Unencrypted fields remain fully indexable.
 
-### Audit log
+### ~~Audit log~~ ✓ Shipped in 0.7.2
 
-An append-only `_audit` collection that records every write operation (collection, document ID, operation type, timestamp) — opt-in, with configurable retention.
+`Collection.with_audit_log(caller)` writes an append-only `_audit` entry after every mutation. Read with `read_audit_log(backend, collection_filter, op_filter)`.

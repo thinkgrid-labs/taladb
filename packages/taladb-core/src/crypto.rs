@@ -326,6 +326,10 @@ impl<'a> ReadTxn for EncryptedReadTxn<'a> {
     fn list_tables(&self) -> Result<Vec<String>, TalaDbError> {
         self.inner.list_tables()
     }
+
+    fn count_entries(&self, table: &str) -> Result<u64, TalaDbError> {
+        self.inner.count_entries(table)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -715,8 +719,14 @@ mod tests {
         // New key must decrypt correctly.
         let enc_new = EncryptedBackend::new(raw.clone(), new_key.clone());
         let rtxn_new = enc_new.begin_read().unwrap();
-        assert_eq!(rtxn_new.get("docs::test", b"k1").unwrap().unwrap(), b"hello");
-        assert_eq!(rtxn_new.get("docs::test", b"k2").unwrap().unwrap(), b"world");
+        assert_eq!(
+            rtxn_new.get("docs::test", b"k1").unwrap().unwrap(),
+            b"hello"
+        );
+        assert_eq!(
+            rtxn_new.get("docs::test", b"k2").unwrap().unwrap(),
+            b"world"
+        );
     }
 
     #[test]

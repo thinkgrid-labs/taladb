@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "TalaDB browser WASM bindings (wasm-bindgen + OPFS)"
+description = "TalaDB browser WASM bindings (wasm-bindgen + OPFS) and Cloudflare Workers"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -38,6 +38,11 @@ features = [
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[features]
+# Build a WASM bundle without OPFS/browser APIs for Cloudflare Workers.
+# Excludes openWithOpfs, FileSystemSyncAccessHandle imports, and reqwest.
+cf-workers = []
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

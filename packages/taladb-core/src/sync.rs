@@ -28,7 +28,7 @@
 //! any number of replicas without coordination.
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
@@ -116,6 +116,17 @@ impl RecordingSyncHook {
     /// Number of events recorded so far without draining.
     pub fn len(&self) -> usize {
         self.events.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.lock().unwrap().is_empty()
+    }
+}
+
+#[cfg(test)]
+impl Default for RecordingSyncHook {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

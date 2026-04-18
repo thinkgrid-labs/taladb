@@ -157,7 +157,7 @@ fn drop_vector_index_clears_cache() {
     col.create_vector_index(
         "emb",
         4,
-        Some(VectorMetric::Dot),
+        Some(VectorMetric::Cosine),
         Some(HnswOptions::default()),
     )
     .unwrap();

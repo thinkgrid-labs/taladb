@@ -1,0 +1,36 @@
+{
+  "name": "@taladb/cloudflare",
+  "version": "0.7.3",
+  "description": "TalaDB adapter for Cloudflare Workers — in-memory WASM database with Durable Objects snapshot persistence",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src/index.js",
+    "src/index.d.ts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thinkgrid-labs/taladb.git",
+    "directory": "packages/taladb-cloudflare"
+  },
+  "homepage": "https://taladb.dev/guide/cloudflare",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/taladb/issues"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "taladb": "workspace:*",
+    "@taladb/web": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^4.0.0"
+  }
+}

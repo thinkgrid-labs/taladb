@@ -17,7 +17,7 @@ pub mod vector;
 pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
-pub use audit::{read_audit_log, AuditEntry, AuditOp};
+pub use audit::{read_audit_log, read_audit_log_since, AuditEntry, AuditOp};
 pub use collection::{Collection, CollectionIndexInfo, Update};
 pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
 #[cfg(feature = "encryption")]
@@ -27,7 +27,7 @@ pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
 #[cfg(feature = "sync-http")]
 pub use http_sync::HttpSyncHook;
-pub use migration::{run_migrations, Migration};
+pub use migration::{run_migrations, Migration, BUILTIN_MIGRATIONS, CURRENT_SCHEMA_VERSION};
 pub use query::options::{FindOptions, SortDirection, SortSpec};
 pub use query::Filter;
 pub use sync::{Changeset, LastWriteWins, NoopSyncHook, SyncAdapter, SyncEvent, SyncHook};
@@ -50,9 +50,10 @@ pub struct Database {
 impl Database {
     /// Open a file-backed database at the given path.
     pub fn open(path: &Path) -> Result<Self, TalaDbError> {
-        let backend = RedbBackend::open(path)?;
+        let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);
+        run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
         Ok(Database {
-            backend: Arc::new(backend),
+            backend,
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -60,8 +61,10 @@ impl Database {
 
     /// Open a database with a custom storage backend (e.g. OPFS in WASM).
     pub fn open_with_backend(backend: Box<dyn StorageBackend>) -> Result<Self, TalaDbError> {
+        let backend: Arc<dyn StorageBackend> = Arc::from(backend);
+        run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
         Ok(Database {
-            backend: Arc::from(backend),
+            backend,
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -69,20 +72,26 @@ impl Database {
 
     /// Open an in-memory database (useful for tests).
     pub fn open_in_memory() -> Result<Self, TalaDbError> {
-        let backend = RedbBackend::open_in_memory()?;
+        let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open_in_memory()?);
+        run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
         Ok(Database {
-            backend: Arc::new(backend),
+            backend,
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
     }
 
     /// Open a database and run any pending migrations before returning.
+    ///
+    /// Built-in migrations run first, then the caller-supplied list.  User
+    /// migrations must start at [`CURRENT_SCHEMA_VERSION`] so they pick up
+    /// where the built-in chain ends.
     pub fn open_with_migrations(
         path: &Path,
         migrations: &[Migration],
     ) -> Result<Self, TalaDbError> {
-        let backend = Arc::new(RedbBackend::open(path)?);
+        let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);
+        run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
         run_migrations(backend.as_ref(), migrations)?;
         Ok(Database {
             backend,
@@ -91,8 +100,12 @@ impl Database {
         })
     }
 
-    /// Access the raw storage backend (crate-internal, used by sync adapters).
-    pub(crate) fn backend(&self) -> &dyn StorageBackend {
+    /// Access the raw storage backend.
+    ///
+    /// Useful for calling lower-level APIs such as [`read_audit_log`] and
+    /// [`rekey`] that operate directly on the backend rather than through a
+    /// `Collection` handle.
+    pub fn backend(&self) -> &dyn StorageBackend {
         self.backend.as_ref()
     }
 
@@ -139,6 +152,17 @@ impl Database {
             self.collection(&col_name)?.upgrade_vector_index(&field)?;
         }
         Ok(())
+    }
+
+    /// Compact the underlying storage file, reclaiming space freed by deletes
+    /// and updates. Useful after bulk deletes or large tombstone pruning.
+    ///
+    /// This is a blocking operation proportional to database size; call it
+    /// during idle periods (e.g. at startup after tombstone compaction).
+    ///
+    /// No-op on in-memory backends.
+    pub fn compact(&self) -> Result<(), TalaDbError> {
+        self.backend.compact()
     }
 
     /// Return the names of all collections stored in this database.

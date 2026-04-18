@@ -2,7 +2,7 @@
 
 First off, thank you for considering contributing to TalaDB! It's people like you that make the open-source community such an amazing place.
 
-TalaDB is currently in **Beta**, and I welcome help in all areas: from core Rust optimizations to documentation and platform testing.
+I welcome help in all areas: from core Rust optimizations to documentation and platform testing.
 
 ## Getting Started
 

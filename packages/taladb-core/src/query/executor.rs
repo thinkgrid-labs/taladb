@@ -25,6 +25,10 @@ pub fn execute(
     collection: &str,
     deadline: Option<Instant>,
 ) -> Result<Vec<Document>, TalaDbError> {
+    // Check deadline up-front so callers that pass an already-expired deadline
+    // don't touch storage at all.
+    check_deadline(deadline)?;
+
     let candidates = match plan {
         QueryPlan::FullScan => full_scan(txn, collection)?,
 
@@ -36,6 +40,7 @@ pub fn execute(
                 Bound::Included(start.as_slice()),
                 Bound::Included(end.as_slice()),
             )?;
+            check_deadline(deadline)?;
             fetch_by_ulids(txn, collection, ulids)?
         }
 
@@ -43,12 +48,14 @@ pub fn execute(
             let start_ref = bound_as_ref(start);
             let end_ref = bound_as_ref(end);
             let ulids = index_range_scan(txn, collection, field, start_ref, end_ref)?;
+            check_deadline(deadline)?;
             fetch_by_ulids(txn, collection, ulids)?
         }
 
         QueryPlan::IndexIn { field, ranges } => {
             let mut ulids: Vec<Ulid> = Vec::new();
             for (start, end) in ranges {
+                check_deadline(deadline)?;
                 let mut batch = index_range_scan(
                     txn,
                     collection,
@@ -70,6 +77,7 @@ pub fn execute(
             // Collect ULID sets per token, then intersect
             let mut ulid_sets: Vec<HashSet<[u8; 16]>> = Vec::with_capacity(tokens.len());
             for token in tokens {
+                check_deadline(deadline)?;
                 let (start, end) = fts_token_range(token);
                 let table = fts_table_name(collection, field);
                 let entries = txn.range(
@@ -109,6 +117,7 @@ pub fn execute(
         QueryPlan::IndexOr { plans } => {
             let mut seen: HashSet<[u8; 16]> = HashSet::new();
             for sub_plan in plans {
+                check_deadline(deadline)?;
                 let ulids = collect_ulids(sub_plan, txn, collection, deadline)?;
                 for id_bytes in ulids {
                     seen.insert(id_bytes);
@@ -118,6 +127,8 @@ pub fn execute(
             fetch_by_ulids(txn, collection, ulids)?
         }
     };
+
+    check_deadline(deadline)?;
 
     // Pre-tokenize Contains query once before the document loop to avoid
     // re-tokenizing the same query string for every candidate document.
@@ -140,6 +151,29 @@ pub fn execute(
             } else {
                 false
             };
+            if matches {
+                results.push(d);
+            }
+        }
+        return Ok(results);
+    }
+
+    // Pre-compile Regex once before the document loop. A malformed pattern
+    // fails fast here instead of silently returning zero matches per doc.
+    if let Filter::Regex(field, pattern) = filter {
+        let re = regex::RegexBuilder::new(pattern)
+            .size_limit(1 << 20)
+            .dfa_size_limit(1 << 20)
+            .build()
+            .map_err(|e| TalaDbError::InvalidFilter(format!("regex: {e}")))?;
+        let mut results = Vec::with_capacity(candidates.len());
+        for d in candidates {
+            if let Some(dl) = deadline {
+                if Instant::now() >= dl {
+                    return Err(TalaDbError::QueryTimeout);
+                }
+            }
+            let matches = matches!(d.get(field), Some(Value::Str(text)) if re.is_match(text));
             if matches {
                 results.push(d);
             }
@@ -217,6 +251,16 @@ fn collect_ulids(
             Ok(docs.into_iter().map(|d| d.id.to_bytes()).collect())
         }
     }
+}
+
+#[inline]
+fn check_deadline(deadline: Option<Instant>) -> Result<(), TalaDbError> {
+    if let Some(dl) = deadline {
+        if Instant::now() >= dl {
+            return Err(TalaDbError::QueryTimeout);
+        }
+    }
+    Ok(())
 }
 
 fn bound_as_ref(b: &Bound<Vec<u8>>) -> Bound<&[u8]> {

@@ -48,6 +48,12 @@ TalaDbHandle *taladb_open_with_config(const char *path, const char *config_json)
 /** Flush and close the database, freeing the handle. */
 void taladb_close(TalaDbHandle *handle);
 
+/**
+ * Compact the underlying storage file, reclaiming space freed by deletes and
+ * updates. No-op on in-memory databases. Returns 1 on success, -1 on error.
+ */
+int32_t taladb_compact(TalaDbHandle *handle);
+
 /** Free a C string returned by any taladb_* function. */
 void taladb_free_string(char *s);
 

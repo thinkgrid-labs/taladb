@@ -156,6 +156,29 @@ The `taladb` npm package auto-detects the runtime at import time:
 
 Application code never branches on platform. Swap the runtime and the same TypeScript continues to work.
 
+## Schema validation (optional)
+
+Pass a `schema` option to `db.collection()` to get runtime type safety on writes. Any object with a `parse(data: unknown): T` method works — Zod, Valibot, or a hand-rolled validator.
+
+```ts
+import { z } from 'zod'
+
+const schema = z.object({ name: z.string().min(1), age: z.number() })
+
+// Without a schema — schemaless, no overhead (default behaviour)
+const users = db.collection<User>('users')
+
+// With a schema — validates every insert before writing
+const users = db.collection<User>('users', { schema })
+
+await users.insert({ name: 'Alice', age: 30 }) // ✓ stored
+await users.insert({ name: '', age: 30 })       // ✗ throws TalaDbValidationError
+```
+
+`insert` and `insertMany` run the document through `schema.parse()` before storage. If validation fails, a `TalaDbValidationError` is thrown and nothing is written. Collections without a `schema` option have zero overhead.
+
+See the [Schema Validation reference](/api/schema) for the full API including `validateOnRead`, Valibot usage, and Cloudflare Workers support.
+
 ## TypeScript generics
 
 ```ts

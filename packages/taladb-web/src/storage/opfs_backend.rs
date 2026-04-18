@@ -22,6 +22,7 @@ use web_sys::FileSystemSyncAccessHandle;
 // OpfsBackend
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub struct OpfsBackend {
     handle: FileSystemSyncAccessHandle,
 }
@@ -37,6 +38,7 @@ impl std::fmt::Debug for OpfsBackend {
 unsafe impl Send for OpfsBackend {}
 unsafe impl Sync for OpfsBackend {}
 
+#[allow(dead_code)]
 impl OpfsBackend {
     /// Wrap an existing `FileSystemSyncAccessHandle`.
     /// Call `OpfsBackend::open(db_name)` instead of constructing directly.
@@ -186,6 +188,7 @@ pub async fn opfs_open_backend(db_name: &str) -> Result<JsValue, JsValue> {
 // Internal helper
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn io_err(msg: &str) -> io::Error {
     io::Error::other(msg)
 }

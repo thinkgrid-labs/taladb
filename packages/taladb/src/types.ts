@@ -93,6 +93,43 @@ export type Update<T extends Document = Document> = {
   $pull?: { [K in keyof T]?: Value };
 };
 
+// --------------- Schema validation ---------------
+
+/**
+ * A schema validator compatible with Zod, Valibot, and any library that
+ * exposes a `parse(data: unknown): T` method.
+ *
+ * @example with Zod
+ * const schema = z.object({ name: z.string(), age: z.number() });
+ * const users = db.collection<z.infer<typeof schema>>('users', { schema });
+ *
+ * @example with Valibot
+ * const schema = v.object({ name: v.string(), age: v.number() });
+ * const users = db.collection<v.InferOutput<typeof schema>>('users', { schema });
+ */
+export interface Schema<T> {
+  parse(data: unknown): T;
+}
+
+/** Options passed to `db.collection()`. */
+export interface CollectionOptions<T extends Document = Document> {
+  /**
+   * Schema validator. When provided, every document passed to `insert` and
+   * `insertMany` is run through `schema.parse()` before being stored. If
+   * validation fails, a `TalaDbValidationError` is thrown.
+   *
+   * Compatible with Zod (`z.object({...})`), Valibot (`v.object({...})`), or
+   * any object with a `parse(data: unknown): T` method.
+   */
+  schema?: Schema<T>;
+  /**
+   * When `true`, documents returned by `find` and `findOne` are also passed
+   * through `schema.parse()`. Useful for catching schema drift on old data.
+   * Defaults to `false`.
+   */
+  validateOnRead?: boolean;
+}
+
 // --------------- Collection interface ---------------
 
 export interface Collection<T extends Document = Document> {
@@ -192,6 +229,17 @@ export interface Collection<T extends Document = Document> {
 // --------------- TalaDB interface ---------------
 
 export interface TalaDB {
-  collection<T extends Document = Document>(name: string): Collection<T>;
+  collection<T extends Document = Document>(name: string, options?: CollectionOptions<T>): Collection<T>;
+  /**
+   * Compact the underlying storage file, reclaiming space freed by deletes
+   * and updates.
+   *
+   * Call during idle periods — e.g. once on startup after `compactTombstones`.
+   * No-op on in-memory (IndexedDB-fallback) databases.
+   *
+   * @example
+   * await db.compact();
+   */
+  compact(): Promise<void>;
   close(): Promise<void>;
 }
