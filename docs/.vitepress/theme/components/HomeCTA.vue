@@ -14,7 +14,15 @@
           target="_blank"
           rel="noopener"
         >
-          Try the Live Demo →
+          Web Demo →
+        </a>
+        <a
+          href="https://appetize.io/app/b_ugmjhjghdkgnjux4lzkepvsfma"
+          class="btn btn-secondary btn-lg"
+          target="_blank"
+          rel="noopener"
+        >
+          Mobile Demo →
         </a>
       </div>
       <div class="cta-links">
