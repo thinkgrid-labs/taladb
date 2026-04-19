@@ -13,7 +13,7 @@ TalaDB runs natively on iOS and Android via a JSI integration — calls from Jav
 - React Native **0.73+** with New Architecture enabled
 - Expo SDK **50+** (if using Expo)
 - Xcode 15+ for iOS builds
-- Android NDK r26+ for Android builds
+- Android NDK **r27+** for Android builds
 
 ## Installation
 
@@ -217,6 +217,9 @@ const db = await openDB('myapp.db', {
 
 **`__TalaDB__ JSI HostObject not found`**
 `openDB` was called before `TalaDBModule.initialize` completed. Move `initialize` to the very top of your app entry point and `await` it before any database access.
+
+**`TurboModuleRegistry.getEnforcing('TalaDB'): 'TalaDB' could not be found`** (Android)
+The native module was not linked. Verify that your `android/gradle.properties` has `newArchEnabled=true` and that you are using a **custom dev client** — `@taladb/react-native` cannot run inside Expo Go.
 
 **`New Architecture is not enabled`**
 Set `newArchEnabled=true` in `android/gradle.properties` and add `use_framework! :static` to your `ios/Podfile`.

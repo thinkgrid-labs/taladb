@@ -11,22 +11,18 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Root of the taladb-react-native package
 get_filename_component(PACKAGE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 
-# Pre-built Rust static library (built by cargo ndk, copied by build.gradle)
-set(TALADB_FFI_LIB
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main/jniLibs/${ANDROID_ABI}/libtaladb_ffi.so")
-
 # ---------------------------------------------------------------------------
 # React Native JSI headers
-# React Native ships jsi/ headers inside node_modules — resolve from package root.
 # ---------------------------------------------------------------------------
 find_package(ReactAndroid REQUIRED CONFIG)
 
 # ---------------------------------------------------------------------------
-# taladb_ffi shared library (Rust pre-built, imported target)
+# taladb_ffi shared library (Rust pre-built)
 # ---------------------------------------------------------------------------
-add_library(taladb_ffi SHARED IMPORTED)
-set_target_properties(taladb_ffi PROPERTIES
-    IMPORTED_LOCATION "${TALADB_FFI_LIB}")
+
+# Add the directory containing libtaladb_ffi.so to the linker search path.
+# This ensures we link by name (soname) rather than embedding a relative path.
+link_directories("${CMAKE_CURRENT_SOURCE_DIR}/src/main/jniLibs/${ANDROID_ABI}")
 
 # ---------------------------------------------------------------------------
 # taladb_jsi — C++ JSI HostObject, compiled into a thin shared library that

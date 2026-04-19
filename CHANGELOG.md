@@ -5,6 +5,26 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.10] - 2026-04-19
+
+### Fixed
+
+- **`taladb` — `import.meta` crash in Metro/Hermes** — `dist/index.react-native.mjs` contained `import.meta.url` references from `createBrowserDB` and `createInMemoryBrowserDB`, which are dead code on React Native but were still included in the bundle. Hermes does not support `import.meta` syntax and threw `SyntaxError: import.meta is not supported in Hermes`. Added an esbuild `define` in the react-native tsup build to replace all `import.meta.url` occurrences at compile time.
+
+- **`taladb` — Metro bundling failure: `@taladb/node` could not be resolved** — `createNodeDB` contains a dynamic `import('@taladb/node')` that is dead code on React Native, but Metro resolves every `import()` specifier statically even in unreachable branches. Because `@taladb/node` is an optional peer dependency, tsup automatically externalised it, leaving the specifier in the output for Metro to fail on. Fixed by adding `noExternal: ['@taladb/node']` to the react-native tsup config and using an esbuild `onResolve` plugin to redirect `@taladb/node` to an inline stub that Metro can bundle without error.
+
+- **`taladb` — `openDB` routed to browser adapter on React Native New Architecture** — `detectPlatform()` checked `nativeCallSyncHook` first to detect React Native, but this global is no longer set in RN New Architecture (0.71+). Because React Native also exposes `window` and `navigator`, the function fell through to the browser branch and called `createBrowserDB`, which immediately crashed on the missing `Worker` global. Fixed by checking `navigator.product === 'ReactNative'` first — the canonical, version-stable React Native detection.
+
+- **`taladb` — `createNativeDB` called non-existent `collection()` method on JSI HostObject** — the `NativeHostObject` interface modelled the JSI HostObject as a nested API (`native.collection('notes').insert(doc)`), but the actual C++ HostObject (`TalaDBHostObject.cpp`) exposes a flat API where every method takes the collection name as its first argument (`native.insert('notes', doc)`). Every collection operation threw `native.collection is not a function`. Rewrote `createNativeDB` and its `NativeDB` interface to match the actual flat JSI surface.
+
+## [0.7.9] - 2026-04-19
+
+### Fixed
+
+- **`@taladb/react-native` — Android `dlopen` crash: `library libtaladb_ffi.so not found`** — `cargo ndk` builds Rust cdylib files without a SONAME. CMake's `SHARED IMPORTED` + `IMPORTED_LOCATION` recorded the full build-time path in `DT_NEEDED`, so the dynamic linker searched for a path like `../../../../src/main/jniLibs/arm64-v8a/libtaladb_ffi.so` at runtime instead of the simple `libtaladb_ffi.so` soname. Fixed by replacing the `SHARED IMPORTED` target with `link_directories()` pointing at the ABI-specific jniLibs folder and linking by name (`-ltaladb_ffi`), which produces `DT_NEEDED: libtaladb_ffi.so` and lets the Android linker find the library via its standard search path.
+
+- **`@taladb/react-native` — `TalaDBModule.kt` was missing `apply plugin: "kotlin-android"`** — without the Kotlin plugin, Gradle could not compile the module's Kotlin source and the package class (`TalaDBPackage`) was never available. Added the plugin to `android/build.gradle`.
+
 ## [0.7.8] - 2026-04-19
 
 ### Fixed
