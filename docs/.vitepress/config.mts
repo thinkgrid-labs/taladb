@@ -84,7 +84,13 @@ export default defineConfig({
       { text: "Guides", link: "/guide/web" },
       { text: "API", link: "/api/collection" },
       { text: "Roadmap", link: "/roadmap" },
-      { text: "Live Demo", link: "https://taladb-playground.vercel.app/" },
+      {
+        text: "Live Demo",
+        items: [
+          { text: "Web Demo", link: "https://taladb-playground.vercel.app/" },
+          { text: "Mobile Demo", link: "https://appetize.io/app/b_ugmjhjghdkgnjux4lzkepvsfma" },
+        ],
+      },
       {
         text: "v0.7.10",
         items: [

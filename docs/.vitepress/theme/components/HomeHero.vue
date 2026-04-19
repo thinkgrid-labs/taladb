@@ -22,7 +22,10 @@
         <div class="hero-actions">
           <a href="/introduction" class="btn btn-primary">Get Started</a>
           <a href="https://taladb-playground.vercel.app/" class="btn btn-secondary" target="_blank" rel="noopener">
-            Live Demo →
+            Web Demo →
+          </a>
+          <a href="https://appetize.io/app/b_ugmjhjghdkgnjux4lzkepvsfma" class="btn btn-secondary" target="_blank" rel="noopener">
+            Mobile Demo →
           </a>
           <a href="https://github.com/thinkgrid-labs/taladb" class="btn btn-ghost" target="_blank" rel="noopener">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
