@@ -5,6 +5,18 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.8] - 2026-04-19
+
+### Fixed
+
+- **`@taladb/react-native` — C++ compilation crash in `taladb.h`** — a nested `/* ... */` block comment on line 195 caused the compiler to terminate the outer comment early and attempt to parse the remaining documentation as C++ code, producing `expected unqualified-id` and `unknown type name` errors. Changed the inner comment to a `//` line comment.
+
+## [0.7.7] - 2026-04-19
+
+### Fixed
+
+- **`@taladb/react-native` — Android STL mismatch** — React Native 0.76+ requires the shared C++ runtime (`c++_shared`). Without `ANDROID_STL=c++_shared` in the CMake arguments, the build system defaulted to the static STL, which is incompatible with Hermes and the TurboModule infrastructure. Added `arguments "-DANDROID_STL=c++_shared"` to `android/build.gradle`.
+
 ## [0.7.6] - 2026-04-19
 
 ### Fixed
@@ -306,7 +318,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
 
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.8...HEAD
+[0.7.8]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.7...v0.7.8
+[0.7.7]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.3...v0.7.4

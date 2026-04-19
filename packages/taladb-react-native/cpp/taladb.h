@@ -192,7 +192,7 @@ char *taladb_find_nearest(TalaDbHandle *handle,
  * Flow
  * ----
  *   TalaDbJob *j = taladb_find_nearest_start(...);  // spawns worker thread
- *   while (taladb_job_poll(j) == 0) { /* yield to JS event loop */ }
+ *   while (taladb_job_poll(j) == 0) { } // yield to JS event loop
  *   char *json = taladb_job_take_result(j);         // frees the job
  *
  * Lifetime contract
