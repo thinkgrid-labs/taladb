@@ -47,4 +47,29 @@ export default defineConfig([
       },
     ],
   },
+
+  // -------------------------------------------------------------------------
+  // React Native build — ESM only, Metro bundler uses this via the
+  // `react-native` export condition. All platform adapters are external so
+  // Metro never tries to bundle @taladb/web or @taladb/node.
+  // -------------------------------------------------------------------------
+  {
+    entry: { 'index.react-native': 'src/index.react-native.ts' },
+    format: ['esm'],
+    outDir: 'dist',
+    external: ['@taladb/web', '@taladb/node', '@taladb/react-native'],
+    esbuildPlugins: [
+      {
+        name: 'react-native-config-stub',
+        setup(build) {
+          const stub = path.resolve(__dirname, 'src/config.browser.ts')
+          build.onResolve({ filter: /\/config(\.ts)?$/ }, (args) => {
+            if (args.importer.includes('index.react-native.ts') || args.importer.includes('index.ts')) {
+              return { path: stub }
+            }
+          })
+        },
+      },
+    ],
+  },
 ])
