@@ -5,6 +5,24 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-04-19
+
+### Fixed
+
+- **`@taladb/react-native` — Android module never compiled into the app** — `android/build.gradle` was missing. Without it, Gradle did not treat `android/` as a library module — `TalaDBModule.kt` was never compiled and CMake was never invoked to build `libtaladb_jsi.so`. This was the root cause of the `TurboModuleRegistry.getEnforcing('TalaDB'): 'TalaDB' could not be found` crash on Android.
+
+- **`@taladb/react-native` — TurboModule codegen never ran** — `codegenConfig` was missing from `package.json`. React Native's Gradle plugin reads this field to generate `NativeTalaDBSpec` — the base class `TalaDBModule.kt` extends. Without it, the Kotlin code could not compile even when `build.gradle` was present.
+
+- **`@taladb/react-native` — missing `AndroidManifest.xml`** — added `android/src/main/AndroidManifest.xml`, required for Gradle to recognise the `android/` directory as a valid Android library module.
+
+## [0.7.5] - 2026-04-19
+
+### Fixed
+
+- **`taladb` — React Native installs pulled in `@taladb/web` and `@taladb/node`** — both packages were declared as `optionalDependencies`, which package managers (npm, yarn, pnpm) install by default. Moved to optional `peerDependencies` so only the adapter the consumer actually needs is installed. **Breaking:** web and Node.js users must now explicitly install `@taladb/web` or `@taladb/node` alongside `taladb` (the docs have always shown this; the auto-install was the anomaly).
+
+- **`taladb` — Metro bundler resolved the wrong entry point** — added a `react-native` export condition pointing to a dedicated build (`dist/index.react-native.mjs`). Metro now resolves this entry instead of the default Node.js ESM build, preventing it from statically analysing or bundling `@taladb/web` or `@taladb/node` imports.
+
 ## [0.7.4] - 2026-04-18
 
 ### Added
@@ -288,7 +306,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
 
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.5...v0.7.6
+[0.7.5]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.4...v0.7.5
+[0.7.4]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.0...v0.7.1

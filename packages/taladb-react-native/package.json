@@ -1,6 +1,6 @@
 {
   "name": "@taladb/react-native",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "TalaDB React Native module — document and vector database via JSI HostObject",
   "main": "src/index",
   "types": "src/index.tsx",
@@ -40,6 +40,14 @@
     "node": ">=18"
   },
   "license": "MIT",
+  "codegenConfig": {
+    "name": "TalaDB",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.taladb"
+    }
+  },
   "devDependencies": {
     "typescript": "^5.9.3",
     "react-native": "^0.83.0"
