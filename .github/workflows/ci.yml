@@ -281,7 +281,7 @@ jobs:
 
       - name: Verify dist/ output
         working-directory: packages/taladb
-        run: ls dist/index.mjs dist/index.js dist/index.d.ts
+        run: ls dist/index.mjs dist/index.js dist/index.d.ts dist/index.react-native.mjs
 
   # ---------------------------------------------------------------------------
   # Test + Build — @taladb/react hooks package

@@ -368,7 +368,7 @@ jobs:
         working-directory: packages/taladb
         run: |
           pnpm exec tsup
-          ls dist/index.mjs dist/index.js dist/index.d.ts
+          ls dist/index.mjs dist/index.js dist/index.d.ts dist/index.react-native.mjs
 
       - uses: actions/upload-artifact@v4
         with:
