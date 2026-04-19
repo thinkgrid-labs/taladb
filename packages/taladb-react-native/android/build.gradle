@@ -1,0 +1,65 @@
+buildscript {
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+
+apply plugin: "com.android.library"
+apply plugin: "com.facebook.react"
+
+react {
+  jsRootDir = file("../src")
+  libraryName = "TalaDB"
+  codegenJavaPackageName = "com.taladb"
+}
+
+android {
+  compileSdkVersion 36
+  ndkVersion "27.1.12297006"
+  namespace "com.taladb"
+
+  buildFeatures {
+    // Required: CMakeLists.txt uses find_package(ReactAndroid REQUIRED CONFIG)
+    // which resolves via the prefab package shipped by react-native-gradle-plugin.
+    prefab true
+  }
+
+  defaultConfig {
+    minSdkVersion 24
+    targetSdkVersion 36
+
+    externalNativeBuild {
+      cmake {
+        cppFlags "-O2 -frtti -fexceptions -Wall -DANDROID"
+        abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path "CMakeLists.txt"
+      version "3.22.1"
+    }
+  }
+
+  packagingOptions {
+    doNotStrip "**/*.so"
+  }
+
+  sourceSets {
+    main {
+      jniLibs.srcDirs = ["src/main/jniLibs"]
+    }
+  }
+}
+
+repositories {
+  mavenCentral()
+  google()
+}
+
+dependencies {
+  implementation "com.facebook.react:react-android"
+}
