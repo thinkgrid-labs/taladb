@@ -1,11 +1,12 @@
 {
   "name": "taladb-workspace",
   "private": true,
-  "version": "0.7.9",
+  "version": "0.7.10",
   "type": "module",
   "scripts": {
     "sync-version": "node scripts/sync-version.js",
     "dev:playground": "bash scripts/dev-playground.sh",
+    "dev:playground-rn": "bash scripts/dev-playground-rn.sh --clean",
     "build": "pnpm run -r build",
     "build:taladb": "pnpm --filter taladb build",
     "build:web": "pnpm --filter @taladb/web build",

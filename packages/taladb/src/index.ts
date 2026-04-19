@@ -1,4 +1,4 @@
-import type { Collection, CollectionOptions, Document, TalaDB } from './types';
+import type { Collection, CollectionIndexInfo, CollectionOptions, Document, TalaDB } from './types';
 import { loadConfig, validateConfig } from './config';
 import type { TalaDbConfig, SyncConfig } from './config';
 
@@ -99,7 +99,13 @@ export type { TalaDbConfig, SyncConfig } from './config';
 type Platform = 'browser' | 'react-native' | 'node';
 
 function detectPlatform(): Platform {
-  // React Native exposes nativeCallSyncHook on the global object
+  // navigator.product === 'ReactNative' is the canonical check across all RN
+  // versions. nativeCallSyncHook is absent in the New Architecture (RN 0.71+),
+  // and window/navigator are both defined on RN (window === global), so the
+  // browser check must not run before this.
+  if (typeof navigator !== 'undefined' && (navigator as unknown as { product?: string }).product === 'ReactNative') {
+    return 'react-native';
+  }
   if ((globalThis as Record<string, unknown>).nativeCallSyncHook !== undefined) {
     return 'react-native';
   }
@@ -470,30 +476,26 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
 // React Native adapter (wraps JSI HostObject installed by @taladb/react-native)
 // ============================================================
 
-/** Shape of the JSI HostObject installed by @taladb/react-native. */
-interface NativeCollection {
-  insert(doc: Record<string, unknown>): string;
-  insertMany(docs: Record<string, unknown>[]): string[];
-  find(filter: Record<string, unknown>): Record<string, unknown>[];
-  findOne(filter: Record<string, unknown>): Record<string, unknown> | null;
-  updateOne(filter: Record<string, unknown>, update: Record<string, unknown>): boolean;
-  updateMany(filter: Record<string, unknown>, update: Record<string, unknown>): number;
-  deleteOne(filter: Record<string, unknown>): boolean;
-  deleteMany(filter: Record<string, unknown>): number;
-  count(filter: Record<string, unknown>): number;
-  createIndex(field: string): void;
-  dropIndex(field: string): void;
-  createFtsIndex(field: string): void;
-  dropFtsIndex(field: string): void;
-  createVectorIndex(field: string, dimensions: number, metric: string | null, indexType: string | null, hnswM: number | null, hnswEfConstruction: number | null): void;
-  dropVectorIndex(field: string): void;
-  upgradeVectorIndex(field: string): void;
-  listIndexes(): string;
-  findNearest(field: string, query: number[], topK: number, filter: Record<string, unknown> | null): { document: Record<string, unknown>; score: number }[];
-}
-
-interface NativeHostObject {
-  collection(name: string): NativeCollection;
+// The JSI HostObject is a flat API: every method takes the collection name as
+// its first argument. There is no intermediate collection(name) sub-object.
+interface NativeDB {
+  insert(collection: string, doc: Record<string, unknown>): string;
+  insertMany(collection: string, docs: Record<string, unknown>[]): string[];
+  find(collection: string, filter: Record<string, unknown>): Record<string, unknown>[];
+  findOne(collection: string, filter: Record<string, unknown>): Record<string, unknown> | null;
+  updateOne(collection: string, filter: Record<string, unknown>, update: Record<string, unknown>): boolean;
+  updateMany(collection: string, filter: Record<string, unknown>, update: Record<string, unknown>): number;
+  deleteOne(collection: string, filter: Record<string, unknown>): boolean;
+  deleteMany(collection: string, filter: Record<string, unknown>): number;
+  count(collection: string, filter: Record<string, unknown>): number;
+  createIndex(collection: string, field: string): void;
+  dropIndex(collection: string, field: string): void;
+  createFtsIndex(collection: string, field: string): void;
+  dropFtsIndex(collection: string, field: string): void;
+  createVectorIndex(collection: string, field: string, dimensions: number, opts?: Record<string, unknown>): void;
+  dropVectorIndex(collection: string, field: string): void;
+  upgradeVectorIndex(collection: string, field: string): void;
+  findNearest(collection: string, field: string, query: number[], topK: number, filter?: Record<string, unknown> | null): { document: Record<string, unknown>; score: number }[];
   compact(): void;
   close(): void;
 }
@@ -502,42 +504,47 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
   // The JSI HostObject is installed by @taladb/react-native's TurboModule
   // at app startup via TalaDBModule.initialize(dbName).
   // After that, it is available at globalThis.__TalaDB__.
-  const maybeNative = (globalThis as Record<string, unknown>).__TalaDB__ as NativeHostObject | undefined;
+  const maybeNative = (globalThis as Record<string, unknown>).__TalaDB__ as NativeDB | undefined;
   if (!maybeNative) {
     throw new Error(
       '@taladb/react-native JSI HostObject not found. ' +
       'Did you call TalaDBModule.initialize() in your app entry point?'
     );
   }
-  const native: NativeHostObject = maybeNative;
+  const native: NativeDB = maybeNative;
 
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
-    const col = native.collection(name);
     const wrapped: Collection<T> = {
-      insert: async (doc) => col.insert(doc as Record<string, unknown>),
-      insertMany: async (docs) => col.insertMany(docs as Record<string, unknown>[]),
-      find: async (filter?) => col.find(filter ?? {}) as T[],
-      findOne: async (filter) => col.findOne(filter ?? {}) as T | null,
-      updateOne: async (filter, update) => col.updateOne(filter, update),
-      updateMany: async (filter, update) => col.updateMany(filter, update),
-      deleteOne: async (filter) => col.deleteOne(filter),
-      deleteMany: async (filter) => col.deleteMany(filter),
-      count: async (filter?) => col.count(filter ?? {}),
-      createIndex: async (field) => col.createIndex(field),
-      dropIndex: async (field) => col.dropIndex(field),
-      createFtsIndex: async (field) => col.createFtsIndex(field),
-      dropFtsIndex: async (field) => col.dropFtsIndex(field),
-      createVectorIndex: async (field, options) =>
-        col.createVectorIndex(field, options.dimensions, options.metric ?? null, options.indexType ?? null, options.hnswM ?? null, options.hnswEfConstruction ?? null),
-      dropVectorIndex: async (field) => col.dropVectorIndex(field),
-      upgradeVectorIndex: async (field) => col.upgradeVectorIndex(field),
-      listIndexes: async () => JSON.parse(col.listIndexes()),
+      insert: async (doc) => native.insert(name, doc as Record<string, unknown>),
+      insertMany: async (docs) => native.insertMany(name, docs as Record<string, unknown>[]),
+      find: async (filter?) => native.find(name, filter ?? {}) as T[],
+      findOne: async (filter) => native.findOne(name, filter ?? {}) as T | null,
+      updateOne: async (filter, update) => native.updateOne(name, filter, update),
+      updateMany: async (filter, update) => native.updateMany(name, filter, update),
+      deleteOne: async (filter) => native.deleteOne(name, filter),
+      deleteMany: async (filter) => native.deleteMany(name, filter),
+      count: async (filter?) => native.count(name, filter ?? {}),
+      createIndex: async (field) => native.createIndex(name, field),
+      dropIndex: async (field) => native.dropIndex(name, field),
+      createFtsIndex: async (field) => native.createFtsIndex(name, field),
+      dropFtsIndex: async (field) => native.dropFtsIndex(name, field),
+      createVectorIndex: async (field, options) => {
+        const opts: Record<string, unknown> = {};
+        if (options.metric) opts.metric = options.metric;
+        if (options.hnswM || options.hnswEfConstruction) {
+          opts.hnsw = { m: options.hnswM, efConstruction: options.hnswEfConstruction };
+        }
+        return native.createVectorIndex(name, field, options.dimensions, opts);
+      },
+      dropVectorIndex: async (field) => native.dropVectorIndex(name, field),
+      upgradeVectorIndex: async (field) => native.upgradeVectorIndex(name, field),
+      listIndexes: async () => ({} as CollectionIndexInfo),
       findNearest: async (field, vector, topK, filter?) => {
-        const raw = col.findNearest(field, vector, topK, filter ?? null);
+        const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw as { document: T; score: number }[];
       },
       subscribe: (filter, callback) =>
-        makePoller(async () => col.find(filter ?? {}) as T[], callback),
+        makePoller(async () => native.find(name, filter ?? {}) as T[], callback),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }

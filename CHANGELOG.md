@@ -5,6 +5,20 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.10] - 2026-04-19
+
+### Fixed
+
+- **`taladb` — `import.meta` crash in Metro/Hermes on React Native** — `dist/index.react-native.mjs` contained `import.meta.url` from `createBrowserDB` and `createInMemoryBrowserDB` (dead code on React Native that is never called). Hermes does not support `import.meta` syntax and threw `SyntaxError: import.meta is not supported in Hermes` at bundle time. Added an esbuild `define` for `import.meta.url` in the react-native tsup build so the syntax is replaced at compile time, before Metro ever sees the output.
+
+## [0.7.9] - 2026-04-19
+
+### Fixed
+
+- **`@taladb/react-native` — Android `dlopen` crash: `library libtaladb_ffi.so not found`** — `cargo ndk` builds Rust cdylib files without a SONAME. CMake's `SHARED IMPORTED` + `IMPORTED_LOCATION` recorded the full build-time path in `DT_NEEDED`, so the dynamic linker searched for a path like `../../../../src/main/jniLibs/arm64-v8a/libtaladb_ffi.so` at runtime instead of the simple `libtaladb_ffi.so` soname. Fixed by replacing the `SHARED IMPORTED` target with `link_directories()` pointing at the ABI-specific jniLibs folder and linking by name (`-ltaladb_ffi`), which produces `DT_NEEDED: libtaladb_ffi.so` and lets the Android linker find the library via its standard search path.
+
+- **`@taladb/react-native` — `TalaDBModule.kt` was missing `apply plugin: "kotlin-android"`** — without the Kotlin plugin, Gradle could not compile the module's Kotlin source and the package class (`TalaDBPackage`) was never available. Added the plugin to `android/build.gradle`.
+
 ## [0.7.8] - 2026-04-19
 
 ### Fixed
