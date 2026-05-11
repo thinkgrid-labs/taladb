@@ -20,6 +20,9 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
   "devDependencies": {
     "rimraf": "^5.0.0",
     "typescript": "^5.9.3",
