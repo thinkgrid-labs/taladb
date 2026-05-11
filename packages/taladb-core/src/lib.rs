@@ -2,6 +2,7 @@ pub mod aggregate;
 pub mod audit;
 pub mod collection;
 pub mod config;
+pub mod crdt;
 pub mod crypto;
 pub mod document;
 pub mod engine;
@@ -20,6 +21,10 @@ pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
 pub use audit::{read_audit_log, read_audit_log_since, AuditEntry, AuditOp};
 pub use collection::{Collection, CollectionIndexInfo, Update};
 pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
+pub use crdt::{
+    CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock, FieldMutation,
+    CRDT_CLOCKS_FIELD,
+};
 #[cfg(feature = "encryption")]
 pub use crypto::{migrate_encrypted_v0_to_v1, rekey, EncryptionKey};
 pub use document::{Document, Value};
