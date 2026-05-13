@@ -41,6 +41,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -94,6 +95,8 @@ pub struct HttpSyncHook {
     /// One sender per worker; indexed by shard (`hash(collection,id) % N`).
     /// Empty when sync is disabled.
     senders: Vec<std::sync::mpsc::SyncSender<SyncTask>>,
+    /// Cumulative count of events dropped due to channel backpressure.
+    dropped_events: Arc<AtomicU64>,
 }
 
 impl HttpSyncHook {
@@ -108,6 +111,7 @@ impl HttpSyncHook {
             return HttpSyncHook {
                 config: Arc::new(config),
                 senders: Vec::new(),
+                dropped_events: Arc::new(AtomicU64::new(0)),
             };
         }
 
@@ -139,7 +143,16 @@ impl HttpSyncHook {
         HttpSyncHook {
             config: Arc::new(config),
             senders,
+            dropped_events: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Returns the cumulative count of sync events dropped due to backpressure.
+    ///
+    /// A non-zero value means the background worker pool was saturated and some
+    /// events were permanently lost. Monitor this in production to detect sync lag.
+    pub fn dropped_event_count(&self) -> u64 {
+        self.dropped_events.load(Ordering::Relaxed)
     }
 
     fn endpoint_for(&self, event: &SyncEvent) -> Option<String> {
@@ -185,7 +198,12 @@ impl SyncHook for HttpSyncHook {
         // for events that *do* make it through — a dropped update is
         // permanently lost, just as before.
         if let Err(e) = self.senders[shard].try_send(task) {
-            tracing::warn!(error = %e, "sync: task channel full; dropping sync event");
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                error = %e,
+                dropped_total = self.dropped_events.load(Ordering::Relaxed),
+                "sync: task channel full; dropping sync event — check dropped_event_count()"
+            );
         }
     }
 }

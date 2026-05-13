@@ -45,6 +45,13 @@ use std::sync::Arc;
 const SNAPSHOT_MAGIC: &[u8; 4] = b"TDBS";
 const SNAPSHOT_VERSION: u32 = 1;
 
+/// Per-entry size cap for snapshot deserialization.
+///
+/// A crafted snapshot with a `u32::MAX`-length key or value would cause a
+/// 4 GiB allocation before the total-size check has a chance to catch it.
+/// This cap prevents that while being far larger than any real document.
+const MAX_SNAPSHOT_ENTRY_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+
 /// The main TalaDB database handle.
 pub struct Database {
     backend: Arc<dyn StorageBackend>,
@@ -271,8 +278,14 @@ impl Database {
             let mut wtxn = db.backend.begin_write()?;
             for _ in 0..entry_count {
                 let key_len = read_u32(data, &mut cursor)? as usize;
+                if key_len > MAX_SNAPSHOT_ENTRY_BYTES {
+                    return Err(TalaDbError::InvalidSnapshot);
+                }
                 let key = read_slice(data, &mut cursor, key_len)?.to_vec();
                 let val_len = read_u32(data, &mut cursor)? as usize;
+                if val_len > MAX_SNAPSHOT_ENTRY_BYTES {
+                    return Err(TalaDbError::InvalidSnapshot);
+                }
                 let val = read_slice(data, &mut cursor, val_len)?.to_vec();
                 wtxn.put(&name, &key, &val)?;
             }

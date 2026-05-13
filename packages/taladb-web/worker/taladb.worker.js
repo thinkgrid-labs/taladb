@@ -125,6 +125,22 @@ const log = isDev ? console.log.bind(console, '[TalaDB Worker]') : () => {};
 const warn = isDev ? console.warn.bind(console, '[TalaDB Worker]') : () => {};
 
 /**
+ * Origin of the page that spawned this DedicatedWorker. Messages from any
+ * other origin are silently dropped. Null only in edge environments where
+ * `location` is unavailable, in which case the check is skipped.
+ */
+const WORKER_ORIGIN = typeof location !== 'undefined' ? location.origin : null;
+
+/**
+ * Per-worker-instance random token. Included in every `taladb:secondary-write`
+ * BroadcastChannel message so the primary tab can reject unauthenticated
+ * injections that omit a token.
+ */
+const SESSION_TOKEN = (typeof self.crypto !== 'undefined' && typeof self.crypto.randomUUID === 'function')
+  ? self.crypto.randomUUID()
+  : Array.from(self.crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+
+/**
  * Resolving this releases the Web Lock and closes the sync handle.
  * Set inside doInit; called by the 'close' op or when the worker terminates.
  * @type {(() => void) | null}
@@ -288,7 +304,7 @@ function pushChangesetToPrimary() {
     const parsed = JSON.parse(changeset);
     if (parsed.length === 0) return;
     lastSecondaryPushMs = Date.now();
-    broadcastChannel.postMessage({ type: 'taladb:secondary-write', changeset });
+    broadcastChannel.postMessage({ type: 'taladb:secondary-write', token: SESSION_TOKEN, changeset });
     log(`Broadcast ${parsed.length} change(s) to primary tab`);
   } catch (err) {
     warn('Failed to export changeset for primary tab:', err);
@@ -314,6 +330,12 @@ function onWriteCommitted() {
 // ---------------------------------------------------------------------------
 
 self.onmessage = async (e) => {
+  // Reject messages from unexpected origins. In a DedicatedWorker only the
+  // creating page can post messages (browser-enforced), but this guard is a
+  // defence-in-depth measure in case the worker is ever repurposed.
+  if (WORKER_ORIGIN && e.origin && e.origin !== WORKER_ORIGIN) {
+    return;
+  }
   const { id, op, ...args } = e.data;
   try {
     const result = await dispatch(op, args);
@@ -531,8 +553,11 @@ async function doInit(dbName, configJson) {
         const resolve = pendingSnapshotResolve;
         pendingSnapshotResolve = null;
         resolve();
-      } else if (e.data?.type === 'taladb:secondary-write' && !idbFallback && db) {
+      } else if (e.data?.type === 'taladb:secondary-write' && typeof e.data.token === 'string' && e.data.token.length > 0 && !idbFallback && db) {
         // Primary (OPFS) tab: a secondary tab made a write — merge it in via LWW.
+        // The token requirement rejects unauthenticated injection attempts that
+        // omit the SESSION_TOKEN field (not a guarantee against same-origin attackers
+        // who observe the token, but defence-in-depth against naive injection).
         try {
           const applied = db.importChangeset(e.data.changeset);
           if (applied > 0) {

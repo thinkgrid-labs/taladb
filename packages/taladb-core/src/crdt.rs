@@ -58,6 +58,11 @@ use crate::sync::now_ms;
 /// Hidden document field that stores per-field logical clocks.
 pub const CRDT_CLOCKS_FIELD: &str = "_crdt_clocks";
 
+/// Default maximum number of entries accepted in a single [`CrdtChangeset`].
+///
+/// Override per-adapter via [`CrdtSyncAdapter::with_max_changeset_entries`].
+pub const DEFAULT_MAX_CHANGESET_ENTRIES: usize = 10_000;
+
 // ---------------------------------------------------------------------------
 // Clock
 // ---------------------------------------------------------------------------
@@ -154,6 +159,10 @@ pub trait CrdtAdapter: Send + Sync {
 pub struct CrdtSyncAdapter {
     node_id: String,
     g_set_fields: HashSet<String>,
+    /// When `Some`, only changes for listed collections are imported.
+    allowed_collections: Option<HashSet<String>>,
+    /// Maximum number of entries accepted in a single `import_crdt_changes` call.
+    max_changeset_entries: usize,
 }
 
 impl CrdtSyncAdapter {
@@ -161,7 +170,30 @@ impl CrdtSyncAdapter {
         CrdtSyncAdapter {
             node_id: node_id.into(),
             g_set_fields: HashSet::new(),
+            allowed_collections: None,
+            max_changeset_entries: DEFAULT_MAX_CHANGESET_ENTRIES,
         }
+    }
+
+    /// Override the per-import changeset entry limit (default: 10 000).
+    ///
+    /// Useful for trusted peer environments where larger batch syncs are expected.
+    pub fn with_max_changeset_entries(mut self, n: usize) -> Self {
+        self.max_changeset_entries = n;
+        self
+    }
+
+    /// Restrict `import_crdt_changes` to a known set of collection names.
+    ///
+    /// Any incoming [`CrdtChange`] whose collection is not in `collections` is
+    /// silently skipped. When not configured (the default), all collection names
+    /// are accepted for backwards compatibility.
+    pub fn with_allowed_collections(
+        mut self,
+        collections: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.allowed_collections = Some(collections.into_iter().map(Into::into).collect());
+        self
     }
 
     /// Configure specific array fields to use grow-only set semantics.
@@ -313,9 +345,12 @@ impl CrdtAdapter for CrdtSyncAdapter {
                     tracing::warn!(
                         collection = col_name,
                         error = %e,
-                        "crdt: corrupt tombstone timestamp, defaulting to epoch (0)"
+                        "crdt: corrupt tombstone timestamp, treating as max so deletion still propagates"
                     );
-                    0
+                    // Default to i64::MAX so the tombstone is treated as "newer than
+                    // everything" — ensures the delete propagates rather than being
+                    // silently ignored because ts=0 loses every dominates() comparison.
+                    i64::MAX
                 });
                 let ts_u64 = ts as u64;
                 if ts_u64 > since_ms {
@@ -340,9 +375,20 @@ impl CrdtAdapter for CrdtSyncAdapter {
         db: &crate::Database,
         changeset: CrdtChangeset,
     ) -> Result<u64, TalaDbError> {
+        if changeset.len() > self.max_changeset_entries {
+            return Err(TalaDbError::ChangesetTooLarge);
+        }
+
         let mut applied = 0u64;
 
         for change in changeset {
+            // Skip collections not in the allowlist (if one is configured).
+            if let Some(ref allowed) = self.allowed_collections {
+                if !allowed.contains(&change.collection) {
+                    continue;
+                }
+            }
+
             let col = db.collection(&change.collection)?;
 
             if let Some(ref delete_clock) = change.delete_clock {

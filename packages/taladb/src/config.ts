@@ -60,11 +60,23 @@ const ENDPOINT_FIELDS = [
   'delete_endpoint',
 ] as const;
 
+const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+function isLocalhostUrl(url: string): boolean {
+  try {
+    return LOCALHOST_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validate a parsed `TalaDbConfig`.
  *
  * Checks that every endpoint URL (if present) starts with `http://` or
  * `https://`. Throws a plain `Error` on the first invalid value.
+ * Logs a warning when a non-localhost `http://` endpoint is used — changesets
+ * will be transmitted without encryption.
  */
 export function validateConfig(config: TalaDbConfig): void {
   const sync = config.sync;
@@ -74,6 +86,12 @@ export function validateConfig(config: TalaDbConfig): void {
     if (url !== undefined && !url.startsWith('http://') && !url.startsWith('https://')) {
       throw new Error(
         `TalaDB config: invalid endpoint URL "${url}" — must start with http:// or https://`,
+      );
+    }
+    if (url?.startsWith('http://') && !isLocalhostUrl(url)) {
+      console.warn(
+        `[TalaDB] sync endpoint "${url}" uses plaintext HTTP — ` +
+        `use HTTPS in production to prevent changeset interception`,
       );
     }
   }

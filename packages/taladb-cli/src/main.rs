@@ -160,6 +160,24 @@ enum ExportFormat {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Reject paths containing `..` components to prevent directory traversal.
+///
+/// The CLI runs with the user's own permissions so the OS enforces access
+/// control, but rejecting `..` paths avoids accidental overwrites of files
+/// outside the intended working directory.
+fn check_no_traversal(path: &std::path::Path, label: &str) -> Result<()> {
+    if path
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        anyhow::bail!(
+            "{label} path must not contain '..' components: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -308,6 +326,7 @@ fn cmd_export(
 
     match out {
         Some(path) => {
+            check_no_traversal(path, "--out")?;
             std::fs::write(path, &output).with_context(|| format!("writing {:?}", path))?
         }
         None => println!("{}", output),
@@ -321,6 +340,7 @@ fn cmd_export(
 // ---------------------------------------------------------------------------
 
 fn cmd_import(file: &PathBuf, collection: &str, data: &PathBuf) -> Result<()> {
+    check_no_traversal(data, "import data")?;
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
     let col = db.collection(collection)?;
 
@@ -399,8 +419,11 @@ fn cmd_sync(
 ) -> Result<()> {
     // Load config — auto-discover from the database file's parent directory.
     let cfg = match config_path {
-        Some(p) => taladb_core::load_from_path(p)
-            .with_context(|| format!("loading config from {:?}", p))?,
+        Some(p) => {
+            check_no_traversal(p, "--config")?;
+            taladb_core::load_from_path(p)
+                .with_context(|| format!("loading config from {:?}", p))?
+        }
         None => {
             let dir = file.parent().unwrap_or(std::path::Path::new("."));
             taladb_core::load_auto(dir)?

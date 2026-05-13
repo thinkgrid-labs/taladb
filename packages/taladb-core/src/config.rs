@@ -33,6 +33,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::TalaDbError;
 
+// Localhost variants accepted for plaintext HTTP without a warning.
+const LOCALHOST_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]", "::1"];
+
 // ---------------------------------------------------------------------------
 // Config structs
 // ---------------------------------------------------------------------------
@@ -112,6 +115,18 @@ impl TalaDbConfig {
                 return Err(TalaDbError::Config(format!(
                     "invalid endpoint URL \"{raw}\" — missing host"
                 )));
+            }
+            // Warn when a non-localhost HTTP endpoint is used — changesets are
+            // transmitted without encryption and are vulnerable to interception.
+            if parsed.scheme() == "http" {
+                let host = parsed.host_str().unwrap_or("");
+                if !LOCALHOST_HOSTS.contains(&host) {
+                    tracing::warn!(
+                        endpoint = raw,
+                        "taladb: sync endpoint uses plaintext HTTP — \
+                         use HTTPS in production to prevent changeset interception"
+                    );
+                }
             }
         }
         Ok(())
