@@ -93,8 +93,12 @@ jobs:
           cache: pnpm
 
       - run: pnpm install
-      - run: node_modules/.bin/tsc -p packages/taladb/tsconfig.json --noEmit
-      - run: node_modules/.bin/tsc -p packages/taladb-cloudflare/tsconfig.json --noEmit
+
+      - name: tsc --noEmit (taladb)
+        run: node_modules/.bin/tsc -p packages/taladb/tsconfig.json --noEmit
+
+      - name: tsc --noEmit (@taladb/react)
+        run: node_modules/.bin/tsc -p packages/taladb-react/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
   # Build WASM
