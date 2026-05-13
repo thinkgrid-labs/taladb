@@ -76,6 +76,36 @@ jobs:
       - run: cargo test --workspace
 
   # ---------------------------------------------------------------------------
+  # TypeScript type-check
+  # ---------------------------------------------------------------------------
+  ts-check:
+    name: TypeScript — type check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: tsc --noEmit (taladb)
+        run: node_modules/.bin/tsc -p packages/taladb/tsconfig.json --noEmit
+
+      - name: tsc --noEmit (@taladb/react)
+        run: node_modules/.bin/tsc -p packages/taladb-react/tsconfig.json --noEmit
+
+  # ---------------------------------------------------------------------------
   # Build WASM
   # ---------------------------------------------------------------------------
   build-wasm:
