@@ -344,7 +344,7 @@ jobs:
           packages: "ndk;27.2.12479018"
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        run: cargo install cargo-ndk --locked --force
 
       - name: Build Android targets
         working-directory: packages/taladb-react-native/rust
