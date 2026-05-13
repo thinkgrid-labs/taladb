@@ -485,19 +485,19 @@ jobs:
       - name: Download Node.js binaries (linux)
         uses: actions/download-artifact@v4
         with:
-          name: release-taladb-node-linux-x64
+          name: taladb-node-linux
           path: packages/taladb-node
 
       - name: Download Node.js binaries (macos)
         uses: actions/download-artifact@v4
         with:
-          name: release-taladb-node-macos-aarch64
+          name: taladb-node-macos
           path: packages/taladb-node
 
       - name: Download Node.js binaries (windows)
         uses: actions/download-artifact@v4
         with:
-          name: release-taladb-node-windows-x64
+          name: taladb-node-windows
           path: packages/taladb-node
 
       - name: Publish @taladb/node
