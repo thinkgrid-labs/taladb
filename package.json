@@ -1,7 +1,7 @@
 {
   "name": "taladb-workspace",
   "private": true,
-  "version": "0.7.11",
+  "version": "0.8.0",
   "type": "module",
   "scripts": {
     "sync-version": "node scripts/sync-version.js",
@@ -21,7 +21,9 @@
     "docs:preview": "vitepress preview docs"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "devDependencies": {
     "rimraf": "^5.0.0",
