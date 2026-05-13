@@ -28,6 +28,7 @@ fn err_to_napi(e: TalaDbError) -> napi::Error {
         TalaDbError::Config(_) => "Config",
         TalaDbError::InvalidName(_) => "InvalidName",
         TalaDbError::QueryTimeout => "QueryTimeout",
+        TalaDbError::ChangesetTooLarge => "ChangesetTooLarge",
     };
     napi::Error::from_reason(format!("{}: {}", code, e))
 }

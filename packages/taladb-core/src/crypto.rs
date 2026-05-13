@@ -50,8 +50,8 @@ const CRYPTO_FORMAT_V1: u8 = 0x01;
 #[cfg(feature = "encryption")]
 const NONCE_LEN_V1: usize = 12;
 
-/// Minimum PBKDF2-HMAC-SHA256 iteration count (OWASP 2023 recommendation).
-pub const MIN_PBKDF2_ITERATIONS: u32 = 100_000;
+/// Minimum PBKDF2-HMAC-SHA256 iteration count (OWASP 2024 recommendation).
+pub const MIN_PBKDF2_ITERATIONS: u32 = 600_000;
 
 /// A 256-bit encryption key.
 ///

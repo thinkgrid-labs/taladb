@@ -158,28 +158,23 @@ pub fn execute(
         return Ok(results);
     }
 
-    // Pre-compile Regex once before the document loop. A malformed pattern
-    // fails fast here instead of silently returning zero matches per doc.
-    if let Filter::Regex(field, pattern) = filter {
-        let re = regex::RegexBuilder::new(pattern)
-            .size_limit(1 << 20)
-            .dfa_size_limit(1 << 20)
-            .build()
-            .map_err(|e| TalaDbError::InvalidFilter(format!("regex: {e}")))?;
-        let mut results = Vec::with_capacity(candidates.len());
-        for d in candidates {
-            if let Some(dl) = deadline {
-                if Instant::now() >= dl {
-                    return Err(TalaDbError::QueryTimeout);
-                }
-            }
-            let matches = matches!(d.get(field), Some(Value::Str(text)) if re.is_match(text));
-            if matches {
-                results.push(d);
-            }
+    // Pre-compile all regex patterns in the filter tree (including those nested
+    // inside And/Or) once before the document loop.  Compiling per-document was
+    // O(N * compile_cost); with the cache it is O(1 * compile_cost + N * match).
+    // A malformed pattern fails fast here rather than silently returning false.
+    let regex_cache: std::collections::HashMap<String, regex::Regex> = {
+        let patterns = filter.collect_regex_patterns();
+        let mut map = std::collections::HashMap::with_capacity(patterns.len());
+        for pat in patterns {
+            let re = regex::RegexBuilder::new(&pat)
+                .size_limit(1 << 20)
+                .dfa_size_limit(1 << 20)
+                .build()
+                .map_err(|e| TalaDbError::InvalidFilter(format!("regex: {e}")))?;
+            map.insert(pat, re);
         }
-        return Ok(results);
-    }
+        map
+    };
 
     let mut results = Vec::with_capacity(candidates.len());
     for d in candidates {
@@ -188,7 +183,7 @@ pub fn execute(
                 return Err(TalaDbError::QueryTimeout);
             }
         }
-        if filter.matches(&d) {
+        if filter.matches_with_cache(&d, &regex_cache) {
             results.push(d);
         }
     }

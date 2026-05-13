@@ -17,22 +17,47 @@ Better DX drives adoption and reduces time-to-production.
 
 ### Sync 
 
-**Future extensions** of this feature (not in scope for initial release):
 - Native NoSQL adapters (`sync.adapter: mongodb | firestore | dynamodb`) with direct connection strings, removing the need for an intermediate API
 - Bi-directional pull: `taladb sync --pull` fetches from the remote and merges locally
 - Per-collection sync config (sync some collections, skip others)
 
-### ~~`taladb studio` — local web UI~~ ✓ Shipped in 0.7.3
+### Aggregation API
 
-A browser-based GUI (served by `taladb-cli`) for browsing collections, running ad-hoc queries, inspecting indexes, and visualising query plans — similar to MongoDB Compass but for local files.
+A pipeline-style aggregation API for computing summaries inside the engine without materialising every document in JavaScript:
 
-### ~~Zod / Valibot schema validation~~ ✓ Shipped in 0.7.3
+- `collection.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }])`
+- Supported stages (v1): `$match`, `$group`, `$sort`, `$limit`, `$project`
+- Group accumulators: `$sum`, `$count`, `$avg`, `$min`, `$max`
+- Runs as a single pass over the B-tree / index; result never fully materialised in Rust heap for large collections
 
-An optional `schema` option on `collection()` that validates documents with a Zod or Valibot schema before insert and after find, providing runtime type safety without a compile step.
+### Compound indexes
+
+Multi-field B-tree indexes so queries filtered or sorted on two or more fields use an index scan instead of a full-collection scan:
+
+- `collection.createIndex(['userId', 'createdAt'])` — composite key, ascending by default
+- Descending order per field: `createIndex([['userId', 'asc'], ['createdAt', 'desc']])`
+- Query planner selects the compound index automatically when the leading field matches the filter
 
 ### `taladb generate` — TypeScript type generation
 
 Inspect a live database and emit TypeScript interfaces for each collection, inferred from the stored documents. Useful for projects that don't start with a schema.
+
+### Framework adapters — Svelte and Vue
+
+- **`@taladb/svelte`** — `readable` stores backed by `Collection.subscribe`, plus a `TalaDBContext` Svelte context helper. `$findResult` is a readable store that re-derives on every write matching the filter.
+- **`@taladb/vue`** — `useFind` and `useFindOne` composables built on Vue's `ref` + `watchEffect`, mirroring the `@taladb/react` hook API.
+
+Both packages are thin wrappers over the same event model used by the React hooks.
+
+### First-party sync backend adapters
+
+Thin adapter packages that implement the `SyncAdapter` interface for popular backends, so no custom server is required:
+
+- **`@taladb/sync-supabase`** — uses a Supabase table + Realtime channel as the changeset transport
+- **`@taladb/sync-turso`** — writes changesets to a Turso (libSQL) table; useful for Electron and server-side apps
+- **`@taladb/sync-d1`** — Cloudflare D1 table as the sync relay; pairs naturally with `@taladb/cloudflare`
+
+Each adapter handles auth, changeset serialisation, and incremental polling/push. CRDT or LWW merge is still applied client-side.
 
 ### VS Code extension
 
@@ -42,19 +67,9 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 ## 2 · Advanced sync
 
-Multi-device and collaborative data sync beyond simple API push.
-
-### Conflict-free sync with CRDTs
-
-A `CrdtSyncAdapter` that uses per-field logical clocks (LWW-register or grow-only sets) to merge concurrent writes from multiple devices without conflicts — suitable for collaborative offline-first apps.
-
-### ~~Delta snapshots~~ ✓ Shipped in 0.7.3
-
-Instead of exporting the full database on every sync, export only the records that changed since a given ULID watermark — reducing bandwidth for incremental sync scenarios. Foundation for the sync server below.
-
 ### Sync over WebSockets
 
-A reference sync server (`taladb-sync-server`) that accepts snapshot diffs over a WebSocket connection and applies `LastWriteWins` or CRDT merge logic server-side, enabling multi-device sync without a cloud database.
+The CRDT merge protocol (field-level logical clocks, `CrdtSyncAdapter`) shipped in **v0.7.11**. What remains is the transport: a reference sync server (`taladb-sync-server`) that accepts changesets over a persistent WebSocket connection and fans them out to connected peers, enabling multi-device sync without a managed cloud database. Merge logic stays client-side via `import_crdt_changes`.
 
 ---
 
@@ -62,27 +77,23 @@ A reference sync server (`taladb-sync-server`) that accepts snapshot diffs over 
 
 Internal improvements that improve efficiency and interoperability.
 
-### ~~Write-ahead log compaction~~ ✓ Shipped in 0.7.3
-
-`db.compact()` is now available on all platforms. It calls redb's built-in compaction and is exposed via the WASM worker (`compact` op), the Node.js napi binding, and the React Native C FFI (`taladb_compact`). Call it during idle periods after bulk deletes or tombstone pruning to reclaim disk space on demand.
-
 ### Pluggable serialisation
 
 Allow the caller to swap `postcard` for `MessagePack` or `CBOR` via a `Codec` trait, making it easier to interoperate with databases or wire formats that already use those encodings.
+
+### Document TTL (time-to-live)
+
+Set an expiry on any document at write time:
+
+- `collection.insert({ ...doc, _ttl: Date.now() + 60_000 })` — document auto-deleted after the TTL elapses
+- Background reaper runs on a configurable interval (default: 60 s in Node.js, on next open in browser)
+- Tombstone generated for TTL deletions so expiry propagates correctly through sync
 
 ---
 
 ## 4 · Platform
 
 Expanding the runtimes TalaDB can target.
-
-### ~~Cloudflare Workers~~ ✓ Shipped in 0.7.3
-
-`@taladb/cloudflare` is now available. It runs TalaDB's existing WASM core (in-memory mode — no OPFS required) inside Cloudflare Workers Durable Objects. State is persisted as a binary snapshot in Durable Objects `storage.put()` between requests. The `TalaDBDurableObject` base class handles lazy init and snapshot restore. See the [Cloudflare guide](/guide/cloudflare) for usage.
-
-### ~~Bun native module~~ ✓ Shipped in 0.7.3
-
-`@taladb/node` now works on Bun out of the box via Bun's built-in N-API compatibility layer. No separate `bun:ffi` package is needed — install `@taladb/node` and use it identically to Node.js. Added Linux ARM64 (`aarch64-unknown-linux-gnu`) and Intel Mac (`x86_64-apple-darwin`) prebuilt targets alongside the existing ones.
 
 ### Swift / Kotlin native packages
 
@@ -91,21 +102,3 @@ First-party Swift (`TalaDB.swift`) and Kotlin (`taladb-kotlin`) packages that wr
 ### WASI target
 
 Compile `taladb-core` to WASI (`wasm32-wasip1`) so it can run inside WASI runtimes (Wasmtime, WasmEdge, Fastly Compute) with filesystem access — bringing the same engine to server-side WASM environments.
-
----
-
-## 5 · Security
-
-Hardening for apps that handle sensitive data.
-
-### ~~Key rotation~~ ✓ Shipped in 0.7.2
-
-`db.rekey(backend, old_key, new_key)` re-encrypts all stored values atomically. See the [encryption API](/api/encryption) for usage.
-
-### ~~Field-level encryption~~ ✓ Shipped in 0.7.2
-
-`Collection.with_field_encryption(fields, key)` encrypts individual fields with AES-GCM-256. Unencrypted fields remain fully indexable.
-
-### ~~Audit log~~ ✓ Shipped in 0.7.2
-
-`Collection.with_audit_log(caller)` writes an append-only `_audit` entry after every mutation. Read with `read_audit_log(backend, collection_filter, op_filter)`.

@@ -223,6 +223,31 @@ Retries up to 3 times with 200 / 400 / 800 ms backoff on 5xx or network errors. 
 
 See the [HTTP Push Sync guide](/guide/http-sync) for full documentation.
 
+## CRDT multi-device sync
+
+`CrdtSyncAdapter` provides conflict-free sync across multiple devices using per-field LWW-registers. Unlike [HTTP Push Sync](#http-push-sync), CRDT sync is bidirectional and merge-based: two devices can write the same document independently and both changes are preserved when they sync.
+
+```rust
+let adapter = CrdtSyncAdapter::new("device-alice");
+
+// Stamp fields with per-field clocks before inserting
+let fields = adapter.stamp_insert(vec![
+    ("title".into(), Value::Str("Hello".into())),
+    ("price".into(), Value::Int(99)),
+]);
+col.insert(fields)?;
+
+// Export changes since last sync and import a peer's changes
+let outgoing = adapter.export_crdt_changes(&db, &["docs"], since_ms)?;
+let applied  = adapter.import_crdt_changes(&db, peer_changeset)?;
+```
+
+The core property: if device A writes `title` and device B writes `price` on the same document at the same time, both fields survive after sync — neither is lost. When the same field is written concurrently, the higher timestamp wins; ties are broken by `node_id` lexicographic order.
+
+Array fields can optionally use **grow-only set** (G-Set) semantics via `.with_g_set_fields(["tags"])` — elements are merged by union across replicas and can never be removed.
+
+See the [CRDT Sync guide](/guide/crdt-sync) for full documentation.
+
 ## CLI dev tools
 
 Download the pre-built `taladb-cli` binary for your platform from the [GitHub Releases page](https://github.com/thinkgrid-labs/taladb/releases):

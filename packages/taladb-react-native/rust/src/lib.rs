@@ -838,7 +838,11 @@ pub unsafe extern "C" fn taladb_drop_vector_index(
         (Some(h), Some(c), Some(f)) => (h, c, f),
         _ => return -1,
     };
-    match h.db.collection(&col).and_then(|c| c.drop_vector_index(&fld)) {
+    match h
+        .db
+        .collection(&col)
+        .and_then(|c| c.drop_vector_index(&fld))
+    {
         Ok(()) => 1,
         Err(e) => {
             set_last_error(e.to_string());
@@ -863,7 +867,11 @@ pub unsafe extern "C" fn taladb_upgrade_vector_index(
         (Some(h), Some(c), Some(f)) => (h, c, f),
         _ => return -1,
     };
-    match h.db.collection(&col).and_then(|c| c.upgrade_vector_index(&fld)) {
+    match h
+        .db
+        .collection(&col)
+        .and_then(|c| c.upgrade_vector_index(&fld))
+    {
         Ok(()) => 1,
         Err(e) => {
             set_last_error(e.to_string());

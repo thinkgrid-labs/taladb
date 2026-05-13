@@ -55,6 +55,9 @@ pub enum TalaDbError {
 
     #[error("query exceeded the configured timeout")]
     QueryTimeout,
+
+    #[error("changeset exceeds the maximum allowed entry count")]
+    ChangesetTooLarge,
 }
 
 impl From<redb::DatabaseError> for TalaDbError {

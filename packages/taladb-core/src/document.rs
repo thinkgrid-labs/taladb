@@ -184,13 +184,23 @@ impl Document {
 }
 
 /// Traverse a `Value::Object` using a dot-separated path.
+///
+/// Returns `None` when nesting exceeds 64 levels to prevent stack overflow
+/// from adversarially crafted field paths.
 pub fn value_get_nested<'a>(val: &'a Value, path: &str) -> Option<&'a Value> {
+    value_get_nested_depth(val, path, 0)
+}
+
+fn value_get_nested_depth<'a>(val: &'a Value, path: &str, depth: u8) -> Option<&'a Value> {
+    if depth >= 64 {
+        return None;
+    }
     if let Some(dot) = path.find('.') {
         let (head, tail) = (&path[..dot], &path[dot + 1..]);
         match val {
             Value::Object(fields) => {
                 let child = fields.iter().find(|(k, _)| k == head).map(|(_, v)| v)?;
-                value_get_nested(child, tail)
+                value_get_nested_depth(child, tail, depth + 1)
             }
             _ => None,
         }

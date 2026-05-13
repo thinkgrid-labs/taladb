@@ -92,7 +92,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.7.10",
+        text: "v0.7.11",
         items: [
           {
             text: "Changelog",
@@ -128,6 +128,7 @@ export default defineConfig({
           { text: "Cloudflare Workers", link: "/guide/cloudflare" },
           { text: "CLI Dev Tools", link: "/guide/cli" },
           { text: "HTTP Push Sync", link: "/guide/http-sync" },
+          { text: "CRDT Sync", link: "/guide/crdt-sync" },
         ],
       },
       {

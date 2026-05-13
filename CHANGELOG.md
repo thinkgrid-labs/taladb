@@ -5,6 +5,28 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.11] - 2026-05-13
+
+### Added
+
+- **`taladb-core` — `CrdtSyncAdapter`: conflict-free multi-device sync with per-field logical clocks** — new `crdt` module implementing bidirectional CRDT-based sync that merges concurrent writes at field granularity rather than whole-document LWW. Two devices can independently write different fields of the same document; both changes survive after sync with no coordination required.
+
+  - **`FieldClock { ts_ms, node_id }`** — per-field logical clock. `dominates()` compares timestamp first; `node_id` lexicographic order breaks ties deterministically across any number of replicas.
+  - **`FieldMutation { field, value, clock }`** — single field-level change exported from one replica. `value: None` signals field removal.
+  - **`CrdtChange { collection, id, mutations, delete_clock }`** — document-level change record. Either a set of field mutations or a delete (mutually exclusive). Deletions are propagated as tombstones via the same mechanism used by `LastWriteWins`.
+  - **`CrdtChangeset = Vec<CrdtChange>`** — the serialisable unit exchanged between peers; no transport is prescribed.
+  - **`CrdtAdapter` trait** — `export_crdt_changes(db, collections, since_ms)` / `import_crdt_changes(db, changeset)`.
+  - **`CrdtSyncAdapter`** — concrete implementation of `CrdtAdapter`:
+    - `new(node_id)` — construct with a stable per-device string identifier.
+    - `with_g_set_fields(fields)` — opt specific array fields into grow-only set (G-Set) semantics: merges by union rather than LWW, so concurrent adds from any replica are always preserved.
+    - `stamp_insert(fields)` / `stamp_insert_at(fields, ts_ms)` — prepare fields for a CRDT-tracked insert; stamps every non-system field with a per-field clock under `_crdt_clocks` and adds `_changed_at`.
+    - `update_fields(col, id, changes)` / `update_fields_at(col, id, changes, ts_ms)` — load a document, advance clocks only for the changed fields, and write back atomically. Required for CRDT tracking on updates (replaces `col.update_one` in CRDT-aware write paths).
+  - **Clock storage** — clocks are stored inline in each document as `_crdt_clocks: Object({ field: { t: ts_ms, n: node_id } })`. No schema migrations, no new storage tables. Fully compatible with databases that also use `LastWriteWins`.
+  - **Export** — uses the existing `_changed_at` secondary index for an O(log N) range scan. Only exports field mutations whose individual clock is newer than `since_ms`, so incremental sync transfers the minimum necessary data.
+  - **Import / merge** — for each incoming `CrdtChange`: loads the local document (or creates a new one if absent), compares per-field clocks, applies only the fields where the remote clock dominates, updates `_crdt_clocks` and `_changed_at`, then writes the merged document back. Documents not touched by the changeset are left completely untouched.
+  - All public types re-exported from the crate root: `CrdtAdapter`, `CrdtChange`, `CrdtChangeset`, `CrdtSyncAdapter`, `FieldClock`, `FieldMutation`, `CRDT_CLOCKS_FIELD`.
+  - 21 new integration tests in `tests/crdt.rs` covering: `stamp_insert` metadata shape, `update_fields_at` partial clock advance, concurrent writes to different fields, same-field conflict (newer wins / older loses), timestamp-tie tiebreaking by `node_id`, field removal, G-Set union, G-Set deduplication, delete ordering, export `since_ms` filtering, export → import round-trip, and three-way merge.
+
 ## [0.7.10] - 2026-04-19
 
 ### Fixed
@@ -337,21 +359,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Binary snapshot export / import
 - SharedWorker + OPFS persistence for browsers; in-memory fallback for Safari iOS
 - Comprehensive VitePress documentation site
-
-[Unreleased]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.8...HEAD
-[0.7.8]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.7...v0.7.8
-[0.7.7]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.6...v0.7.7
-[0.7.6]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.5...v0.7.6
-[0.7.5]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.4...v0.7.5
-[0.7.4]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.3...v0.7.4
-[0.7.3]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.2...v0.7.3
-[0.7.2]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.1...v0.7.2
-[0.7.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.7.0...v0.7.1
-[0.7.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.6.1...v0.7.0
-[0.6.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.6.0...v0.6.1
-[0.6.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.1...v0.4.0
-[0.2.1]: https://github.com/thinkgrid-labs/taladb/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/thinkgrid-labs/taladb/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/thinkgrid-labs/taladb/releases/tag/v0.1.0

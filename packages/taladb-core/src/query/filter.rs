@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Value};
@@ -146,6 +148,58 @@ impl Filter {
                     false
                 }
             }
+        }
+    }
+
+    /// Recursively collect all unique regex patterns in this filter tree.
+    ///
+    /// Used by the query executor to pre-compile regexes once per query rather
+    /// than once per document.
+    pub fn collect_regex_patterns(&self) -> Vec<String> {
+        let mut patterns = Vec::new();
+        self.collect_regex_patterns_into(&mut patterns);
+        patterns.sort();
+        patterns.dedup();
+        patterns
+    }
+
+    fn collect_regex_patterns_into(&self, out: &mut Vec<String>) {
+        match self {
+            Filter::Regex(_, pattern) => out.push(pattern.clone()),
+            Filter::And(filters) | Filter::Or(filters) => {
+                for f in filters {
+                    f.collect_regex_patterns_into(out);
+                }
+            }
+            Filter::Not(inner) => inner.collect_regex_patterns_into(out),
+            _ => {}
+        }
+    }
+
+    /// Evaluate this filter using pre-compiled regexes from `regex_cache`.
+    ///
+    /// For Regex variants the cached `Regex` object is reused instead of
+    /// recompiling the pattern.  All other variants delegate to `matches`.
+    pub fn matches_with_cache(
+        &self,
+        doc: &Document,
+        regex_cache: &HashMap<String, regex::Regex>,
+    ) -> bool {
+        match self {
+            Filter::Regex(field, pattern) => {
+                let Some(re) = regex_cache.get(pattern) else {
+                    return false;
+                };
+                matches!(doc.get(field), Some(Value::Str(text)) if re.is_match(text))
+            }
+            Filter::And(filters) => filters
+                .iter()
+                .all(|f| f.matches_with_cache(doc, regex_cache)),
+            Filter::Or(filters) => filters
+                .iter()
+                .any(|f| f.matches_with_cache(doc, regex_cache)),
+            Filter::Not(inner) => !inner.matches_with_cache(doc, regex_cache),
+            other => other.matches(doc),
         }
     }
 
