@@ -40,8 +40,12 @@ fn new_ulid() -> Ulid {
         }
     };
 
-    let mut buf = [0u8; 10]; // 80-bit random payload
-    getrandom::fill(&mut buf).unwrap_or(());
+    // 80-bit random payload. Entropy failure must not be silently ignored: a
+    // zeroed random field makes IDs predictable and collision-prone across
+    // processes.
+    let mut buf = [0u8; 10];
+    getrandom::fill(&mut buf)
+        .expect("taladb: system entropy source failed while generating a ULID");
     // Upper 16 bits of the random field = monotonic sequence; lower 64 bits = random.
     let rand_lo = u64::from_le_bytes(buf[..8].try_into().unwrap());
     let random = ((seq as u128) << 64) | (rand_lo as u128);
@@ -134,12 +138,15 @@ impl Document {
     pub fn new(fields: Vec<(String, Value)>) -> Self {
         Document {
             id: new_ulid(),
-            fields,
+            fields: dedupe_fields(fields),
         }
     }
 
     pub fn with_id(id: Ulid, fields: Vec<(String, Value)>) -> Self {
-        Document { id, fields }
+        Document {
+            id,
+            fields: dedupe_fields(fields),
+        }
     }
 
     /// Return the value at `key`, supporting dot-notation for nested objects.
@@ -181,6 +188,30 @@ impl Document {
     pub fn contains_key(&self, key: &str) -> bool {
         self.get(key).is_some()
     }
+}
+
+/// Drop duplicate field names, keeping the first occurrence.
+///
+/// `get`/`set` only ever see the first entry for a name, but duplicates would
+/// all be serialized, silently bloating storage and resurfacing after a
+/// deserialize → mutate → serialize cycle. Normalizing at construction keeps
+/// the in-memory and on-disk views consistent.
+fn dedupe_fields(fields: Vec<(String, Value)>) -> Vec<(String, Value)> {
+    // Fast path: small field lists with unique names allocate nothing extra.
+    let has_dup = fields
+        .iter()
+        .enumerate()
+        .any(|(i, (k, _))| fields[..i].iter().any(|(k2, _)| k2 == k));
+    if !has_dup {
+        return fields;
+    }
+    let mut out: Vec<(String, Value)> = Vec::with_capacity(fields.len());
+    for (k, v) in fields {
+        if !out.iter().any(|(k2, _)| k2 == &k) {
+            out.push((k, v));
+        }
+    }
+    out
 }
 
 /// Traverse a `Value::Object` using a dot-separated path.

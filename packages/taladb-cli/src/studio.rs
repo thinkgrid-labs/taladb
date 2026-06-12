@@ -12,11 +12,12 @@ const HTML: &str = include_str!("../studio.html");
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
-pub fn cmd_studio(file: &Path, port: u16, no_open: bool) -> Result<()> {
+pub fn cmd_studio(file: &Path, port: u16, host: &str, no_open: bool) -> Result<()> {
     let db = Database::open(file).with_context(|| format!("opening {:?}", file))?;
-    let addr = format!("0.0.0.0:{port}");
-    let server =
-        Server::http(&addr).map_err(|e| anyhow::anyhow!("cannot bind to port {port}: {e}"))?;
+    // Loopback by default: the studio has no authentication, so any reachable
+    // client can browse and delete documents.
+    let addr = format!("{host}:{port}");
+    let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("cannot bind to {addr}: {e}"))?;
 
     let url = format!("http://localhost:{port}");
     eprintln!();
@@ -26,16 +27,25 @@ pub fn cmd_studio(file: &Path, port: u16, no_open: bool) -> Result<()> {
     eprintln!("  URL      : {url}");
     eprintln!("  Ctrl+C   : stop server");
     eprintln!();
+    if !is_loopback_host(host) {
+        eprintln!("  WARNING: bound to {host} — the studio has no authentication;");
+        eprintln!("           anyone who can reach this address can read and delete data.");
+        eprintln!();
+    }
 
     if !no_open {
         open_browser(&url);
     }
 
     for request in server.incoming_requests() {
-        handle(request, &db, file);
+        handle(request, &db, file, host);
     }
 
     Ok(())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]")
 }
 
 // ── Browser opener ─────────────────────────────────────────────────────────────
@@ -55,7 +65,32 @@ fn open_browser(url: &str) {
 
 // ── Request dispatch ───────────────────────────────────────────────────────────
 
-fn handle(request: Request, db: &Database, file: &Path) {
+fn handle(request: Request, db: &Database, file: &Path, bind_host: &str) {
+    // Validate the Host header against DNS rebinding: a malicious website can
+    // point its own hostname at 127.0.0.1 and issue same-origin requests to
+    // this server. Such requests carry the attacker's hostname in Host, so
+    // rejecting anything that isn't localhost (or the explicit bind host)
+    // blocks the attack without affecting normal browser use.
+    let host_ok = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Host"))
+        .map(|h| {
+            let value = h.value.as_str();
+            // Strip the port: "[::1]:4321" → "::1", "127.0.0.1:4321" → "127.0.0.1".
+            let name = if let Some(rest) = value.strip_prefix('[') {
+                rest.split(']').next().unwrap_or(rest)
+            } else {
+                value.rsplit_once(':').map(|(n, _)| n).unwrap_or(value)
+            };
+            is_loopback_host(name) || name == bind_host
+        })
+        .unwrap_or(false);
+    if !host_ok {
+        let _ = request.respond(resp_error(403, "forbidden: unexpected Host header"));
+        return;
+    }
+
     let url = request.url().to_owned();
     let method = request.method().clone();
 
@@ -275,9 +310,12 @@ mod tests {
         _dir: TempDir, // keeps temp dir alive until dropped
     }
 
+    /// One seed collection: `(collection_name, documents)`.
+    type SeedCollection<'a> = (&'a str, Vec<Vec<(String, Value)>>);
+
     impl TestServer {
         /// `cols`: slice of `(collection_name, documents)`.
-        fn new(cols: &[(&str, Vec<Vec<(String, Value)>>)]) -> Self {
+        fn new(cols: &[SeedCollection]) -> Self {
             let port = next_port();
             let dir = tempfile::tempdir().unwrap();
             let db_path = dir.path().join("test.db");
@@ -299,7 +337,7 @@ mod tests {
                 let db = Database::open(&path2).unwrap();
                 let server = Server::http(format!("127.0.0.1:{port}")).unwrap();
                 for request in server.incoming_requests() {
-                    handle(request, &db, &path2);
+                    handle(request, &db, &path2, "127.0.0.1");
                 }
             });
 
@@ -651,6 +689,20 @@ mod tests {
     // =========================================================================
     // Integration tests — routing
     // =========================================================================
+
+    #[test]
+    fn rejects_foreign_host_header() {
+        // Simulates DNS rebinding: the request reaches the server but carries
+        // the attacker's hostname in the Host header.
+        let srv = TestServer::new(&[("things", vec![doc(&[("n", Value::Int(1))])])]);
+        let resp = srv
+            .client
+            .get(format!("http://127.0.0.1:{}/api/collections", srv.port))
+            .header("Host", "evil.example.com")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 403);
+    }
 
     #[test]
     fn unknown_route_returns_404() {

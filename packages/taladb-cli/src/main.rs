@@ -117,6 +117,11 @@ enum Command {
         /// Port to listen on (default: 4321).
         #[arg(long, default_value_t = 4321)]
         port: u16,
+        /// Address to bind. Defaults to loopback only; the studio has no
+        /// authentication, so binding 0.0.0.0 exposes read/delete access to
+        /// the whole network.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
         /// Do not open a browser window automatically.
         #[arg(long)]
         no_open: bool,
@@ -205,8 +210,9 @@ fn main() -> Result<()> {
         Command::Studio {
             file,
             port,
+            host,
             no_open,
-        } => studio::cmd_studio(&file, port, no_open),
+        } => studio::cmd_studio(&file, port, &host, no_open),
         Command::Sync {
             file,
             collection,

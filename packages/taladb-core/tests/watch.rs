@@ -254,3 +254,62 @@ fn watch_closed_after_registry_dropped() {
         other => panic!("expected WatchClosed or None, got: {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Collection::watch — end-to-end wiring (writes notify watchers)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn collection_watch_receives_snapshots_after_writes() {
+    use taladb_core::collection::Update;
+    use taladb_core::Value;
+
+    let db = taladb_core::Database::open_in_memory().unwrap();
+    let col = db.collection("tasks").unwrap();
+
+    let handle = col.watch(Filter::Eq("done".into(), Value::Bool(false)));
+
+    // Insert through a *different* handle of the same collection.
+    let col2 = db.collection("tasks").unwrap();
+    col2.insert(vec![
+        ("title".into(), Value::Str("write tests".into())),
+        ("done".into(), Value::Bool(false)),
+    ])
+    .unwrap();
+
+    let snapshot = handle.next().unwrap();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(
+        snapshot[0].get("title"),
+        Some(&Value::Str("write tests".into()))
+    );
+
+    // Updating the doc out of the filter produces an empty snapshot.
+    col2.update_one(
+        Filter::Eq("done".into(), Value::Bool(false)),
+        Update::Set(vec![("done".into(), Value::Bool(true))]),
+    )
+    .unwrap();
+
+    let snapshot = handle.next().unwrap();
+    assert!(snapshot.is_empty());
+}
+
+#[test]
+fn collection_watch_try_next_sees_deletes() {
+    use taladb_core::Value;
+
+    let db = taladb_core::Database::open_in_memory().unwrap();
+    let col = db.collection("items").unwrap();
+    let id = col.insert(vec![("x".into(), Value::Int(1))]).unwrap();
+
+    let handle = col.watch(Filter::All);
+    assert!(handle.try_next().unwrap().is_none(), "no writes yet");
+
+    col.delete_by_id(id).unwrap();
+    let snapshot = handle
+        .try_next()
+        .unwrap()
+        .expect("delete must notify watchers");
+    assert!(snapshot.is_empty());
+}

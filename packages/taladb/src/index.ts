@@ -136,6 +136,7 @@ class WorkerProxy {
   private readonly port: WorkerLike;
   private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private nextId = 1;
+  private dead: Error | null = null;
 
   constructor(port: WorkerLike) {
     this.port = port;
@@ -153,11 +154,23 @@ class WorkerProxy {
   }
 
   send<T = unknown>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+    if (this.dead) return Promise.reject(this.dead);
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
       this.port.postMessage({ id, op, ...args });
     });
+  }
+
+  /**
+   * Reject every in-flight request and refuse new ones. Called when the
+   * worker errors or is terminated — without this, pending promises would
+   * hang forever (awaiting callers deadlock).
+   */
+  abort(reason: Error): void {
+    this.dead = reason;
+    for (const [, p] of this.pending) p.reject(reason);
+    this.pending.clear();
   }
 }
 
@@ -256,6 +269,11 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
   const workerUrl = new URL('@taladb/web/worker/taladb.worker.js', import.meta.url);
   const worker = new Worker(workerUrl, { type: 'module', name: 'taladb' });
   const proxy = new WorkerProxy(worker);
+  // A crashed worker can never answer — fail in-flight requests instead of
+  // letting their promises hang forever.
+  worker.onerror = (e: ErrorEvent) => {
+    proxy.abort(new Error(`taladb worker error: ${e.message ?? 'unknown'}`));
+  };
 
   // Initialize the worker (opens OPFS file or falls back to IDB-backed in-memory).
   // Pass configJson so the worker can wire up HTTP push sync from the first write.
@@ -373,7 +391,10 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
 
       subscribe: (filter, callback) => {
         let active = true;
-        let lastJson = '[]';
+        // Must start empty (not '[]') so the first snapshot is always
+        // delivered — otherwise an initially-empty collection never fires the
+        // callback and useFind stays in loading state forever.
+        let lastJson = '';
         let timer: ReturnType<typeof setTimeout> | null = null;
 
         const poll = async () => {
@@ -413,8 +434,12 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
     compact: () => proxy.send<void>('compact'),
     close: async () => {
       channel?.close();
-      await proxy.send<void>('close');
-      worker.terminate();
+      try {
+        await proxy.send<void>('close');
+      } finally {
+        worker.terminate();
+        proxy.abort(new Error('taladb worker closed'));
+      }
     },
   };
 }
@@ -433,15 +458,25 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
 
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const col = db.collection(name);
+    // Prefer the *Async native variants (added in 0.8.1): they run on the
+    // libuv thread pool instead of blocking the JS event loop. Fall back to
+    // the sync calls when running against an older prebuilt .node binary.
     const wrapped: Collection<T> = {
-      insert: async (doc) => col.insert(doc as Record<string, unknown>),
-      insertMany: async (docs) => col.insertMany(docs as Record<string, unknown>[]),
-      find: async (filter?) => col.find(filter ?? null),
+      insert: async (doc) =>
+        col.insertAsync ? col.insertAsync(doc as Record<string, unknown>) : col.insert(doc as Record<string, unknown>),
+      insertMany: async (docs) =>
+        col.insertManyAsync ? col.insertManyAsync(docs as Record<string, unknown>[]) : col.insertMany(docs as Record<string, unknown>[]),
+      find: async (filter?) =>
+        col.findAsync ? col.findAsync(filter ?? null) : col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
-      updateOne: async (filter, update) => col.updateOne(filter, update),
-      updateMany: async (filter, update) => col.updateMany(filter, update),
-      deleteOne: async (filter) => col.deleteOne(filter),
-      deleteMany: async (filter) => col.deleteMany(filter),
+      updateOne: async (filter, update) =>
+        col.updateOneAsync ? col.updateOneAsync(filter, update) : col.updateOne(filter, update),
+      updateMany: async (filter, update) =>
+        col.updateManyAsync ? col.updateManyAsync(filter, update) : col.updateMany(filter, update),
+      deleteOne: async (filter) =>
+        col.deleteOneAsync ? col.deleteOneAsync(filter) : col.deleteOne(filter),
+      deleteMany: async (filter) =>
+        col.deleteManyAsync ? col.deleteManyAsync(filter) : col.deleteMany(filter),
       count: async (filter?) => col.count(filter ?? null),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
@@ -468,7 +503,8 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
   return {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => db.compact(),
-    close: async () => {},
+    // Releases the native file handle/lock (no-op on older .node binaries).
+    close: async () => db.close?.(),
   };
 }
 
@@ -538,7 +574,9 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
       },
       dropVectorIndex: async (field) => native.dropVectorIndex(name, field),
       upgradeVectorIndex: async (field) => native.upgradeVectorIndex(name, field),
-      listIndexes: async () => ({} as CollectionIndexInfo),
+      // The JSI HostObject does not expose index introspection yet; return a
+      // correctly-shaped empty result rather than `{}` cast to the interface.
+      listIndexes: async (): Promise<CollectionIndexInfo> => ({ btree: [], fts: [], vector: [] }),
       findNearest: async (field, vector, topK, filter?) => {
         const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw as { document: T; score: number }[];

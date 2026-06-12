@@ -32,6 +32,10 @@ pub fn execute(
     let candidates = match plan {
         QueryPlan::FullScan => full_scan(txn, collection)?,
 
+        // Primary-key point lookups; the post-filter below still applies
+        // (covers `_id` filters nested inside And/Or expressions).
+        QueryPlan::ById { ids } => fetch_by_ulids(txn, collection, ids.clone())?,
+
         QueryPlan::IndexEq { field, start, end } => {
             let ulids = index_range_scan(
                 txn,
@@ -65,7 +69,11 @@ pub fn execute(
                 )?;
                 ulids.append(&mut batch);
             }
-            ulids.dedup();
+            // Ranges from duplicate $in values (or overlapping cross-type
+            // numeric ranges) interleave, so adjacent-only Vec::dedup would
+            // leave duplicates and the same document would be returned twice.
+            let mut seen: HashSet<Ulid> = HashSet::with_capacity(ulids.len());
+            ulids.retain(|u| seen.insert(*u));
             fetch_by_ulids(txn, collection, ulids)?
         }
 
@@ -162,19 +170,7 @@ pub fn execute(
     // inside And/Or) once before the document loop.  Compiling per-document was
     // O(N * compile_cost); with the cache it is O(1 * compile_cost + N * match).
     // A malformed pattern fails fast here rather than silently returning false.
-    let regex_cache: std::collections::HashMap<String, regex::Regex> = {
-        let patterns = filter.collect_regex_patterns();
-        let mut map = std::collections::HashMap::with_capacity(patterns.len());
-        for pat in patterns {
-            let re = regex::RegexBuilder::new(&pat)
-                .size_limit(1 << 20)
-                .dfa_size_limit(1 << 20)
-                .build()
-                .map_err(|e| TalaDbError::InvalidFilter(format!("regex: {e}")))?;
-            map.insert(pat, re);
-        }
-        map
-    };
+    let regex_cache = filter.compile_regex_cache()?;
 
     let mut results = Vec::with_capacity(candidates.len());
     for d in candidates {
@@ -199,6 +195,8 @@ fn collect_ulids(
     deadline: Option<Instant>,
 ) -> Result<Vec<[u8; 16]>, TalaDbError> {
     match plan {
+        QueryPlan::ById { ids } => Ok(ids.iter().map(|u| u.to_bytes()).collect()),
+
         QueryPlan::IndexEq { field, start, end } => {
             let ulids = index_range_scan(
                 txn,

@@ -92,6 +92,9 @@ struct SyncTask {
 /// ```
 pub struct HttpSyncHook {
     config: Arc<SyncConfig>,
+    /// Prebuilt from `config.exclude_fields` so `on_event` does not rebuild
+    /// the lookup set for every mutation.
+    exclude: HashSet<String>,
     /// One sender per worker; indexed by shard (`hash(collection,id) % N`).
     /// Empty when sync is disabled.
     senders: Vec<std::sync::mpsc::SyncSender<SyncTask>>,
@@ -107,9 +110,11 @@ impl HttpSyncHook {
     /// (collection, id) so all events for one document run on the same
     /// worker in arrival order.
     pub fn new(config: SyncConfig) -> Self {
+        let exclude: HashSet<String> = config.exclude_fields.iter().cloned().collect();
         if !config.enabled {
             return HttpSyncHook {
                 config: Arc::new(config),
+                exclude,
                 senders: Vec::new(),
                 dropped_events: Arc::new(AtomicU64::new(0)),
             };
@@ -142,6 +147,7 @@ impl HttpSyncHook {
 
         HttpSyncHook {
             config: Arc::new(config),
+            exclude,
             senders,
             dropped_events: Arc::new(AtomicU64::new(0)),
         }
@@ -180,13 +186,7 @@ impl SyncHook for HttpSyncHook {
             return;
         };
         let shard = shard_for(&event, self.senders.len());
-        let exclude: HashSet<&str> = self
-            .config
-            .exclude_fields
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let payload = event_to_payload(event, &exclude);
+        let payload = event_to_payload(event, &self.exclude);
         let headers = self.config.headers.clone();
         let task = SyncTask {
             endpoint,
@@ -224,7 +224,7 @@ fn shard_for(event: &SyncEvent, num_shards: usize) -> usize {
 // Payload builder
 // ---------------------------------------------------------------------------
 
-pub(crate) fn event_to_payload(event: SyncEvent, exclude: &HashSet<&str>) -> JsonValue {
+pub(crate) fn event_to_payload(event: SyncEvent, exclude: &HashSet<String>) -> JsonValue {
     let ts = now_ms();
     match event {
         SyncEvent::Insert {
@@ -242,11 +242,18 @@ pub(crate) fn event_to_payload(event: SyncEvent, exclude: &HashSet<&str>) -> Jso
             collection,
             id,
             changes,
+            removed,
         } => json!({
             "_taladb_event": "update",
             "collection": collection,
             "id": id,
             "changes": map_to_json(&changes, exclude),
+            // Explicit removed-field names: `changes` carries nulls for them
+            // (back-compat), but a null there is ambiguous with "set to null".
+            "removed_fields": removed
+                .iter()
+                .filter(|f| !exclude.contains(f.as_str()))
+                .collect::<Vec<_>>(),
             "timestamp": ts,
         }),
         SyncEvent::Delete { collection, id } => json!({
@@ -260,7 +267,7 @@ pub(crate) fn event_to_payload(event: SyncEvent, exclude: &HashSet<&str>) -> Jso
 
 /// Convert a document's fields (not including `_id`) to a JSON object,
 /// omitting any field listed in `exclude`.
-fn doc_fields_to_json(doc: &Document, exclude: &HashSet<&str>) -> JsonValue {
+fn doc_fields_to_json(doc: &Document, exclude: &HashSet<String>) -> JsonValue {
     let mut obj = Map::new();
     for (k, v) in &doc.fields {
         if !exclude.contains(k.as_str()) {
@@ -271,7 +278,7 @@ fn doc_fields_to_json(doc: &Document, exclude: &HashSet<&str>) -> JsonValue {
 }
 
 /// Convert a field map to a JSON object, omitting any field listed in `exclude`.
-fn map_to_json(fields: &HashMap<String, Value>, exclude: &HashSet<&str>) -> JsonValue {
+fn map_to_json(fields: &HashMap<String, Value>, exclude: &HashSet<String>) -> JsonValue {
     let mut obj = Map::new();
     for (k, v) in fields {
         if !exclude.contains(k.as_str()) {
@@ -436,6 +443,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            removed: vec!["old_field".into()],
         };
         let p = event_to_payload(event, &HashSet::new());
         assert_eq!(p["_taladb_event"], "update");
@@ -480,7 +488,7 @@ mod tests {
             id: doc.id.to_string(),
             document: doc,
         };
-        let exclude: HashSet<&str> = ["embedding", "score"].into_iter().collect();
+        let exclude: HashSet<String> = ["embedding".into(), "score".into()].into_iter().collect();
         let p = event_to_payload(event, &exclude);
 
         // Excluded fields absent.
@@ -503,8 +511,9 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            removed: vec![],
         };
-        let exclude: HashSet<&str> = ["embedding"].into_iter().collect();
+        let exclude: HashSet<String> = ["embedding".into()].into_iter().collect();
         let p = event_to_payload(event, &exclude);
 
         assert!(p["changes"].get("embedding").is_none());
@@ -523,7 +532,7 @@ mod tests {
             document: doc,
         };
         // Excluding a field that doesn't exist in the document is silently ignored.
-        let exclude: HashSet<&str> = ["nonexistent_field"].into_iter().collect();
+        let exclude: HashSet<String> = ["nonexistent_field".into()].into_iter().collect();
         let p = event_to_payload(event, &exclude);
 
         assert_eq!(p["document"]["name"], "Alice");

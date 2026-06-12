@@ -360,3 +360,222 @@ impl ChangeOpExt for ChangeOp {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Regression: update → export → import must not propagate as a deletion
+// ---------------------------------------------------------------------------
+
+/// Full bidirectional round trip after an update.
+///
+/// Previously, importing an upsert used delete_by_id + insert_with_id, which
+/// left a delete tombstone newer than the document. The next export then
+/// emitted a Delete change that destroyed the document on every peer.
+#[test]
+fn update_round_trip_does_not_delete_document() {
+    let db_a = Database::open_in_memory().unwrap();
+    let db_b = Database::open_in_memory().unwrap();
+    let col_a = db_a.collection("notes").unwrap();
+    let col_b = db_b.collection("notes").unwrap();
+    let adapter = LastWriteWins::new();
+
+    // A creates a doc and updates it.
+    let id = col_a.insert(vec![("title".into(), s("v1"))]).unwrap();
+    col_a
+        .update_one(
+            Filter::Eq("title".into(), s("v1")),
+            taladb_core::Update::Set(vec![("title".into(), s("v2"))]),
+        )
+        .unwrap();
+
+    // A → B
+    let changes = adapter.export_changes(&db_a, &["notes"], 0).unwrap();
+    adapter.import_changes(&db_b, changes).unwrap();
+    let doc_b = col_b.find_by_id(id).unwrap().expect("doc must exist on B");
+    assert_eq!(doc_b.get("title"), Some(&s("v2")));
+
+    // B → A (B's import must not have produced a tombstone that deletes on A)
+    let changes_back = adapter.export_changes(&db_b, &["notes"], 0).unwrap();
+    assert!(
+        !changes_back
+            .iter()
+            .any(|c| matches!(c.op, ChangeOp::Delete) && c.id == id),
+        "import on B must not generate a Delete change for an upserted doc"
+    );
+    adapter.import_changes(&db_a, changes_back).unwrap();
+    let doc_a = col_a.find_by_id(id).unwrap();
+    assert!(
+        doc_a.is_some(),
+        "document must survive a full A→B→A sync round trip after an update"
+    );
+    assert_eq!(doc_a.unwrap().get("title"), Some(&s("v2")));
+}
+
+/// A stale remote Delete (older than the local document) must not destroy
+/// the newer local write.
+#[test]
+fn stale_delete_does_not_remove_newer_document() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("notes").unwrap();
+    let adapter = LastWriteWins::new();
+
+    let doc = Document::new(vec![
+        ("title".into(), s("fresh")),
+        ("_changed_at".into(), i(10_000)),
+    ]);
+    let id = doc.id;
+    col.insert_with_id(doc).unwrap();
+
+    let stale_delete: Changeset = vec![Change {
+        collection: "notes".into(),
+        id,
+        op: ChangeOp::Delete,
+        changed_at: 5_000, // older than the local doc
+    }];
+    let applied = adapter.import_changes(&db, stale_delete).unwrap();
+    assert_eq!(applied, 0, "stale delete must not be applied");
+    assert!(
+        col.find_by_id(id).unwrap().is_some(),
+        "newer local document must survive a stale remote delete"
+    );
+}
+
+/// A newer remote Delete still removes the document.
+#[test]
+fn newer_delete_removes_older_document() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("notes").unwrap();
+    let adapter = LastWriteWins::new();
+
+    let doc = Document::new(vec![
+        ("title".into(), s("old")),
+        ("_changed_at".into(), i(5_000)),
+    ]);
+    let id = doc.id;
+    col.insert_with_id(doc).unwrap();
+
+    let newer_delete: Changeset = vec![Change {
+        collection: "notes".into(),
+        id,
+        op: ChangeOp::Delete,
+        changed_at: 10_000,
+    }];
+    let applied = adapter.import_changes(&db, newer_delete).unwrap();
+    assert_eq!(applied, 1);
+    assert!(col.find_by_id(id).unwrap().is_none());
+}
+
+/// A stale upsert must not resurrect a document deleted more recently.
+#[test]
+fn stale_upsert_does_not_resurrect_newer_deletion() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("notes").unwrap();
+    let adapter = LastWriteWins::new();
+
+    // Install a tombstone at t=10_000 via a remote delete.
+    let id = Ulid::new();
+    adapter
+        .import_changes(
+            &db,
+            vec![Change {
+                collection: "notes".into(),
+                id,
+                op: ChangeOp::Delete,
+                changed_at: 10_000,
+            }],
+        )
+        .unwrap();
+
+    // A stale upsert (t=5_000) arrives afterwards.
+    let stale_doc = Document::with_id(
+        id,
+        vec![
+            ("title".into(), s("zombie")),
+            ("_changed_at".into(), i(5_000)),
+        ],
+    );
+    let applied = adapter
+        .import_changes(
+            &db,
+            vec![Change {
+                collection: "notes".into(),
+                id,
+                op: ChangeOp::Upsert(stale_doc),
+                changed_at: 5_000,
+            }],
+        )
+        .unwrap();
+    assert_eq!(applied, 0, "stale upsert must lose to a newer tombstone");
+    assert!(col.find_by_id(id).unwrap().is_none());
+}
+
+/// Equal-timestamp conflicting upserts must converge to the same winner on
+/// both replicas (previously the tie-break compared a ULID with itself and
+/// each replica kept its own version).
+#[test]
+fn equal_timestamp_conflict_converges_on_both_replicas() {
+    let adapter = LastWriteWins::new();
+    let id = Ulid::new();
+    let ts = 7_777u64;
+
+    let doc_x = Document::with_id(
+        id,
+        vec![("v".into(), s("xxx")), ("_changed_at".into(), i(ts as i64))],
+    );
+    let doc_y = Document::with_id(
+        id,
+        vec![("v".into(), s("yyy")), ("_changed_at".into(), i(ts as i64))],
+    );
+
+    // Replica A holds X and receives Y; replica B holds Y and receives X.
+    let db_a = Database::open_in_memory().unwrap();
+    let db_b = Database::open_in_memory().unwrap();
+    db_a.collection("c")
+        .unwrap()
+        .insert_with_id(doc_x.clone())
+        .unwrap();
+    db_b.collection("c")
+        .unwrap()
+        .insert_with_id(doc_y.clone())
+        .unwrap();
+
+    adapter
+        .import_changes(
+            &db_a,
+            vec![Change {
+                collection: "c".into(),
+                id,
+                op: ChangeOp::Upsert(doc_y),
+                changed_at: ts,
+            }],
+        )
+        .unwrap();
+    adapter
+        .import_changes(
+            &db_b,
+            vec![Change {
+                collection: "c".into(),
+                id,
+                op: ChangeOp::Upsert(doc_x),
+                changed_at: ts,
+            }],
+        )
+        .unwrap();
+
+    let final_a = db_a
+        .collection("c")
+        .unwrap()
+        .find_by_id(id)
+        .unwrap()
+        .unwrap();
+    let final_b = db_b
+        .collection("c")
+        .unwrap()
+        .find_by_id(id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        final_a.get("v"),
+        final_b.get("v"),
+        "both replicas must converge on the same winner for equal timestamps"
+    );
+}

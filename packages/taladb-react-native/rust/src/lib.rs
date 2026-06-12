@@ -277,7 +277,13 @@ pub unsafe extern "C" fn taladb_find(
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
-    let filter = parse_filter(&json);
+    let filter = match parse_filter(&json) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(e);
+            return std::ptr::null_mut();
+        }
+    };
     let col = match db.collection(&col_name) {
         Ok(c) => c,
         Err(e) => {
@@ -309,7 +315,13 @@ pub unsafe extern "C" fn taladb_find_one(
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
-    let filter = parse_filter(&json);
+    let filter = match parse_filter(&json) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(e);
+            return std::ptr::null_mut();
+        }
+    };
     let col = match db.collection(&col_name) {
         Ok(c) => c,
         Err(e) => {
@@ -346,7 +358,13 @@ pub unsafe extern "C" fn taladb_update_one(
     let update_str = cstr_to_string(update_json);
     match (handle, col_name, filter_str, update_str) {
         (Some(h), Some(col), Some(fs), Some(us)) => {
-            let filter = parse_filter(&fs);
+            let filter = match parse_filter(&fs) {
+                Ok(f) => f,
+                Err(e) => {
+                    set_last_error(e);
+                    return -1;
+                }
+            };
             let collection = match h.collection(&col) {
                 Ok(c) => c,
                 Err(e) => {
@@ -385,7 +403,13 @@ pub unsafe extern "C" fn taladb_update_many(
     let update_str = cstr_to_string(update_json);
     match (handle, col_name, filter_str, update_str) {
         (Some(h), Some(col), Some(fs), Some(us)) => {
-            let filter = parse_filter(&fs);
+            let filter = match parse_filter(&fs) {
+                Ok(f) => f,
+                Err(e) => {
+                    set_last_error(e);
+                    return -1;
+                }
+            };
             let collection = match h.collection(&col) {
                 Ok(c) => c,
                 Err(e) => {
@@ -431,7 +455,14 @@ pub unsafe extern "C" fn taladb_delete_one(
             return -1;
         }
     };
-    match col.delete_one(parse_filter(&json)) {
+    let filter = match parse_filter(&json) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(e);
+            return -1;
+        }
+    };
+    match col.delete_one(filter) {
         Ok(true) => 1,
         Ok(false) => 0,
         Err(e) => {
@@ -460,7 +491,14 @@ pub unsafe extern "C" fn taladb_delete_many(
             return -1;
         }
     };
-    match col.delete_many(parse_filter(&json)) {
+    let filter = match parse_filter(&json) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(e);
+            return -1;
+        }
+    };
+    match col.delete_many(filter) {
         Ok(n) => n as i32,
         Err(e) => {
             set_last_error(e.to_string());
@@ -492,7 +530,14 @@ pub unsafe extern "C" fn taladb_count(
             return -1;
         }
     };
-    match col.count(parse_filter(&json)) {
+    let filter = match parse_filter(&json) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(e);
+            return -1;
+        }
+    };
+    match col.count(filter) {
         Ok(n) => n as i32,
         Err(e) => {
             set_last_error(e.to_string());
@@ -700,12 +745,19 @@ fn json_to_fields(json: &str) -> Option<Vec<(String, Value)>> {
     )
 }
 
-fn parse_filter(json: &str) -> Filter {
-    let v: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
+/// Parse a filter JSON string.
+///
+/// `"null"` and `"{}"` mean match-all. Anything unparseable is an **error**,
+/// never a silent match-all: degrading a malformed filter to `Filter::All`
+/// would make a typo'd operator in `deleteMany`/`updateMany` hit every
+/// document in the collection.
+fn parse_filter(json: &str) -> Result<Filter, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid filter JSON: {e}"))?;
     if v.is_null() || (v.is_object() && v.as_object().is_some_and(|m| m.is_empty())) {
-        return Filter::All;
+        return Ok(Filter::All);
     }
-    json_to_filter(&v).unwrap_or(Filter::All)
+    json_to_filter(&v).ok_or_else(|| format!("invalid filter: {json}"))
 }
 
 fn json_to_filter(v: &serde_json::Value) -> Option<Filter> {
@@ -728,6 +780,11 @@ fn json_to_filter(v: &serde_json::Value) -> Option<Filter> {
             continue;
         }
         let ops = expr.as_object()?;
+        if ops.is_empty() {
+            // `{field: {}}` is ambiguous (error on node, match-all historically
+            // on web/RN) — rejected everywhere as of 0.8.1.
+            return None;
+        }
         for (op, val) in ops {
             let v = json_to_value(val);
             let f = match op.as_str() {
@@ -896,14 +953,16 @@ fn run_find_nearest(
     top_k: usize,
     filter_json: Option<&str>,
 ) -> Result<String, taladb_core::TalaDbError> {
-    let pre_filter = filter_json.and_then(|s| {
-        let v: serde_json::Value = serde_json::from_str(s).ok()?;
-        if v.is_null() || (v.is_object() && v.as_object().is_some_and(|m| m.is_empty())) {
-            None
-        } else {
-            json_to_filter(&v)
-        }
-    });
+    let pre_filter = match filter_json {
+        None => None,
+        Some(s) => match parse_filter(s) {
+            Ok(Filter::All) => None,
+            Ok(f) => Some(f),
+            // A malformed pre-filter must not silently become an
+            // unfiltered search.
+            Err(e) => return Err(taladb_core::TalaDbError::InvalidFilter(e)),
+        },
+    };
     let col = db.collection(collection)?;
     let results = col.find_nearest(field, query, top_k, pre_filter)?;
     let arr: Vec<serde_json::Value> = results
@@ -1175,7 +1234,7 @@ pub unsafe extern "C" fn taladb_find_start(
 
     spawn_job(handle, move |h| {
         let collection = h.db.collection(&col).map_err(|e| e.to_string())?;
-        let filter = parse_filter(&filter_owned);
+        let filter = parse_filter(&filter_owned)?;
         let docs = collection.find(filter).map_err(|e| e.to_string())?;
         let json_docs: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
         serde_json::to_string(&json_docs).map_err(|e| e.to_string())
@@ -1220,4 +1279,48 @@ fn parse_update(json: &str) -> Option<Update> {
         return Some(Update::Pull(k.clone(), json_to_value(v)));
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Tests (host-side; pure parsing logic, no JSI/FFI required)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_filter_null_and_empty_object_match_all() {
+        assert!(matches!(parse_filter("null"), Ok(Filter::All)));
+        assert!(matches!(parse_filter("{}"), Ok(Filter::All)));
+    }
+
+    #[test]
+    fn parse_filter_invalid_json_is_error_not_match_all() {
+        // Regression: this used to degrade to Filter::All, so a malformed
+        // filter passed to deleteMany would wipe the whole collection.
+        assert!(parse_filter("{not json").is_err());
+    }
+
+    #[test]
+    fn parse_filter_unknown_operator_is_error() {
+        assert!(parse_filter(r#"{"status":{"$qe":"x"}}"#).is_err());
+    }
+
+    #[test]
+    fn parse_filter_empty_operator_object_is_error() {
+        assert!(parse_filter(r#"{"a":{}}"#).is_err());
+    }
+
+    #[test]
+    fn parse_filter_valid_operators_parse() {
+        assert!(matches!(
+            parse_filter(r#"{"age":{"$gte":18}}"#),
+            Ok(Filter::Gte(..))
+        ));
+        assert!(matches!(
+            parse_filter(r#"{"name":"Alice"}"#),
+            Ok(Filter::Eq(..))
+        ));
+    }
 }

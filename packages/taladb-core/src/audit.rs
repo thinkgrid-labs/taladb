@@ -71,11 +71,12 @@ pub struct AuditEntry {
     pub caller: String,
 }
 
-/// Write one audit entry to the `_audit` table within an open write transaction.
-///
-/// This is called by the collection mutation methods after a successful commit.
+/// Write one audit entry to the `_audit` table within the mutation's own
+/// write transaction, so the audit row commits atomically with the mutation:
+/// a crash can never persist one without the other, and an audit failure
+/// rolls the mutation back rather than leaving the API result ambiguous.
 pub(crate) fn write_audit_entry(
-    backend: &dyn StorageBackend,
+    wtxn: &mut dyn crate::engine::WriteTxn,
     collection: &str,
     op: AuditOp,
     doc_id: &str,
@@ -93,9 +94,7 @@ pub(crate) fn write_audit_entry(
         ],
     };
     let doc_bytes = postcard::to_allocvec(&doc)?;
-    let mut wtxn = backend.begin_write()?;
     wtxn.put(AUDIT_TABLE, &entry_id.to_bytes(), &doc_bytes)?;
-    wtxn.commit()?;
     Ok(())
 }
 

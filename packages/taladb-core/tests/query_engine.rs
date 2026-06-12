@@ -1233,3 +1233,230 @@ fn query_timeout_generous_duration_succeeds() {
     let docs = col.find_with_options(Filter::All, opts).unwrap();
     assert_eq!(docs.len(), 50);
 }
+
+// ---------------------------------------------------------------------------
+// Regression: indexed queries must return the same results as unindexed
+// queries when a numeric field mixes Int and Float values (the normal case
+// when documents come from JavaScript, where 10 → Int and 10.5 → Float).
+// ---------------------------------------------------------------------------
+
+fn mixed_numeric_db() -> Database {
+    let db = db();
+    let col = db.collection("products").unwrap();
+    let prices = [
+        Value::Int(5),
+        Value::Float(7.5),
+        Value::Int(10),
+        Value::Float(10.5),
+        Value::Int(11),
+        Value::Float(0.0),
+        Value::Float(-0.0),
+        Value::Int(-3),
+        Value::Float(-2.5),
+    ];
+    for p in prices {
+        col.insert(vec![("price".into(), p)]).unwrap();
+    }
+    db
+}
+
+fn assert_index_parity(filter: Filter) {
+    let db = mixed_numeric_db();
+    let col = db.collection("products").unwrap();
+
+    let mut unindexed: Vec<String> = col
+        .find(filter.clone())
+        .unwrap()
+        .iter()
+        .map(|d| d.id.to_string())
+        .collect();
+    unindexed.sort();
+
+    col.create_index("price").unwrap();
+
+    let mut indexed: Vec<String> = col
+        .find(filter.clone())
+        .unwrap()
+        .iter()
+        .map(|d| d.id.to_string())
+        .collect();
+    indexed.sort();
+
+    assert_eq!(
+        unindexed, indexed,
+        "indexed and unindexed results must match for {filter:?}"
+    );
+    assert!(
+        !indexed.is_empty(),
+        "test filter {filter:?} should match at least one document"
+    );
+}
+
+#[test]
+fn indexed_lt_int_includes_float_values() {
+    // Previously missed 7.5, 10.5, 0.0, -0.0, -2.5 (entire Float block sorts
+    // above the Int block in the index byte order).
+    assert_index_parity(Filter::Lt("price".into(), Value::Int(11)));
+}
+
+#[test]
+fn indexed_lte_int_includes_float_values() {
+    assert_index_parity(Filter::Lte("price".into(), Value::Int(10)));
+}
+
+#[test]
+fn indexed_gt_float_includes_int_values() {
+    // Previously missed 10 and 11 (Int block sorts below the Float block).
+    assert_index_parity(Filter::Gt("price".into(), Value::Float(7.5)));
+}
+
+#[test]
+fn indexed_gte_float_includes_int_values() {
+    assert_index_parity(Filter::Gte("price".into(), Value::Float(0.5)));
+}
+
+#[test]
+fn indexed_gt_int_parity() {
+    assert_index_parity(Filter::Gt("price".into(), Value::Int(5)));
+}
+
+#[test]
+fn indexed_lt_float_parity() {
+    assert_index_parity(Filter::Lt("price".into(), Value::Float(10.5)));
+}
+
+#[test]
+fn indexed_eq_zero_matches_negative_zero() {
+    // 0.0 == -0.0 under PartialEq, but they encode to different index keys.
+    assert_index_parity(Filter::Eq("price".into(), Value::Float(0.0)));
+    assert_index_parity(Filter::Eq("price".into(), Value::Float(-0.0)));
+}
+
+#[test]
+fn indexed_in_with_duplicate_values_no_duplicate_docs() {
+    let db = db();
+    let col = db.collection("items").unwrap();
+    col.insert(vec![("status".into(), Value::Str("active".into()))])
+        .unwrap();
+    col.create_index("status").unwrap();
+
+    let docs = col
+        .find(Filter::In(
+            "status".into(),
+            vec![
+                Value::Str("active".into()),
+                Value::Str("active".into()), // duplicate $in value
+            ],
+        ))
+        .unwrap();
+    assert_eq!(
+        docs.len(),
+        1,
+        "duplicate $in values must not return the same document twice"
+    );
+}
+
+#[test]
+fn inc_overflow_returns_error_instead_of_wrapping() {
+    let db = db();
+    let col = db.collection("counters").unwrap();
+    col.insert(vec![("n".into(), Value::Int(i64::MAX))])
+        .unwrap();
+
+    let result = col.update_one(Filter::All, Update::Inc(vec![("n".into(), Value::Int(1))]));
+    assert!(result.is_err(), "i64 overflow in $inc must be an error");
+}
+
+#[test]
+fn inc_float_field_by_int_delta() {
+    let db = db();
+    let col = db.collection("scores").unwrap();
+    col.insert(vec![("s".into(), Value::Float(1.5))]).unwrap();
+
+    col.update_one(Filter::All, Update::Inc(vec![("s".into(), Value::Int(2))]))
+        .unwrap();
+    let doc = col.find_one(Filter::All).unwrap().unwrap();
+    assert_eq!(doc.get("s"), Some(&Value::Float(3.5)));
+}
+
+// ---------------------------------------------------------------------------
+// _id fast-path plan
+// ---------------------------------------------------------------------------
+
+#[test]
+fn id_eq_filter_returns_document_without_index() {
+    let db = db();
+    let col = db.collection("users").unwrap();
+    let id = col
+        .insert(vec![("name".into(), Value::Str("Alice".into()))])
+        .unwrap();
+    col.insert(vec![("name".into(), Value::Str("Bob".into()))])
+        .unwrap();
+
+    let docs = col
+        .find(Filter::Eq("_id".into(), Value::Str(id.to_string())))
+        .unwrap();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].id, id);
+}
+
+#[test]
+fn id_in_filter_returns_matching_documents() {
+    let db = db();
+    let col = db.collection("users").unwrap();
+    let id1 = col.insert(vec![("n".into(), Value::Int(1))]).unwrap();
+    let _id2 = col.insert(vec![("n".into(), Value::Int(2))]).unwrap();
+    let id3 = col.insert(vec![("n".into(), Value::Int(3))]).unwrap();
+
+    let docs = col
+        .find(Filter::In(
+            "_id".into(),
+            vec![
+                Value::Str(id1.to_string()),
+                Value::Str(id3.to_string()),
+                Value::Str("not-a-ulid".into()),
+            ],
+        ))
+        .unwrap();
+    let mut got: Vec<String> = docs.iter().map(|d| d.id.to_string()).collect();
+    got.sort();
+    let mut want = vec![id1.to_string(), id3.to_string()];
+    want.sort();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn id_eq_with_invalid_ulid_matches_nothing() {
+    let db = db();
+    let col = db.collection("users").unwrap();
+    col.insert(vec![("n".into(), Value::Int(1))]).unwrap();
+    let docs = col
+        .find(Filter::Eq("_id".into(), Value::Str("zzz".into())))
+        .unwrap();
+    assert!(docs.is_empty());
+}
+
+#[test]
+fn id_eq_inside_and_combines_with_other_filters() {
+    let db = db();
+    let col = db.collection("users").unwrap();
+    let id = col
+        .insert(vec![("active".into(), Value::Bool(true))])
+        .unwrap();
+
+    let hit = col
+        .find(Filter::And(vec![
+            Filter::Eq("_id".into(), Value::Str(id.to_string())),
+            Filter::Eq("active".into(), Value::Bool(true)),
+        ]))
+        .unwrap();
+    assert_eq!(hit.len(), 1);
+
+    let miss = col
+        .find(Filter::And(vec![
+            Filter::Eq("_id".into(), Value::Str(id.to_string())),
+            Filter::Eq("active".into(), Value::Bool(false)),
+        ]))
+        .unwrap();
+    assert!(miss.is_empty());
+}
