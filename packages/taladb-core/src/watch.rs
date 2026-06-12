@@ -52,7 +52,7 @@ impl WatchRegistry {
             Ok(()) => true,
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 // Subscriber is too slow to consume events; drop it (WatchBackpressure).
-                eprintln!("taladb: watch subscriber dropped: channel full (backpressure)");
+                tracing::warn!("taladb: watch subscriber dropped: channel full (backpressure)");
                 false
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
@@ -154,9 +154,11 @@ where
 /// Notify all watchers that a write occurred. Called by `Collection` after
 /// every successful write transaction.
 pub fn notify(registry: &SharedRegistry) {
-    if let Ok(mut guard) = registry.try_lock() {
-        guard.notify();
-    }
+    // A full lock, not try_lock: skipping the notification under contention
+    // would mean a committed write never wakes its watchers. notify() is
+    // non-blocking (try_send), so holding the lock is cheap.
+    let mut guard = registry.lock().unwrap_or_else(|p| p.into_inner());
+    guard.notify();
 }
 
 // ---------------------------------------------------------------------------

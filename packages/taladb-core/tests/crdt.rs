@@ -599,3 +599,97 @@ fn field_clock_does_not_dominate_equal() {
     let b = FieldClock::new(100, "node-a");
     assert!(!a.dominates(&b));
 }
+
+// ---------------------------------------------------------------------------
+// Regression: update_fields → export → import must not propagate as deletion
+// ---------------------------------------------------------------------------
+
+/// Previously `update_fields` replaced the doc via delete_by_id +
+/// insert_with_id, leaving a tombstone whose timestamp dominated the
+/// document's clocks. The next export emitted a delete change that destroyed
+/// the updated document on every peer.
+#[test]
+fn crdt_update_round_trip_does_not_delete_document() {
+    let db_a = Database::open_in_memory().unwrap();
+    let db_b = Database::open_in_memory().unwrap();
+    let col_a = db_a.collection("items").unwrap();
+    let col_b = db_b.collection("items").unwrap();
+    let adapter_a = CrdtSyncAdapter::new("node-a");
+    let adapter_b = CrdtSyncAdapter::new("node-b");
+
+    // A inserts then updates a field.
+    let fields = adapter_a.stamp_insert_at(vec![("title".into(), s("v1"))], 100);
+    let id = col_a.insert(fields).unwrap();
+    adapter_a
+        .update_fields_at(&col_a, id, vec![("title".into(), s("v2"))], 200)
+        .unwrap();
+
+    // A → B: B must receive the update, and no delete change may be exported.
+    let changes = adapter_a.export_crdt_changes(&db_a, &["items"], 0).unwrap();
+    assert!(
+        !changes
+            .iter()
+            .any(|c| c.delete_clock.is_some() && c.id == id),
+        "update_fields must not generate a delete change on export"
+    );
+    adapter_b.import_crdt_changes(&db_b, changes).unwrap();
+    let doc_b = col_b.find_by_id(id).unwrap().expect("doc must exist on B");
+    assert_eq!(doc_b.get("title"), Some(&s("v2")));
+
+    // B → A round trip: document must survive on A.
+    let changes_back = adapter_b.export_crdt_changes(&db_b, &["items"], 0).unwrap();
+    assert!(
+        !changes_back
+            .iter()
+            .any(|c| c.delete_clock.is_some() && c.id == id),
+        "import on B must not generate a delete change for a merged doc"
+    );
+    adapter_a.import_crdt_changes(&db_a, changes_back).unwrap();
+    let doc_a = col_a.find_by_id(id).unwrap();
+    assert!(
+        doc_a.is_some(),
+        "document must survive a full A→B→A CRDT round trip after an update"
+    );
+    assert_eq!(doc_a.unwrap().get("title"), Some(&s("v2")));
+}
+
+/// Stale mutations must not resurrect a document deleted more recently.
+#[test]
+fn crdt_stale_mutations_do_not_resurrect_newer_deletion() {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("items").unwrap();
+    let adapter = CrdtSyncAdapter::new("node-local");
+
+    let id = Ulid::new();
+    // Remote delete at t=10_000 installs a tombstone.
+    adapter
+        .import_crdt_changes(
+            &db,
+            vec![CrdtChange {
+                collection: "items".into(),
+                id,
+                mutations: Vec::new(),
+                delete_clock: Some(FieldClock::new(10_000, "node-remote")),
+            }],
+        )
+        .unwrap();
+
+    // Stale mutations (t=5_000) for the same doc arrive afterwards.
+    let applied = adapter
+        .import_crdt_changes(
+            &db,
+            vec![CrdtChange {
+                collection: "items".into(),
+                id,
+                mutations: vec![FieldMutation {
+                    field: "title".into(),
+                    value: Some(s("zombie")),
+                    clock: FieldClock::new(5_000, "node-remote"),
+                }],
+                delete_clock: None,
+            }],
+        )
+        .unwrap();
+    assert_eq!(applied, 0, "stale mutations must lose to a newer tombstone");
+    assert!(col.find_by_id(id).unwrap().is_none());
+}

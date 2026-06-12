@@ -23,9 +23,10 @@
 //! Last-Write-Wins conflict resolution
 //! ------------------------------------
 //! `LastWriteWins` merges by comparing `changed_at` timestamps. The change
-//! with the higher timestamp wins. Ties are broken by ULID lexicographic
-//! order (the higher ULID wins), ensuring a deterministic total order across
-//! any number of replicas without coordination.
+//! with the higher timestamp wins. Equal-timestamp upserts are broken by
+//! comparing the serialized document bytes (greater bytes win) — a symmetric
+//! comparison every replica resolves identically, ensuring convergence
+//! without coordination. Deletes win ties against upserts.
 
 use std::collections::HashMap;
 use web_time::{SystemTime, UNIX_EPOCH};
@@ -59,8 +60,12 @@ pub enum SyncEvent {
     Update {
         collection: String,
         id: String,
-        /// Changed fields only. A field set to `Value::Null` was removed.
+        /// Changed fields only. Removed fields also appear here with
+        /// `Value::Null` for backward compatibility with older receivers.
         changes: HashMap<String, Value>,
+        /// Names of fields that were removed (unset) by this update.
+        /// Disambiguates "field removed" from "field set to null".
+        removed: Vec<String>,
     },
     Delete {
         collection: String,
@@ -190,7 +195,8 @@ pub trait SyncAdapter: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Resolves conflicts by keeping the change with the highest `changed_at`
-/// timestamp. Ties broken by ULID lexicographic order.
+/// timestamp. Equal-timestamp upserts are broken by comparing serialized
+/// document bytes; deletes win ties against upserts.
 pub struct LastWriteWins;
 
 impl LastWriteWins {
@@ -250,7 +256,7 @@ impl SyncAdapter for LastWriteWins {
             // Export tombstones so remote replicas learn about deletions.
             let tomb_table = tomb_table_name(col_name);
             let rtxn = db.backend().begin_read()?;
-            let all_tombs = rtxn.scan_all(&tomb_table).unwrap_or_default();
+            let all_tombs = rtxn.scan_all(&tomb_table)?;
             for (key_bytes, val_bytes) in all_tombs {
                 if key_bytes.len() != 16 {
                     continue;
@@ -299,7 +305,16 @@ impl SyncAdapter for LastWriteWins {
                     let local = col.find_by_id(change.id)?;
 
                     let should_apply = match &local {
-                        None => true,
+                        None => {
+                            // No live document — but a local tombstone may
+                            // record a newer deletion. Only resurrect when the
+                            // remote upsert is strictly newer than the
+                            // deletion (deletes win ties, matching the Delete
+                            // import path below).
+                            let tomb_ts =
+                                read_tombstone_ts(db, &change.collection, change.id)?.unwrap_or(0);
+                            change.changed_at > tomb_ts as u64
+                        }
                         Some(local_doc) => {
                             let local_ts = local_doc
                                 .get("_changed_at")
@@ -312,27 +327,53 @@ impl SyncAdapter for LastWriteWins {
                                 })
                                 // _changed_at defaults to 0 if absent — document always loses conflicts
                                 .unwrap_or(0);
-                            // Remote wins if newer; ties broken by ULID order
+                            // Remote wins if newer. Equal timestamps are broken
+                            // by comparing the serialized document bytes — both
+                            // replicas evaluate the same comparison, so they
+                            // converge on the same winner without coordination.
                             change.changed_at > local_ts
-                                || (change.changed_at == local_ts && change.id > local_doc.id)
+                                || (change.changed_at == local_ts
+                                    && doc_tie_break_wins(&remote_doc, local_doc)?)
                         }
                     };
 
                     if should_apply {
-                        // Delete local copy (if any) then insert remote doc preserving its ULID
-                        if local.is_some() {
-                            col.delete_by_id(change.id)?;
-                        }
-                        col.insert_with_id(remote_doc)?;
+                        // Atomically replace (or insert) the remote doc
+                        // preserving its ULID. This also clears any tombstone
+                        // for the ID so the replace is not later exported as a
+                        // deletion.
+                        col.replace_with_id(remote_doc)?;
                         applied += 1;
                     }
                 }
 
                 ChangeOp::Delete => {
-                    // Hard-delete the document (no-op if already gone) and
-                    // track whether it actually existed so we can return an
-                    // accurate applied count.
-                    let existed = col.delete_by_id(change.id)?;
+                    // Last-write-wins: only delete when the remote deletion is
+                    // at least as new as the local document. A stale tombstone
+                    // must not destroy a newer local write. Deletes win ties so
+                    // concurrent upsert/delete at the same millisecond resolve
+                    // identically on every replica.
+                    let should_delete = match col.find_by_id(change.id)? {
+                        None => false,
+                        Some(local_doc) => {
+                            let local_ts = local_doc
+                                .get("_changed_at")
+                                .and_then(|v| {
+                                    if let Value::Int(ts) = v {
+                                        Some(*ts as u64)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(0);
+                            change.changed_at >= local_ts
+                        }
+                    };
+                    let existed = if should_delete {
+                        col.delete_by_id(change.id)?
+                    } else {
+                        false
+                    };
 
                     // Always upsert the tombstone — even if the doc was already
                     // absent — so this replica can forward the deletion to any
@@ -363,6 +404,29 @@ impl SyncAdapter for LastWriteWins {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Read the tombstone timestamp for `id` in `collection`, if one exists.
+fn read_tombstone_ts(
+    db: &crate::Database,
+    collection: &str,
+    id: Ulid,
+) -> Result<Option<i64>, TalaDbError> {
+    let tomb_table = tomb_table_name(collection);
+    let rtxn = db.backend().begin_read()?;
+    Ok(rtxn
+        .get(&tomb_table, &id.to_bytes())?
+        .and_then(|b| postcard::from_bytes::<i64>(&b).ok()))
+}
+
+/// Deterministic tie-break for equal `changed_at` timestamps: the document
+/// with the lexicographically greater postcard serialization wins. Both
+/// replicas compare the same two byte strings, so they always pick the same
+/// winner — guaranteeing convergence without a coordinator or per-replica IDs.
+fn doc_tie_break_wins(remote: &Document, local: &Document) -> Result<bool, TalaDbError> {
+    let remote_bytes = postcard::to_allocvec(remote)?;
+    let local_bytes = postcard::to_allocvec(local)?;
+    Ok(remote_bytes > local_bytes)
+}
 
 /// Current wall-clock time in milliseconds since Unix epoch.
 pub fn now_ms() -> u64 {

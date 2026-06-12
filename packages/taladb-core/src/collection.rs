@@ -32,11 +32,25 @@ use crate::vector::{
 const META_FTS_TABLE: &str = "meta::fts_indexes";
 
 #[derive(Clone)]
-struct CachedIndexes {
+pub(crate) struct CachedIndexes {
     indexes: Arc<Vec<IndexDef>>,
     fts_indexes: Arc<Vec<FtsDef>>,
     vec_indexes: Arc<Vec<VectorDef>>,
     compound_indexes: Arc<Vec<CompoundIndexDef>>,
+}
+
+/// Index-definition cache shared between every `Collection` handle returned
+/// by the same `Database`, keyed by collection name.
+///
+/// Sharing matters for correctness, not just speed: with a per-handle cache,
+/// creating an index through one handle would leave every other live handle
+/// with stale definitions, and their writes would silently skip maintaining
+/// the new index. (Handles from *different* `Database` instances on the same
+/// file still don't see each other's index DDL until reopened.)
+pub(crate) type SharedIndexCache = Arc<Mutex<std::collections::HashMap<String, CachedIndexes>>>;
+
+pub(crate) fn new_shared_index_cache() -> SharedIndexCache {
+    Arc::new(Mutex::new(std::collections::HashMap::new()))
 }
 
 /// An update operation on a document.
@@ -64,7 +78,13 @@ pub enum Update {
 pub struct Collection {
     pub(crate) name: String,
     backend: Arc<dyn StorageBackend>,
-    index_cache: Mutex<Option<CachedIndexes>>,
+    /// Shared with every handle from the same `Database` so index DDL
+    /// performed through one handle is visible to all others.
+    index_cache: SharedIndexCache,
+    /// Live-query subscribers for this collection; notified after every
+    /// successful write commit. Shared per collection name across all
+    /// handles from the same `Database`.
+    watch_registry: crate::watch::SharedRegistry,
     sync_hook: Option<Arc<dyn SyncHook>>,
     /// If `Some`, every successful mutation appends an entry to the `_audit`
     /// table. The string is the caller identity recorded in each entry.
@@ -83,13 +103,61 @@ impl Collection {
         Collection {
             name: name.into(),
             backend,
-            index_cache: Mutex::new(None),
+            index_cache: new_shared_index_cache(),
+            watch_registry: crate::watch::new_registry(),
             sync_hook: None,
             audit_caller: None,
             #[cfg(feature = "encryption")]
             field_encryption: None,
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: crate::vector::new_shared_cache(),
+        }
+    }
+
+    /// Attach a shared index-definition cache (called by `Database::collection()`
+    /// so all handles from the same `Database` observe each other's index DDL).
+    pub(crate) fn with_index_cache(mut self, cache: SharedIndexCache) -> Self {
+        self.index_cache = cache;
+        self
+    }
+
+    /// Attach a shared watch registry (called by `Database::collection()` so
+    /// watchers created through one handle see writes made through any other
+    /// handle of the same collection).
+    pub(crate) fn with_watch_registry(mut self, registry: crate::watch::SharedRegistry) -> Self {
+        self.watch_registry = registry;
+        self
+    }
+
+    /// Subscribe to live query results.
+    ///
+    /// Returns a [`crate::watch::WatchHandle`] that yields a fresh snapshot of
+    /// the documents matching `filter` after every write to this collection
+    /// (insert, update, delete — through any handle of the same `Database`).
+    /// Rapid writes may coalesce into a single snapshot; no write is ever
+    /// silently skipped because the query re-runs at receive time.
+    pub fn watch(&self, filter: Filter) -> crate::watch::WatchHandle {
+        let reader = self.clone_reader();
+        crate::watch::create_watch(&self.watch_registry, filter, move |f| {
+            reader.find(f.clone())
+        })
+    }
+
+    /// A read-only clone of this handle for watch callbacks: shares the
+    /// backend and caches, carries the field-encryption config so snapshots
+    /// are decrypted like `find`, but drops hooks/audit (it never writes).
+    fn clone_reader(&self) -> Collection {
+        Collection {
+            name: self.name.clone(),
+            backend: Arc::clone(&self.backend),
+            index_cache: Arc::clone(&self.index_cache),
+            watch_registry: Arc::clone(&self.watch_registry),
+            sync_hook: None,
+            audit_caller: None,
+            #[cfg(feature = "encryption")]
+            field_encryption: self.field_encryption.clone(),
+            #[cfg(feature = "vector-hnsw")]
+            hnsw_cache: Arc::clone(&self.hnsw_cache),
         }
     }
 
@@ -190,6 +258,9 @@ impl Collection {
 /// - Must not be empty.
 /// - Must not exceed 128 characters.
 /// - Must not contain `"::"` (reserved for internal table naming).
+/// - Must not start with `"_"` (reserved for system collections such as
+///   `_audit`; without this, `db.collection("_audit")` would allow normal
+///   mutations against the append-only audit log).
 ///
 /// Called by [`crate::Database::collection`] so callers get an error
 /// immediately rather than at index-creation time.
@@ -198,6 +269,12 @@ pub fn validate_collection_name(name: &str) -> Result<(), TalaDbError> {
         return Err(TalaDbError::InvalidName(
             "collection name must not be empty".into(),
         ));
+    }
+    if name.starts_with('_') {
+        return Err(TalaDbError::InvalidName(format!(
+            "collection name \"{name}\" must not start with \"_\" \
+             (reserved for system collections)"
+        )));
     }
     if name.len() > 128 {
         return Err(TalaDbError::InvalidName(format!(
@@ -216,23 +293,27 @@ pub fn validate_collection_name(name: &str) -> Result<(), TalaDbError> {
 
 impl Collection {
     fn invalidate_index_cache(&self) {
-        if let Ok(mut guard) = self.index_cache.lock() {
-            *guard = None;
-        }
+        let mut guard = self.index_cache.lock().unwrap_or_else(|p| p.into_inner());
+        guard.remove(&self.name);
     }
 
     fn load_indexes_cached(&self) -> Result<CachedIndexes, TalaDbError> {
-        let mut guard = self.index_cache.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(ref cached) = *guard {
-            return Ok(cached.clone());
+        {
+            let guard = self.index_cache.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(cached) = guard.get(&self.name) {
+                return Ok(cached.clone());
+            }
         }
+        // Load outside the lock so a slow storage read does not block other
+        // collections; a racing loader just overwrites with identical data.
         let cached = CachedIndexes {
             indexes: Arc::new(self.load_indexes()?),
             fts_indexes: Arc::new(self.load_fts_indexes()?),
             vec_indexes: Arc::new(self.load_vector_indexes()?),
             compound_indexes: Arc::new(self.load_compound_indexes()?),
         };
-        *guard = Some(cached.clone());
+        let mut guard = self.index_cache.lock().unwrap_or_else(|p| p.into_inner());
+        guard.insert(self.name.clone(), cached.clone());
         Ok(cached)
     }
 
@@ -242,6 +323,13 @@ impl Collection {
     /// an index range scan instead of a full table scan.  `create_index` is
     /// idempotent, so this is a no-op after the first call.
     fn ensure_changed_at_index(&self) -> Result<(), TalaDbError> {
+        // Consult the cached definitions first: opening a write transaction
+        // on every mutation just to re-check existence is wasteful, and the
+        // cache is invalidated by any index DDL on this Database.
+        let cache = self.load_indexes_cached()?;
+        if cache.indexes.iter().any(|d| d.field == "_changed_at") {
+            return Ok(());
+        }
         self.create_index("_changed_at")
     }
 
@@ -481,7 +569,7 @@ impl Collection {
     fn load_compound_indexes(&self) -> Result<Vec<CompoundIndexDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
         let prefix = format!("{}::", self.name);
-        let all = rtxn.scan_all(META_COMPOUND_TABLE).unwrap_or_default();
+        let all = rtxn.scan_all(META_COMPOUND_TABLE)?;
         let mut defs = Vec::new();
         for (k, v) in all {
             let key_str = String::from_utf8_lossy(&k);
@@ -623,6 +711,16 @@ impl Collection {
     /// scan when no HNSW graph is stored (e.g. the feature is disabled, or the
     /// graph has not been built yet).
     ///
+    /// **HNSW staleness:** the graph is built in memory at
+    /// `create_vector_index` / [`Self::upgrade_vector_index`] /
+    /// `Database::rebuild_hnsw_indexes` time and is *not* updated by later
+    /// inserts, updates, or deletes. Documents inserted after the last build
+    /// are invisible to HNSW search until the graph is rebuilt; deleted
+    /// documents are dropped from results (the search over-fetches to
+    /// compensate, so `top_k` is still honoured when possible). Rebuild after
+    /// bulk writes with [`Self::upgrade_vector_index`]. The flat (non-HNSW)
+    /// path is always exact and current.
+    ///
     /// If `pre_filter` is `Some`, only documents matching that filter are
     /// considered. This lets you combine metadata filtering with vector
     /// similarity in one call.  Pre-filtering forces flat search regardless of
@@ -662,8 +760,14 @@ impl Collection {
                 cache.get(&cache_key).cloned()
             };
             if let Some(graph) = graph_opt {
-                let scored = search_hnsw(&graph, query, &def.metric, top_k);
-                return self.load_results(scored);
+                // The graph may contain ids deleted since the last rebuild —
+                // load_results drops those. Over-fetch so the caller still
+                // receives top_k results despite a moderate amount of churn.
+                let fetch_k = top_k + (top_k / 5).max(8);
+                let scored = search_hnsw(&graph, query, &def.metric, fetch_k);
+                let mut results = self.load_results(scored)?;
+                results.truncate(top_k);
+                return Ok(results);
             }
         }
 
@@ -716,6 +820,10 @@ impl Collection {
 
     /// Rebuild the HNSW graph for a vector index from the current flat vector
     /// table.  Use this after bulk inserts or when the graph has become stale.
+    ///
+    /// The in-memory graph is **not** maintained incrementally: documents
+    /// written after the last build are invisible to HNSW search (and deleted
+    /// ones linger in the graph) until this is called again.
     ///
     /// Requires the `vector-hnsw` feature.  Returns `Ok(())` (no-op) when the
     /// feature is disabled or when no HNSW options exist for the given field.
@@ -782,7 +890,9 @@ impl Collection {
         let mut results = Vec::with_capacity(scored.len());
         for (id, score) in scored {
             if let Some(bytes) = rtxn.get(&docs_table, &id.to_bytes())? {
-                let document: Document = postcard::from_bytes(&bytes)?;
+                let mut document: Document = postcard::from_bytes(&bytes)?;
+                // Match `find`: encrypted fields come back as plaintext.
+                self.decrypt_doc(&mut document)?;
                 results.push(VectorSearchResult { document, score });
             }
         }
@@ -808,7 +918,7 @@ impl Collection {
     fn load_vector_indexes(&self) -> Result<Vec<VectorDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
         let prefix = format!("{}::", self.name);
-        let all = rtxn.scan_all(META_VECTOR_TABLE).unwrap_or_default();
+        let all = rtxn.scan_all(META_VECTOR_TABLE)?;
         let mut defs = Vec::new();
         for (k, v) in all {
             let key_str = String::from_utf8_lossy(&k);
@@ -823,7 +933,7 @@ impl Collection {
     fn load_fts_indexes(&self) -> Result<Vec<FtsDef>, TalaDbError> {
         let rtxn = self.backend.begin_read()?;
         let prefix = format!("{}::", self.name);
-        let all = rtxn.scan_all(META_FTS_TABLE).unwrap_or_default();
+        let all = rtxn.scan_all(META_FTS_TABLE)?;
         let mut defs = Vec::new();
         for (k, v) in all {
             let key_str = String::from_utf8_lossy(&k);
@@ -839,7 +949,7 @@ impl Collection {
         let rtxn = self.backend.begin_read()?;
         let prefix = format!("{}::", self.name);
         // Scan meta table and filter by collection prefix
-        let all = rtxn.scan_all(META_INDEXES_TABLE).unwrap_or_default();
+        let all = rtxn.scan_all(META_INDEXES_TABLE)?;
         let mut defs = Vec::new();
         for (k, v) in all {
             let key_str = String::from_utf8_lossy(&k);
@@ -964,22 +1074,24 @@ impl Collection {
         let mut wtxn = self.backend.begin_write()?;
         self.write_doc_and_indexes_with_compound(&doc, None, &cache, wtxn.as_mut())?;
         let id = doc.id;
+        // Audit row commits atomically with the insert.
+        if let Some(caller) = &self.audit_caller {
+            write_audit_entry(
+                wtxn.as_mut(),
+                &self.name,
+                AuditOp::Insert,
+                &id.to_string(),
+                caller,
+            )?;
+        }
         wtxn.commit()?;
+        crate::watch::notify(&self.watch_registry);
         if let Some(hook) = &self.sync_hook {
             hook.on_event(SyncEvent::Insert {
                 collection: self.name.clone(),
                 id: id.to_string(),
                 document: doc,
             });
-        }
-        if let Some(caller) = &self.audit_caller {
-            write_audit_entry(
-                self.backend.as_ref(),
-                &self.name,
-                AuditOp::Insert,
-                &id.to_string(),
-                caller,
-            )?;
         }
         Ok(id)
     }
@@ -1002,9 +1114,20 @@ impl Collection {
         let mut ids = Vec::with_capacity(docs.len());
         for doc in &docs {
             self.write_doc_and_indexes_with_compound(doc, None, &cache, wtxn.as_mut())?;
+            // Audit rows commit atomically with the batch.
+            if let Some(caller) = &self.audit_caller {
+                write_audit_entry(
+                    wtxn.as_mut(),
+                    &self.name,
+                    AuditOp::Insert,
+                    &doc.id.to_string(),
+                    caller,
+                )?;
+            }
             ids.push(doc.id);
         }
         wtxn.commit()?;
+        crate::watch::notify(&self.watch_registry);
         if let Some(hook) = &self.sync_hook {
             for doc in &docs {
                 hook.on_event(SyncEvent::Insert {
@@ -1012,17 +1135,6 @@ impl Collection {
                     id: doc.id.to_string(),
                     document: doc.clone(),
                 });
-            }
-        }
-        if let Some(caller) = &self.audit_caller {
-            for doc in &docs {
-                write_audit_entry(
-                    self.backend.as_ref(),
-                    &self.name,
-                    AuditOp::Insert,
-                    &doc.id.to_string(),
-                    caller,
-                )?;
             }
         }
         Ok(ids)
@@ -1151,6 +1263,51 @@ impl Collection {
         let id = doc.id;
         self.write_doc_and_indexes_with_compound(&doc, None, &cache, wtxn.as_mut())?;
         wtxn.commit()?;
+        crate::watch::notify(&self.watch_registry);
+        if let Some(hook) = &self.sync_hook {
+            hook.on_event(SyncEvent::Insert {
+                collection: self.name.clone(),
+                id: id.to_string(),
+                document: doc,
+            });
+        }
+        Ok(id)
+    }
+
+    /// Insert or replace a document preserving its ULID, in a single write
+    /// transaction.
+    ///
+    /// Unlike `delete_by_id` followed by `insert_with_id`, this:
+    /// - maintains secondary/FTS/vector/compound indexes against the previous
+    ///   version of the document,
+    /// - does **not** write a delete tombstone, and removes any existing
+    ///   tombstone for the ID — so a replaced document cannot later be
+    ///   exported to peers as a deletion,
+    /// - is atomic (no window where the document is absent).
+    ///
+    /// Used by the sync adapters to apply remote upserts and merges.
+    pub fn replace_with_id(&self, mut doc: Document) -> Result<Ulid, TalaDbError> {
+        // Symmetric with the find/find_by_id read paths, which decrypt:
+        // documents flowing through sync (find → export → import → replace)
+        // arrive here as plaintext and must be re-encrypted before storage.
+        self.encrypt_doc(&mut doc)?;
+        let cache = self.load_indexes_cached()?;
+        let docs_table = docs_table_name(&self.name);
+        let id = doc.id;
+        let mut wtxn = self.backend.begin_write()?;
+        // Read the previous version inside the write txn so old index entries
+        // are computed from the bytes actually being replaced.
+        let old_doc: Option<Document> = match wtxn.get(&docs_table, &id.to_bytes())? {
+            Some(bytes) => Some(postcard::from_bytes(&bytes)?),
+            None => None,
+        };
+        self.write_doc_and_indexes_with_compound(&doc, old_doc.as_ref(), &cache, wtxn.as_mut())?;
+        // Clear any tombstone: this ID is alive again. Without this, a
+        // replace performed during sync import would leave a tombstone newer
+        // than the document and the next export would delete it on peers.
+        wtxn.delete(&tomb_table_name(&self.name), &id.to_bytes())?;
+        wtxn.commit()?;
+        crate::watch::notify(&self.watch_registry);
         if let Some(hook) = &self.sync_hook {
             hook.on_event(SyncEvent::Insert {
                 collection: self.name.clone(),
@@ -1165,7 +1322,12 @@ impl Collection {
         let docs_table = docs_table_name(&self.name);
         let rtxn = self.backend.begin_read()?;
         match rtxn.get(&docs_table, &id.to_bytes())? {
-            Some(bytes) => Ok(Some(postcard::from_bytes(&bytes)?)),
+            Some(bytes) => {
+                let mut doc: Document = postcard::from_bytes(&bytes)?;
+                // Match `find`: encrypted fields come back as plaintext.
+                self.decrypt_doc(&mut doc)?;
+                Ok(Some(doc))
+            }
             None => Ok(None),
         }
     }
@@ -1185,6 +1347,7 @@ impl Collection {
                 let mut wtxn = self.backend.begin_write()?;
                 self.delete_doc_and_indexes_with_compound(&doc, &cache, wtxn.as_mut())?;
                 wtxn.commit()?;
+                crate::watch::notify(&self.watch_registry);
                 if let Some(hook) = &self.sync_hook {
                     hook.on_event(SyncEvent::Delete {
                         collection: self.name.clone(),
@@ -1206,10 +1369,24 @@ impl Collection {
             &cache.compound_indexes,
         );
         let rtxn = self.backend.begin_read()?;
-        let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
+        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
-        if let Some(stored_old) = candidates.drain(..).next() {
+        // Candidates were collected in a read snapshot that is now released;
+        // a concurrent writer may have changed or deleted them. Re-fetch and
+        // re-check each one inside the (exclusive) write transaction so the
+        // mutation and its old-index cleanup are computed from current bytes.
+        let regex_cache = filter.compile_regex_cache()?;
+        let docs_table = docs_table_name(&self.name);
+        let mut wtxn = self.backend.begin_write()?;
+        for candidate in candidates {
+            let stored_old: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
+                Some(bytes) => postcard::from_bytes(&bytes)?,
+                None => continue, // deleted since the snapshot
+            };
+            if !filter.matches_with_cache(&stored_old, &regex_cache) {
+                continue; // modified since the snapshot and no longer matches
+            }
             // Clone BEFORE decryption: the write path needs the exact stored
             // ciphertext to compute matching old-index entries. Re-encrypting
             // with fresh nonces would produce different bytes and leak stale
@@ -1217,36 +1394,38 @@ impl Collection {
             let mut old_doc = stored_old.clone();
             self.decrypt_doc(&mut old_doc)?;
             let mut new_doc = old_doc.clone();
-            apply_update(&mut new_doc, update)?;
-            let changes = if self.sync_hook.is_some() {
+            apply_update(&mut new_doc, update.clone())?;
+            let (changes, removed) = if self.sync_hook.is_some() {
                 diff_documents(&old_doc, &new_doc)
             } else {
-                HashMap::new()
+                (HashMap::new(), Vec::new())
             };
             self.encrypt_doc(&mut new_doc)?;
-            let mut wtxn = self.backend.begin_write()?;
             self.write_doc_and_indexes_with_compound(
                 &new_doc,
                 Some(&stored_old),
                 &cache,
                 wtxn.as_mut(),
             )?;
-            wtxn.commit()?;
-            if let Some(hook) = &self.sync_hook {
-                hook.on_event(SyncEvent::Update {
-                    collection: self.name.clone(),
-                    id: old_doc.id.to_string(),
-                    changes,
-                });
-            }
+            // Audit row commits atomically with the update.
             if let Some(caller) = &self.audit_caller {
                 write_audit_entry(
-                    self.backend.as_ref(),
+                    wtxn.as_mut(),
                     &self.name,
                     AuditOp::Update,
                     &old_doc.id.to_string(),
                     caller,
                 )?;
+            }
+            wtxn.commit()?;
+            crate::watch::notify(&self.watch_registry);
+            if let Some(hook) = &self.sync_hook {
+                hook.on_event(SyncEvent::Update {
+                    collection: self.name.clone(),
+                    id: old_doc.id.to_string(),
+                    changes,
+                    removed,
+                });
             }
             return Ok(true);
         }
@@ -1273,43 +1452,57 @@ impl Collection {
         } else {
             Vec::new()
         };
+        // Re-fetch and re-check every candidate inside the write transaction:
+        // the read snapshot used to gather them is already released, and a
+        // concurrent writer may have changed or deleted them in between.
+        let regex_cache = filter.compile_regex_cache()?;
+        let docs_table = docs_table_name(&self.name);
         let mut wtxn = self.backend.begin_write()?;
-        for old_doc in &candidates {
-            let mut plain_old = old_doc.clone();
+        for candidate in &candidates {
+            let stored_old: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
+                Some(bytes) => postcard::from_bytes(&bytes)?,
+                None => continue,
+            };
+            if !filter.matches_with_cache(&stored_old, &regex_cache) {
+                continue;
+            }
+            let mut plain_old = stored_old.clone();
             self.decrypt_doc(&mut plain_old)?;
             let mut new_doc = plain_old.clone();
             apply_update(&mut new_doc, update.clone())?;
             if has_hook {
+                let (changes, removed) = diff_documents(&plain_old, &new_doc);
                 events.push(SyncEvent::Update {
                     collection: self.name.clone(),
-                    id: old_doc.id.to_string(),
-                    changes: diff_documents(&plain_old, &new_doc),
+                    id: stored_old.id.to_string(),
+                    changes,
+                    removed,
                 });
             }
             self.encrypt_doc(&mut new_doc)?;
             self.write_doc_and_indexes_with_compound(
                 &new_doc,
-                Some(old_doc),
+                Some(&stored_old),
                 &cache,
                 wtxn.as_mut(),
             )?;
+            // Audit row commits atomically with the batch.
+            if let Some(caller) = &self.audit_caller {
+                write_audit_entry(
+                    wtxn.as_mut(),
+                    &self.name,
+                    AuditOp::Update,
+                    &stored_old.id.to_string(),
+                    caller,
+                )?;
+            }
             count += 1;
         }
         wtxn.commit()?;
+        crate::watch::notify(&self.watch_registry);
         if let Some(hook) = &self.sync_hook {
             for event in events {
                 hook.on_event(event);
-            }
-        }
-        if let Some(caller) = &self.audit_caller {
-            for old_doc in &candidates {
-                write_audit_entry(
-                    self.backend.as_ref(),
-                    &self.name,
-                    AuditOp::Update,
-                    &old_doc.id.to_string(),
-                    caller,
-                )?;
             }
         }
         Ok(count)
@@ -1324,28 +1517,34 @@ impl Collection {
             &cache.compound_indexes,
         );
         let rtxn = self.backend.begin_read()?;
-        let mut candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
+        let candidates = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
         drop(rtxn);
 
-        if let Some(doc) = candidates.drain(..).next() {
-            let doc_id = doc.id.to_string();
-            let mut wtxn = self.backend.begin_write()?;
-            self.delete_doc_and_indexes_with_compound(&doc, &cache, wtxn.as_mut())?;
+        // Re-fetch and re-check inside the write transaction (see update_one).
+        let regex_cache = filter.compile_regex_cache()?;
+        let docs_table = docs_table_name(&self.name);
+        let mut wtxn = self.backend.begin_write()?;
+        for candidate in candidates {
+            let current: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
+                Some(bytes) => postcard::from_bytes(&bytes)?,
+                None => continue,
+            };
+            if !filter.matches_with_cache(&current, &regex_cache) {
+                continue;
+            }
+            let doc_id = current.id.to_string();
+            self.delete_doc_and_indexes_with_compound(&current, &cache, wtxn.as_mut())?;
+            // Audit row commits atomically with the delete.
+            if let Some(caller) = &self.audit_caller {
+                write_audit_entry(wtxn.as_mut(), &self.name, AuditOp::Delete, &doc_id, caller)?;
+            }
             wtxn.commit()?;
+            crate::watch::notify(&self.watch_registry);
             if let Some(hook) = &self.sync_hook {
                 hook.on_event(SyncEvent::Delete {
                     collection: self.name.clone(),
                     id: doc_id.clone(),
                 });
-            }
-            if let Some(caller) = &self.audit_caller {
-                write_audit_entry(
-                    self.backend.as_ref(),
-                    &self.name,
-                    AuditOp::Delete,
-                    &doc_id,
-                    caller,
-                )?;
             }
             return Ok(true);
         }
@@ -1365,29 +1564,43 @@ impl Collection {
         drop(rtxn);
 
         let mut count = 0u64;
+        // Re-fetch and re-check every candidate inside the write transaction
+        // (see update_many); only documents that still match are deleted, and
+        // hooks/audit fire only for those.
+        let regex_cache = filter.compile_regex_cache()?;
+        let docs_table = docs_table_name(&self.name);
+        let mut deleted: Vec<Document> = Vec::with_capacity(candidates.len());
         let mut wtxn = self.backend.begin_write()?;
-        for doc in &candidates {
-            self.delete_doc_and_indexes_with_compound(doc, &cache, wtxn.as_mut())?;
+        for candidate in &candidates {
+            let current: Document = match wtxn.get(&docs_table, &candidate.id.to_bytes())? {
+                Some(bytes) => postcard::from_bytes(&bytes)?,
+                None => continue,
+            };
+            if !filter.matches_with_cache(&current, &regex_cache) {
+                continue;
+            }
+            self.delete_doc_and_indexes_with_compound(&current, &cache, wtxn.as_mut())?;
+            // Audit row commits atomically with the batch.
+            if let Some(caller) = &self.audit_caller {
+                write_audit_entry(
+                    wtxn.as_mut(),
+                    &self.name,
+                    AuditOp::Delete,
+                    &current.id.to_string(),
+                    caller,
+                )?;
+            }
+            deleted.push(current);
             count += 1;
         }
         wtxn.commit()?;
+        crate::watch::notify(&self.watch_registry);
         if let Some(hook) = &self.sync_hook {
-            for doc in &candidates {
+            for doc in &deleted {
                 hook.on_event(SyncEvent::Delete {
                     collection: self.name.clone(),
                     id: doc.id.to_string(),
                 });
-            }
-        }
-        if let Some(caller) = &self.audit_caller {
-            for doc in &candidates {
-                write_audit_entry(
-                    self.backend.as_ref(),
-                    &self.name,
-                    AuditOp::Delete,
-                    &doc.id.to_string(),
-                    caller,
-                )?;
             }
         }
         Ok(count)
@@ -1400,7 +1613,18 @@ impl Collection {
             let rtxn = self.backend.begin_read()?;
             return rtxn.count_entries(&docs_table_name(&self.name));
         }
-        Ok(self.find(filter)?.len() as u64)
+        // Run the query without the field-decryption pass that `find` does —
+        // only the match count matters, not field contents.
+        let cache = self.load_indexes_cached()?;
+        let qplan = plan_full(
+            &filter,
+            &cache.indexes,
+            &cache.fts_indexes,
+            &cache.compound_indexes,
+        );
+        let rtxn = self.backend.begin_read()?;
+        let docs = execute(&qplan, &filter, rtxn.as_ref(), &self.name, None)?;
+        Ok(docs.len() as u64)
     }
 
     /// Remove tombstones older than `before_ms` (milliseconds since Unix epoch).
@@ -1421,7 +1645,7 @@ impl Collection {
     pub fn compact_tombstones(&self, before_ms: u64) -> Result<u64, TalaDbError> {
         let tomb_table = tomb_table_name(&self.name);
         let rtxn = self.backend.begin_read()?;
-        let all = rtxn.scan_all(&tomb_table).unwrap_or_default();
+        let all = rtxn.scan_all(&tomb_table)?;
 
         // Collect candidate IDs whose tombstone timestamp is older than before_ms.
         let candidates: Vec<Vec<u8>> = all
@@ -1534,10 +1758,23 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
         }
         Update::Inc(pairs) => {
             for (k, delta) in pairs {
+                if !matches!(delta, Value::Int(_) | Value::Float(_)) {
+                    return Err(TalaDbError::TypeError {
+                        expected: "numeric $inc delta".into(),
+                        got: delta.type_name().into(),
+                    });
+                }
                 let new_val = match (doc.get(&k), &delta) {
-                    (Some(Value::Int(n)), Value::Int(d)) => Value::Int(n + d),
+                    (Some(Value::Int(n)), Value::Int(d)) => {
+                        Value::Int(n.checked_add(*d).ok_or_else(|| {
+                            TalaDbError::InvalidOperation(format!(
+                                "$inc overflows i64 on field \"{k}\""
+                            ))
+                        })?)
+                    }
                     (Some(Value::Float(n)), Value::Float(d)) => Value::Float(n + d),
                     (Some(Value::Int(n)), Value::Float(d)) => Value::Float(*n as f64 + d),
+                    (Some(Value::Float(n)), Value::Int(d)) => Value::Float(n + *d as f64),
                     (None, _) => delta,
                     (Some(existing), _) => {
                         return Err(TalaDbError::TypeError {
@@ -1576,14 +1813,16 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
     Ok(())
 }
 
-/// Compute the diff between `old` and `new`, returning only the changed fields.
+/// Compute the diff between `old` and `new`.
 ///
-/// - A field present in `new` but not in `old` → included with the new value.
-/// - A field present in both but with a different value → included with the new value.
-/// - A field present in `old` but absent from `new` → included with `Value::Null`
-///   (tombstone, signals deletion).
-/// - Unchanged fields are not included.
-fn diff_documents(old: &Document, new: &Document) -> HashMap<String, Value> {
+/// Returns `(changes, removed)`:
+/// - A field present in `new` but not in `old` → in `changes` with the new value.
+/// - A field present in both with a different value → in `changes` with the new value.
+/// - A field present in `old` but absent from `new` → listed in `removed`, and
+///   also in `changes` with `Value::Null` for backward compatibility with
+///   receivers that predate the explicit removed list.
+/// - Unchanged fields appear in neither.
+fn diff_documents(old: &Document, new: &Document) -> (HashMap<String, Value>, Vec<String>) {
     let mut changes = HashMap::new();
     for (k, new_val) in &new.fields {
         match old.get(k) {
@@ -1597,12 +1836,14 @@ fn diff_documents(old: &Document, new: &Document) -> HashMap<String, Value> {
         }
     }
     // Fields removed from old doc
+    let mut removed = Vec::new();
     for (k, _) in &old.fields {
         if new.get(k).is_none() {
             changes.insert(k.clone(), Value::Null);
+            removed.push(k.clone());
         }
     }
-    changes
+    (changes, removed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1886,8 +2127,9 @@ mod tests {
     #[test]
     fn diff_unchanged_doc_is_empty() {
         let doc = Document::new(vec![("a".into(), Value::Int(1))]);
-        let diff = diff_documents(&doc, &doc);
+        let (diff, removed) = diff_documents(&doc, &doc);
         assert!(diff.is_empty());
+        assert!(removed.is_empty());
     }
 
     #[test]
@@ -1897,9 +2139,10 @@ mod tests {
             ("a".into(), Value::Int(1)),
             ("b".into(), Value::Int(2)),
         ]);
-        let diff = diff_documents(&old, &new);
+        let (diff, removed) = diff_documents(&old, &new);
         assert_eq!(diff.len(), 1);
         assert_eq!(diff.get("b"), Some(&Value::Int(2)));
+        assert!(removed.is_empty());
     }
 
     #[test]
@@ -1909,8 +2152,9 @@ mod tests {
             ("b".into(), Value::Int(2)),
         ]);
         let new = Document::new(vec![("a".into(), Value::Int(1))]);
-        let diff = diff_documents(&old, &new);
+        let (diff, removed) = diff_documents(&old, &new);
         assert_eq!(diff.get("b"), Some(&Value::Null));
         assert!(!diff.contains_key("a"));
+        assert_eq!(removed, vec!["b".to_string()]);
     }
 }

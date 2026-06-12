@@ -276,8 +276,10 @@ impl CrdtSyncAdapter {
         let highest_ts = clock_map.values().map(|c| c.ts_ms).max().unwrap_or(ts_ms);
         doc.set(CRDT_CLOCKS_FIELD, clock_map_to_value(&clock_map));
         doc.set("_changed_at", Value::Int(highest_ts as i64));
-        col.delete_by_id(id)?;
-        col.insert_with_id(doc)?;
+        // Atomic in-place replace: delete_by_id + insert_with_id would write a
+        // delete tombstone newer than the document, which the next export
+        // would propagate to peers as a deletion of the updated document.
+        col.replace_with_id(doc)?;
         Ok(true)
     }
 }
@@ -336,7 +338,7 @@ impl CrdtAdapter for CrdtSyncAdapter {
             // Export tombstones as delete changes.
             let tomb_table = tomb_table_name(col_name);
             let rtxn = db.backend().begin_read()?;
-            let all_tombs = rtxn.scan_all(&tomb_table).unwrap_or_default();
+            let all_tombs = rtxn.scan_all(&tomb_table)?;
             for (key_bytes, val_bytes) in all_tombs {
                 if key_bytes.len() != 16 {
                     continue;
@@ -437,7 +439,30 @@ impl CrdtAdapter for CrdtSyncAdapter {
 
             // Field-level merge.
             let local_opt = col.find_by_id(change.id)?;
-            let local_existed = local_opt.is_some();
+
+            // If the document was deleted locally, only resurrect it when at
+            // least one incoming mutation is newer than the deletion. A
+            // tombstone with ts >= every mutation clock means the delete wins.
+            if local_opt.is_none() {
+                let tomb_table = tomb_table_name(&change.collection);
+                let rtxn = db.backend().begin_read()?;
+                let tomb_ts: Option<i64> = rtxn
+                    .get(&tomb_table, &change.id.to_bytes())?
+                    .and_then(|b| postcard::from_bytes::<i64>(&b).ok());
+                drop(rtxn);
+                if let Some(tomb_ts) = tomb_ts {
+                    let newest_mutation = change
+                        .mutations
+                        .iter()
+                        .map(|m| m.clock.ts_ms)
+                        .max()
+                        .unwrap_or(0);
+                    if newest_mutation <= tomb_ts as u64 {
+                        continue;
+                    }
+                }
+            }
+
             let mut merged_doc =
                 local_opt.unwrap_or_else(|| Document::with_id(change.id, Vec::new()));
             let mut clock_map = read_clock_map(&merged_doc);
@@ -486,10 +511,9 @@ impl CrdtAdapter for CrdtSyncAdapter {
                 merged_doc.set(CRDT_CLOCKS_FIELD, clock_map_to_value(&clock_map));
                 merged_doc.set("_changed_at", Value::Int(highest_ts as i64));
 
-                if local_existed {
-                    col.delete_by_id(change.id)?;
-                }
-                col.insert_with_id(merged_doc)?;
+                // Atomic replace; also clears any local tombstone so the
+                // merge is not later exported to peers as a deletion.
+                col.replace_with_id(merged_doc)?;
                 applied += 1;
             }
         }

@@ -5,6 +5,60 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-06-12
+
+Hardening: sync data-loss fixes, query
+correctness on mixed numeric types, security fixes in Studio and the bindings,
+and a real live-query API. Ship the npm packages and the prebuilt `.node` /
+WASM artifacts together — the JS↔native surface changed in this release.
+
+### Security
+
+- **`taladb-cli` — Studio bound to `0.0.0.0` with no authentication** — anyone on the local network could browse and **delete** documents. Studio now binds `127.0.0.1` by default (new `--host` flag opts out, with a loud warning) and validates the `Host` header against DNS-rebinding attacks, returning `403` for requests carrying a foreign hostname.
+- **`@taladb/react-native` — malformed filters silently became match-all** — `parse_filter` degraded any unparseable filter (e.g. a typo'd operator like `{"status":{"$qe":"x"}}`) to `Filter::All`, so a malformed filter passed to `deleteMany`/`updateMany` destroyed or rewrote the **entire collection**. Invalid filters now error through the FFI `taladb_last_error` channel at every call site, and a malformed `findNearest` pre-filter errors instead of silently running an unfiltered search.
+- **`taladb-core` — field-level encryption AAD now bound to the document** — ciphertexts were bound to the field name only, so an attacker with write access to the file could transplant doc A's encrypted `ssn` into doc B undetected. New ciphertexts use `field:<doc_id>:<field>` AAD; reads fall back to the legacy field-only AAD so existing data stays readable and upgrades on its next write.
+- **`taladb-core` — ULID generation no longer ignores entropy failure** — a failing system RNG previously produced ULIDs with a zeroed random field (predictable, collision-prone); it now panics with a clear message.
+
+### Fixed
+
+- **`taladb-core` — sync: updates propagated to peers as deletions** — applying a remote upsert (LWW), a CRDT merge, or `CrdtSyncAdapter::update_fields` replaced documents via `delete_by_id` + `insert_with_id`, leaving a delete tombstone newer than the document itself. The next export emitted a `Delete` that destroyed the updated document on every peer. All three paths now use the new atomic `Collection::replace_with_id`, which maintains indexes against the previous version and clears the tombstone. Covered by new update → export → import → export → import round-trip tests for both adapters.
+- **`taladb-core` — LWW `Delete` import ignored timestamps** — a stale remote tombstone unconditionally deleted a newer local document. Deletions now apply only when `changed_at` is at least as new as the local `_changed_at` (deletes win exact ties), and stale upserts can no longer resurrect a more recently deleted document (tombstone timestamp is checked before re-inserting).
+- **`taladb-core` — LWW equal-timestamp conflicts permanently diverged** — the tie-break compared `change.id > local_doc.id`, which is the *same* ULID, so it was always false and each replica kept its own version. Ties now break on the serialized document bytes — a symmetric comparison every replica resolves identically.
+- **`taladb-core` — indexed numeric range queries missed cross-type values** — index keys are type-prefixed (`Int` sorts below `Float`), but filters compare Int↔Float numerically. `$lt`/`$lte` with an Int bound never scanned the Float block (and `$gt`/`$gte` with a Float bound never scanned Ints), so `{price: {$lt: 11}}` on an indexed field silently missed `10.5` — the default situation from JavaScript, where `10` maps to Int and `10.5` to Float. The planner now unions a conservatively-widened range of the other numeric type; indexed and unindexed results are asserted identical by new parity tests. Also fixes `$eq` on `0.0` missing stored `-0.0` (and vice versa).
+- **`taladb-core` — stale per-handle index cache corrupted indexes** — each `Database::collection()` call got its own index-definition cache, so creating an index through one handle left every other live handle unaware: their writes skipped maintaining the new index forever. The cache is now shared per `Database`, keyed by collection.
+- **`taladb-core` — TOCTOU race in filtered mutations** — `update_one/many` and `delete_one/many` gathered candidates in a read snapshot, then mutated in a separate write transaction using the stale documents, losing concurrent updates and leaking stale index entries. Every candidate is now re-fetched and re-checked against the filter inside the exclusive write transaction.
+- **`taladb-core` — storage errors during index-definition loading were swallowed** — `unwrap_or_default()` treated transient read errors as "no indexes", silently skipping index maintenance on writes. Errors now propagate (only a genuinely missing table maps to empty).
+- **`taladb-core` — encryption: v0→v1 migration could permanently destroy ~1/256 of values** — a v0 ciphertext whose random nonce happens to start with `0x01` was misdetected as already-v1 and skipped; once the rest of the table migrated, it became undecryptable. Migration now verifies "looks like v1" values with an actual decrypt before skipping.
+- **`taladb-core` — `find_by_id` and `find_nearest` returned ciphertext for encrypted fields** — both now decrypt configured fields like `find` does; `replace_with_id` re-encrypts symmetrically.
+- **`taladb-core` — audit log was not atomic with its mutation** — audit rows were written in a separate transaction after commit: a crash could persist the mutation without its audit row, and an audit error returned `Err` for an already-committed write. Audit rows now commit inside the mutation's own transaction.
+- **`taladb-core` — `$in` with duplicate values returned duplicate documents** — adjacent-only `Vec::dedup` missed interleaved ULIDs from identical ranges; now deduplicated with a set.
+- **`taladb-core` — `$inc` arithmetic** — i64 overflow now errors instead of wrapping in release builds; `Float += Int` works (previously a `TypeError` while `Int += Float` succeeded); a non-numeric `$inc` delta is rejected.
+- **`taladb-core` — `rekey` could not recover from an interrupted run** — each table commits separately, so a partial run left mixed keys and a re-run failed on its own progress. Values that already decrypt under the new key are now skipped, making `rekey` safely re-runnable.
+- **`taladb-core` — `Document` accepted duplicate field names** — `get`/`set` only ever saw the first occurrence, but all duplicates serialized to storage. Duplicates are now dropped at construction (first occurrence wins).
+- **`taladb-core` — HNSW results shrank below `top_k` after deletions** — deleted ids linger in the in-memory graph and were filtered out of results without replacement. The HNSW path now over-fetches to compensate, and the staleness contract (rebuild via `upgrade_vector_index` after bulk writes) is documented on `find_nearest`.
+- **`taladb` — `useFind` stuck on `loading: true` for empty collections** — the browser `subscribe` initialized its change-detection state to `'[]'`, so an initially-empty result was never delivered. First snapshot now always fires.
+- **`taladb` — WorkerProxy promises hung forever if the worker died** — in-flight requests are now rejected on `worker.onerror` and on `close()`, and new requests fail fast once the proxy is dead.
+- **`@taladb/web` — HTTP sync events could arrive out of order** — one concurrent `fetch` per event let retries reorder deliveries (an update could reach the endpoint before its insert). Events now drain through a strict FIFO queue.
+- **`taladb-core` — watch notifications could be silently skipped under lock contention** — `notify` used `try_lock`; a committed write that lost the race never woke its watchers. Now takes the lock.
+- **`@taladb/react-native` — `listIndexes()` returned a malformed empty object**; now returns the correct `{ btree: [], fts: [], vector: [] }` shape.
+
+### Added
+
+- **`taladb-core` — `Collection::watch(filter)`: live queries in the Rust core** — the previously-unwired `watch` module is now connected to every write path. A `WatchHandle` yields a fresh snapshot of matching documents after each insert/update/delete, across all handles of the same `Database` (one registry per collection). Rapid writes coalesce; the query re-runs at receive time so no state is ever skipped.
+- **`taladb-core` — `Collection::replace_with_id(doc)`** — atomic insert-or-replace preserving the ULID: maintains all indexes against the previous version, clears any delete tombstone, and re-encrypts configured fields. The building block used by both sync adapters.
+- **`taladb-core` / `@taladb/web` — explicit `removed_fields` in update sync payloads** — `SyncEvent::Update` now carries a `removed` list and HTTP payloads include `"removed_fields": [...]`, disambiguating "field removed" from "field set to null". Nulls are still emitted in `changes` for older receivers.
+- **`@taladb/node` — `close()` and async write variants** — `close()` releases the database file handle/lock; `insertAsync`, `insertManyAsync`, `updateOneAsync`, `updateManyAsync`, `deleteOneAsync`, `deleteManyAsync` run on the libuv thread pool instead of blocking the event loop. The universal `taladb` adapter routes through them automatically, falling back to the sync calls on older prebuilt binaries.
+- **Operator parity across bindings** — `$contains` and `$regex` on Node, `$regex` on web (both previously unreachable from those platforms despite core support).
+- **`taladb-core` — `_id` primary-key fast path** — `$eq`/`$in` filters on `_id` (including inside `$and`) now resolve to direct point lookups instead of a full collection scan.
+- **`taladb-cli` — `taladb studio --host <addr>`** — explicit opt-in for non-loopback binding (see Security).
+
+### Changed
+
+- **Breaking: `{field: {}}` (empty operator object) is now an error on every binding** — previously it errored on Node but silently matched **all documents** on web and React Native. `{}` / `null` as the whole filter still mean match-all.
+- **Breaking: collection names starting with `_` are reserved** — `db.collection("_audit")` now returns `InvalidName`, enforcing the audit log's append-only guarantee. System collections are also excluded from `list_collection_names()` / `listCollections()` / Studio.
+- **Breaking: an audit-log write failure now fails (rolls back) the mutation** — previously the mutation committed and the API returned an error anyway, inviting duplicate retries.
+- **Performance** — `count(filter)` no longer decrypts field contents; mutations no longer open an extra write transaction per call to ensure the `_changed_at` index; `HttpSyncHook` builds its exclude-field set once instead of per event; `useFind`-style pollers are unchanged but cross-tab writes still nudge immediately via BroadcastChannel.
+
 ## [0.8.0] - 2026-05-14
 
 ### Added

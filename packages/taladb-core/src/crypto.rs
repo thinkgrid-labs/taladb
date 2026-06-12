@@ -339,7 +339,7 @@ impl<'a> ReadTxn for EncryptedReadTxn<'a> {
 /// Derive a 256-bit key from a passphrase using PBKDF2-HMAC-SHA256.
 ///
 /// `salt` should be at least 16 random bytes, unique per database.
-/// `iterations` must be at least [`MIN_PBKDF2_ITERATIONS`] (100 000).
+/// `iterations` must be at least [`MIN_PBKDF2_ITERATIONS`] (600 000).
 ///
 /// Returns a zeroizing 32-byte key suitable for `EncryptedBackend::new`.
 ///
@@ -438,11 +438,16 @@ pub fn migrate_encrypted_v0_to_v1(
         let mut updates: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
         for (raw_key, raw_val) in &pairs {
-            // Skip values that are already in v1 format (first byte == 0x01 and
-            // long enough to have a nonce + GCM tag).
-            if raw_val.first() == Some(&CRYPTO_FORMAT_V1) && raw_val.len() >= 1 + NONCE_LEN_V1 + 16
+            // Values that *look* v1 (leading 0x01 + plausible length) must be
+            // verified by an actual v1 decrypt: a v0 ciphertext starts with a
+            // random nonce, so ~1/256 of them begin with 0x01 by chance, and
+            // skipping those here would leave them permanently undecryptable
+            // once the rest of the table is migrated.
+            if raw_val.first() == Some(&CRYPTO_FORMAT_V1)
+                && raw_val.len() >= 1 + NONCE_LEN_V1 + 16
+                && decrypt(key, table, raw_key, raw_val).is_ok()
             {
-                continue;
+                continue; // genuinely already migrated
             }
 
             // Old format: [12-byte nonce][ciphertext+tag] — no version prefix.
@@ -507,18 +512,22 @@ pub struct FieldEncryptionConfig {
 /// Encrypt the nominated fields in `doc` in-place.
 ///
 /// Each target field value is serialized to bytes with `postcard`, encrypted
-/// with AES-GCM-256 using AAD `"field:<field_name>"`, and stored back as
-/// `Value::Bytes`.  Fields not in the list are left unchanged.
+/// with AES-GCM-256 using AAD `"field:<doc_id>:<field_name>"`, and stored back
+/// as `Value::Bytes`.  Fields not in the list are left unchanged.
+///
+/// Binding the AAD to both the document ID and the field name means a
+/// ciphertext cannot be transplanted to a different field ("ssn" → "token")
+/// *or* to the same field of a different document (doc A's "ssn" → doc B's
+/// "ssn") without failing authentication on read.
 #[cfg(feature = "encryption")]
 pub fn encrypt_fields(
     doc: &mut crate::document::Document,
     config: &FieldEncryptionConfig,
 ) -> Result<(), crate::error::TalaDbError> {
+    let doc_id = doc.id;
     for (name, val) in &mut doc.fields {
         if config.fields.iter().any(|f| f == name) {
-            // Use the field name as a stable context for AAD so that a
-            // ciphertext for field "ssn" cannot be transplanted to field "token".
-            let aad_key = format!("field:{name}").into_bytes();
+            let aad_key = field_aad(doc_id, name);
             let plain = postcard::to_allocvec(val)
                 .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
             let ciphertext = encrypt(&config.key, "field", &aad_key, &plain)?;
@@ -528,20 +537,45 @@ pub fn encrypt_fields(
     Ok(())
 }
 
+/// AAD for a field-level ciphertext: bound to the owning document and field.
+#[cfg(feature = "encryption")]
+fn field_aad(doc_id: ulid::Ulid, field: &str) -> Vec<u8> {
+    format!("field:{doc_id}:{field}").into_bytes()
+}
+
+/// Legacy (pre-0.8.1) field AAD: bound to the field name only. Kept so data
+/// encrypted by older builds remains readable; values are upgraded to the
+/// doc-bound AAD the next time they are re-encrypted (any update).
+#[cfg(feature = "encryption")]
+fn legacy_field_aad(field: &str) -> Vec<u8> {
+    format!("field:{field}").into_bytes()
+}
+
 /// Decrypt the nominated fields in `doc` in-place.
 ///
 /// Reverses [`encrypt_fields`]: finds `Value::Bytes` entries for the listed
 /// fields, decrypts them, and deserializes back to the original `Value`.
+///
+/// Tries the doc-bound AAD first, then falls back to the legacy field-only
+/// AAD for values written by older builds. A transplanted ciphertext fails
+/// both checks: under the doc-bound scheme the document IDs differ, and a
+/// doc-bound ciphertext never authenticates under the legacy AAD.
 #[cfg(feature = "encryption")]
 pub fn decrypt_fields(
     doc: &mut crate::document::Document,
     config: &FieldEncryptionConfig,
 ) -> Result<(), crate::error::TalaDbError> {
+    let doc_id = doc.id;
     for (name, val) in &mut doc.fields {
         if config.fields.iter().any(|f| f == name) {
             if let crate::document::Value::Bytes(ciphertext) = val {
-                let aad_key = format!("field:{name}").into_bytes();
-                let plain = decrypt(&config.key, "field", &aad_key, ciphertext)?;
+                let plain =
+                    match decrypt(&config.key, "field", &field_aad(doc_id, name), ciphertext) {
+                        Ok(p) => p,
+                        Err(_) => {
+                            decrypt(&config.key, "field", &legacy_field_aad(name), ciphertext)?
+                        }
+                    };
                 let original: crate::document::Value = postcard::from_bytes(&plain)
                     .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
                 *val = original;
@@ -597,7 +631,20 @@ pub fn rekey(
 
         for (raw_key, raw_val) in &pairs {
             // Decrypt with old key.
-            let plaintext = decrypt(old_key, table, raw_key, raw_val)?;
+            let plaintext = match decrypt(old_key, table, raw_key, raw_val) {
+                Ok(p) => p,
+                Err(e) => {
+                    // Each table commits in its own transaction, so an
+                    // interrupted earlier run leaves some tables already on
+                    // the new key. Verify before failing so `rekey` can be
+                    // re-run to completion instead of erroring on its own
+                    // partial progress.
+                    if decrypt(new_key, table, raw_key, raw_val).is_ok() {
+                        continue; // already re-encrypted under the new key
+                    }
+                    return Err(e);
+                }
+            };
             // Re-encrypt with new key.
             let new_val = encrypt(new_key, table, raw_key, &plaintext)?;
             updates.push((raw_key.clone(), new_val));
@@ -689,6 +736,53 @@ mod tests {
     fn derive_key_at_min_iterations_succeeds() {
         let key = derive_key("pass", b"salt1234567890ab", MIN_PBKDF2_ITERATIONS).unwrap();
         assert_eq!(key.len(), 32);
+    }
+
+    #[test]
+    fn field_encryption_round_trip_and_doc_binding() {
+        use crate::document::{Document, Value};
+
+        let config = FieldEncryptionConfig {
+            fields: vec!["ssn".into()],
+            key: test_key(),
+        };
+
+        let mut doc_a = Document::new(vec![("ssn".into(), Value::Str("111-22-3333".into()))]);
+        let mut doc_b = Document::new(vec![("ssn".into(), Value::Str("999-88-7777".into()))]);
+        encrypt_fields(&mut doc_a, &config).unwrap();
+        encrypt_fields(&mut doc_b, &config).unwrap();
+
+        // Transplant doc A's ciphertext into doc B: decryption must fail.
+        let stolen = doc_a.get("ssn").unwrap().clone();
+        doc_b.set("ssn", stolen);
+        assert!(
+            decrypt_fields(&mut doc_b, &config).is_err(),
+            "ciphertext moved between documents must fail authentication"
+        );
+
+        // The untouched document round-trips.
+        decrypt_fields(&mut doc_a, &config).unwrap();
+        assert_eq!(doc_a.get("ssn"), Some(&Value::Str("111-22-3333".into())));
+    }
+
+    #[test]
+    fn field_encryption_decrypts_legacy_field_only_aad() {
+        use crate::document::{Document, Value};
+
+        let config = FieldEncryptionConfig {
+            fields: vec!["token".into()],
+            key: test_key(),
+        };
+
+        // Simulate a value written by a pre-doc-binding build: AAD is the
+        // legacy "field:<name>" form with no document ID.
+        let mut doc = Document::new(vec![("token".into(), Value::Str("secret".into()))]);
+        let plain = postcard::to_allocvec(doc.get("token").unwrap()).unwrap();
+        let legacy_ct = encrypt(&config.key, "field", b"field:token", &plain).unwrap();
+        doc.set("token", Value::Bytes(legacy_ct));
+
+        decrypt_fields(&mut doc, &config).unwrap();
+        assert_eq!(doc.get("token"), Some(&Value::Str("secret".into())));
     }
 
     #[test]

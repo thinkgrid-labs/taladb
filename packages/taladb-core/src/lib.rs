@@ -55,6 +55,14 @@ const MAX_SNAPSHOT_ENTRY_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 /// The main TalaDB database handle.
 pub struct Database {
     backend: Arc<dyn StorageBackend>,
+    /// Index-definition cache shared by every Collection handle from this
+    /// Database, so index DDL through one handle is visible to all others.
+    index_cache: collection::SharedIndexCache,
+    /// One watch registry per collection name, shared across handles so a
+    /// watcher created through one handle observes writes made through any
+    /// other handle of the same collection.
+    watch_registries:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, watch::SharedRegistry>>>,
     #[cfg(feature = "vector-hnsw")]
     hnsw_cache: vector::SharedHnswCache,
 }
@@ -66,6 +74,8 @@ impl Database {
         run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
         Ok(Database {
             backend,
+            index_cache: collection::new_shared_index_cache(),
+            watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -77,6 +87,8 @@ impl Database {
         run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
         Ok(Database {
             backend,
+            index_cache: collection::new_shared_index_cache(),
+            watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -88,6 +100,8 @@ impl Database {
         run_migrations(backend.as_ref(), BUILTIN_MIGRATIONS)?;
         Ok(Database {
             backend,
+            index_cache: collection::new_shared_index_cache(),
+            watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -107,6 +121,8 @@ impl Database {
         run_migrations(backend.as_ref(), migrations)?;
         Ok(Database {
             backend,
+            index_cache: collection::new_shared_index_cache(),
+            watch_registries: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(feature = "vector-hnsw")]
             hnsw_cache: vector::new_shared_cache(),
         })
@@ -129,7 +145,19 @@ impl Database {
     /// naming.
     pub fn collection(&self, name: &str) -> Result<Collection, TalaDbError> {
         collection::validate_collection_name(name)?;
-        let col = Collection::new(name, Arc::clone(&self.backend));
+        let registry = {
+            let mut map = self
+                .watch_registries
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            Arc::clone(
+                map.entry(name.to_string())
+                    .or_insert_with(watch::new_registry),
+            )
+        };
+        let col = Collection::new(name, Arc::clone(&self.backend))
+            .with_index_cache(Arc::clone(&self.index_cache))
+            .with_watch_registry(registry);
         #[cfg(feature = "vector-hnsw")]
         let col = col.with_hnsw_cache(Arc::clone(&self.hnsw_cache));
         Ok(col)
@@ -144,7 +172,7 @@ impl Database {
     #[cfg(feature = "vector-hnsw")]
     pub fn rebuild_hnsw_indexes(&self) -> Result<(), TalaDbError> {
         let txn = self.backend.begin_read()?;
-        let all = txn.scan_all(vector::META_HNSW_TABLE).unwrap_or_default();
+        let all = txn.scan_all(vector::META_HNSW_TABLE)?;
         drop(txn);
 
         for (k, _) in all {
@@ -180,13 +208,16 @@ impl Database {
     /// Return the names of all collections stored in this database.
     ///
     /// Derived by scanning table names for the `docs::` prefix used by the
-    /// document storage layer.
+    /// document storage layer. System collections (names starting with `_`,
+    /// e.g. the `_audit` log) are excluded — they are not addressable via
+    /// [`Database::collection`] and have their own read APIs.
     pub fn list_collection_names(&self) -> Result<Vec<String>, TalaDbError> {
         let txn = self.backend.begin_read()?;
         let mut names: Vec<String> = txn
             .list_tables()?
             .into_iter()
             .filter_map(|t| t.strip_prefix("docs::").map(str::to_string))
+            .filter(|name| !name.starts_with('_'))
             .collect();
         names.sort();
         Ok(names)

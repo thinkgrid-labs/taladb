@@ -176,6 +176,25 @@ impl Filter {
         }
     }
 
+    /// Pre-compile every regex pattern in this filter tree, with size limits
+    /// guarding against ReDoS from user-supplied patterns. Returns an error
+    /// for malformed patterns. Pass the result to [`Self::matches_with_cache`].
+    pub(crate) fn compile_regex_cache(
+        &self,
+    ) -> Result<HashMap<String, regex::Regex>, crate::error::TalaDbError> {
+        let patterns = self.collect_regex_patterns();
+        let mut map = HashMap::with_capacity(patterns.len());
+        for pat in patterns {
+            let re = regex::RegexBuilder::new(&pat)
+                .size_limit(1 << 20)
+                .dfa_size_limit(1 << 20)
+                .build()
+                .map_err(|e| crate::error::TalaDbError::InvalidFilter(format!("regex: {e}")))?;
+            map.insert(pat, re);
+        }
+        Ok(map)
+    }
+
     /// Evaluate this filter using pre-compiled regexes from `regex_cache`.
     ///
     /// For Regex variants the cached `Regex` object is reused instead of

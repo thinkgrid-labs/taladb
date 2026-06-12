@@ -52,7 +52,7 @@ fn hnsw_create_and_search() {
     {
         col.insert(vec![
             ("label".into(), Value::Str(format!("item-{i}"))),
-            ("emb".into(), vec_val(&v.map(|x| x as f64))),
+            ("emb".into(), vec_val(v)),
         ])
         .unwrap();
     }

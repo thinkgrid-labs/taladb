@@ -37,13 +37,24 @@ use taladb_core::{Document, SyncEvent, SyncHook, TalaDbConfig};
 // ---------------------------------------------------------------------------
 // WasmSyncHook — HTTP push sync for the browser (WASM) platform
 //
-// `on_event` is synchronous (required by SyncHook). We use `spawn_local` to
-// schedule the HTTP POST as a microtask so it never blocks the write path.
+// `on_event` is synchronous (required by SyncHook). Events are appended to a
+// FIFO queue and a single drain task POSTs them strictly in order — one
+// `spawn_local` fetch per event would let retries and slow responses reorder
+// deliveries (an update could reach the endpoint before its insert).
 // ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+struct QueuedSyncTask {
+    endpoint: String,
+    headers: HashMap<String, String>,
+    payload: JsonValue,
+}
 
 #[cfg(target_arch = "wasm32")]
 struct WasmSyncHook {
     config: Arc<SyncConfig>,
+    queue: Arc<std::sync::Mutex<std::collections::VecDeque<QueuedSyncTask>>>,
+    draining: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -51,6 +62,8 @@ impl WasmSyncHook {
     fn new(config: SyncConfig) -> Self {
         WasmSyncHook {
             config: Arc::new(config),
+            queue: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -73,6 +86,8 @@ impl WasmSyncHook {
 #[cfg(target_arch = "wasm32")]
 impl SyncHook for WasmSyncHook {
     fn on_event(&self, event: SyncEvent) {
+        use std::sync::atomic::Ordering;
+
         if !self.config.enabled {
             return;
         }
@@ -82,9 +97,33 @@ impl SyncHook for WasmSyncHook {
         let payload = build_wasm_payload(event, &self.config.exclude_fields);
         let headers = self.config.headers.clone();
 
-        wasm_bindgen_futures::spawn_local(async move {
-            fire_wasm_with_retry(&endpoint, &headers, &payload).await;
-        });
+        self.queue
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push_back(QueuedSyncTask {
+                endpoint,
+                headers,
+                payload,
+            });
+
+        // Start the drain task if one is not already running. WASM is
+        // single-threaded, so there is no interleaving between the swap and
+        // the spawn; the drain loop only yields at awaits, where new events
+        // can safely be appended.
+        if !self.draining.swap(true, Ordering::AcqRel) {
+            let queue = Arc::clone(&self.queue);
+            let draining = Arc::clone(&self.draining);
+            wasm_bindgen_futures::spawn_local(async move {
+                loop {
+                    let task = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
+                    match task {
+                        Some(t) => fire_wasm_with_retry(&t.endpoint, &t.headers, &t.payload).await,
+                        None => break,
+                    }
+                }
+                draining.store(false, Ordering::Release);
+            });
+        }
     }
 }
 
@@ -111,6 +150,7 @@ fn build_wasm_payload(event: SyncEvent, exclude: &[String]) -> JsonValue {
             collection,
             id,
             changes,
+            removed,
         } => {
             let mut changes_obj = Map::new();
             for (k, v) in &changes {
@@ -118,11 +158,14 @@ fn build_wasm_payload(event: SyncEvent, exclude: &[String]) -> JsonValue {
                     changes_obj.insert(k.clone(), wasm_value_to_json(v));
                 }
             }
+            let removed_fields: Vec<&String> =
+                removed.iter().filter(|f| !exclude.contains(*f)).collect();
             json!({
                 "_taladb_event": "update",
                 "collection": collection,
                 "id": id,
                 "changes": JsonValue::Object(changes_obj),
+                "removed_fields": removed_fields,
                 "timestamp": ts,
             })
         }
@@ -858,6 +901,11 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
             continue;
         }
         let ops = expr.as_object()?;
+        if ops.is_empty() {
+            // `{field: {}}` is ambiguous (error on node, match-all
+            // historically here) — rejected on every platform as of 0.8.1.
+            return None;
+        }
         for (op, val) in ops {
             let v = json_to_core_value(val);
             let f = match op.as_str() {
@@ -879,6 +927,7 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
                 "$contains" => {
                     Filter::Contains(field.clone(), val.as_str().unwrap_or("").to_string())
                 }
+                "$regex" => Filter::Regex(field.clone(), val.as_str()?.to_string()),
                 _ => return None,
             };
             filters.push(f);
@@ -950,6 +999,40 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// Host-side tests for the pure JSON→Filter parsing (no browser needed).
+/// `parse_filter` itself wraps errors in `JsValue` (wasm-only), so these
+/// exercise `json_to_filter_val`, where the parsing decisions live.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod filter_parse_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn empty_operator_object_is_invalid() {
+        // Aligned with the node binding as of 0.8.1: `{a: {}}` is rejected
+        // instead of silently matching every document.
+        assert!(json_to_filter_val(&json!({"a": {}})).is_none());
+    }
+
+    #[test]
+    fn empty_filter_object_still_matches_all() {
+        assert!(matches!(json_to_filter_val(&json!({})), Some(Filter::All)));
+    }
+
+    #[test]
+    fn unknown_operator_is_invalid() {
+        assert!(json_to_filter_val(&json!({"a": {"$qe": 1}})).is_none());
+    }
+
+    #[test]
+    fn regex_operator_parses() {
+        assert!(matches!(
+            json_to_filter_val(&json!({"email": {"$regex": r"@example\.com$"}})),
+            Some(Filter::Regex(..))
+        ));
+    }
+}
 
 #[cfg(test)]
 mod tests {

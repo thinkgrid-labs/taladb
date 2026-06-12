@@ -92,7 +92,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.8.0",
+        text: "v0.8.1",
         items: [
           {
             text: "Changelog",

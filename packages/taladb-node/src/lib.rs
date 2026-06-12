@@ -174,6 +174,18 @@ fn parse_field_filter(field: &str, expr: &JsonValue) -> napi::Result<Filter> {
                 )
             }
             "$exists" => Filter::Exists(field.to_string(), val.as_bool().unwrap_or(true)),
+            "$contains" => Filter::Contains(
+                field.to_string(),
+                val.as_str()
+                    .ok_or_else(|| napi::Error::from_reason("$contains must be a string"))?
+                    .to_string(),
+            ),
+            "$regex" => Filter::Regex(
+                field.to_string(),
+                val.as_str()
+                    .ok_or_else(|| napi::Error::from_reason("$regex must be a string"))?
+                    .to_string(),
+            ),
             _ => {
                 return Err(napi::Error::from_reason(format!(
                     "unknown operator: {}",
@@ -281,7 +293,9 @@ fn parse_hnsw_opts(
 
 #[napi]
 pub struct TalaDBNode {
-    inner: Database,
+    /// `None` after `close()` — methods then return an error instead of
+    /// touching freed state.
+    inner: Option<Database>,
     sync_hook: Option<Arc<dyn taladb_core::SyncHook>>,
 }
 
@@ -292,7 +306,7 @@ impl TalaDBNode {
     pub fn open_in_memory() -> napi::Result<Self> {
         let db = Database::open_in_memory().map_err(err_to_napi)?;
         Ok(TalaDBNode {
-            inner: db,
+            inner: Some(db),
             sync_hook: None,
         })
     }
@@ -308,7 +322,7 @@ impl TalaDBNode {
         let db = Database::open(std::path::Path::new(&path)).map_err(err_to_napi)?;
         let sync_hook = build_sync_hook(config_json)?;
         Ok(TalaDBNode {
-            inner: db,
+            inner: Some(db),
             sync_hook,
         })
     }
@@ -318,14 +332,31 @@ impl TalaDBNode {
     /// tombstone compaction. Returns the number of bytes reclaimed (may be 0).
     #[napi]
     pub fn compact(&self) -> napi::Result<()> {
-        self.inner.compact().map_err(err_to_napi)
+        self.db()?.compact().map_err(err_to_napi)
+    }
+
+    /// Close the database, releasing the file handle and its lock.
+    ///
+    /// Subsequent calls on this object return an error. Collections obtained
+    /// before `close()` keep the underlying storage alive until they are
+    /// garbage-collected — drop them too to fully release the file.
+    #[napi]
+    pub fn close(&mut self) -> napi::Result<()> {
+        self.inner = None;
+        Ok(())
+    }
+
+    fn db(&self) -> napi::Result<&Database> {
+        self.inner
+            .as_ref()
+            .ok_or_else(|| napi::Error::from_reason("database is closed"))
     }
 
     /// Get a collection by name. If an HTTP sync hook is configured it is
     /// automatically attached to the returned collection.
     #[napi]
     pub fn collection(&self, name: String) -> napi::Result<CollectionNode> {
-        let col = self.inner.collection(&name).map_err(err_to_napi)?;
+        let col = self.db()?.collection(&name).map_err(err_to_napi)?;
         let col = match &self.sync_hook {
             Some(hook) => col.with_sync_hook(Arc::clone(hook)),
             None => col,
@@ -575,6 +606,77 @@ impl CollectionNode {
             filter: f,
         }))
     }
+
+    /// Async variant of `insert` — the write (and any HTTP sync hook retries)
+    /// runs on the libuv thread pool instead of blocking the JS thread.
+    #[napi(js_name = "insertAsync", ts_return_type = "Promise<string>")]
+    pub fn insert_async(&self, doc: JsonValue) -> napi::Result<AsyncTask<InsertTask>> {
+        let fields = obj_to_fields(doc)?;
+        Ok(AsyncTask::new(InsertTask {
+            collection: Arc::clone(&self.inner),
+            fields: Some(fields),
+        }))
+    }
+
+    /// Async variant of `insertMany`.
+    #[napi(js_name = "insertManyAsync", ts_return_type = "Promise<Array<string>>")]
+    pub fn insert_many_async(
+        &self,
+        docs: Vec<JsonValue>,
+    ) -> napi::Result<AsyncTask<InsertManyTask>> {
+        let items: napi::Result<Vec<Vec<(String, Value)>>> =
+            docs.into_iter().map(obj_to_fields).collect();
+        Ok(AsyncTask::new(InsertManyTask {
+            collection: Arc::clone(&self.inner),
+            items: Some(items?),
+        }))
+    }
+
+    /// Async variant of `updateOne`.
+    #[napi(js_name = "updateOneAsync", ts_return_type = "Promise<boolean>")]
+    pub fn update_one_async(
+        &self,
+        filter: JsonValue,
+        update: JsonValue,
+    ) -> napi::Result<AsyncTask<UpdateOneTask>> {
+        Ok(AsyncTask::new(UpdateOneTask {
+            collection: Arc::clone(&self.inner),
+            filter: json_to_filter(&filter)?,
+            update: json_to_update(update)?,
+        }))
+    }
+
+    /// Async variant of `updateMany`.
+    #[napi(js_name = "updateManyAsync", ts_return_type = "Promise<number>")]
+    pub fn update_many_async(
+        &self,
+        filter: JsonValue,
+        update: JsonValue,
+    ) -> napi::Result<AsyncTask<UpdateManyTask>> {
+        Ok(AsyncTask::new(UpdateManyTask {
+            collection: Arc::clone(&self.inner),
+            filter: json_to_filter(&filter)?,
+            update: json_to_update(update)?,
+        }))
+    }
+
+    /// Async variant of `deleteOne`.
+    #[napi(js_name = "deleteOneAsync", ts_return_type = "Promise<boolean>")]
+    pub fn delete_one_async(&self, filter: JsonValue) -> napi::Result<AsyncTask<DeleteOneTask>> {
+        Ok(AsyncTask::new(DeleteOneTask {
+            collection: Arc::clone(&self.inner),
+            filter: json_to_filter(&filter)?,
+        }))
+    }
+
+    /// Async variant of `deleteMany`.
+    #[napi(js_name = "deleteManyAsync", ts_return_type = "Promise<number>")]
+    pub fn delete_many_async(&self, filter: JsonValue) -> napi::Result<AsyncTask<DeleteManyTask>> {
+        Ok(AsyncTask::new(DeleteManyTask {
+            collection: Arc::clone(&self.inner),
+            filter: json_to_filter(&filter)?,
+        }))
+    }
 }
 
 fn format_nearest(results: &[VectorSearchResult]) -> Vec<JsonValue> {
@@ -628,5 +730,134 @@ impl Task for FindTask {
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
         Ok(output.iter().map(doc_to_json).collect())
+    }
+}
+
+pub struct InsertTask {
+    collection: Arc<Collection>,
+    /// Taken in `compute` — napi may call compute only once per task.
+    fields: Option<Vec<(String, Value)>>,
+}
+
+impl Task for InsertTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let fields = self
+            .fields
+            .take()
+            .ok_or_else(|| napi::Error::from_reason("insert task already consumed"))?;
+        let id = self.collection.insert(fields).map_err(err_to_napi)?;
+        Ok(id.to_string())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct InsertManyTask {
+    collection: Arc<Collection>,
+    items: Option<Vec<Vec<(String, Value)>>>,
+}
+
+impl Task for InsertManyTask {
+    type Output = Vec<String>;
+    type JsValue = Vec<String>;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let items = self
+            .items
+            .take()
+            .ok_or_else(|| napi::Error::from_reason("insertMany task already consumed"))?;
+        let ids = self.collection.insert_many(items).map_err(err_to_napi)?;
+        Ok(ids.iter().map(|id| id.to_string()).collect())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct UpdateOneTask {
+    collection: Arc<Collection>,
+    filter: Filter,
+    update: Update,
+}
+
+impl Task for UpdateOneTask {
+    type Output = bool;
+    type JsValue = bool;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.collection
+            .update_one(self.filter.clone(), self.update.clone())
+            .map_err(err_to_napi)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct UpdateManyTask {
+    collection: Arc<Collection>,
+    filter: Filter,
+    update: Update,
+}
+
+impl Task for UpdateManyTask {
+    type Output = u64;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.collection
+            .update_many(self.filter.clone(), self.update.clone())
+            .map_err(err_to_napi)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output as u32)
+    }
+}
+
+pub struct DeleteOneTask {
+    collection: Arc<Collection>,
+    filter: Filter,
+}
+
+impl Task for DeleteOneTask {
+    type Output = bool;
+    type JsValue = bool;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.collection
+            .delete_one(self.filter.clone())
+            .map_err(err_to_napi)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct DeleteManyTask {
+    collection: Arc<Collection>,
+    filter: Filter,
+}
+
+impl Task for DeleteManyTask {
+    type Output = u64;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        self.collection
+            .delete_many(self.filter.clone())
+            .map_err(err_to_napi)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output as u32)
     }
 }
