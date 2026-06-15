@@ -14,9 +14,10 @@
         </h1>
 
         <p class="hero-sub">
-          Local-first document + vector database built in Rust. MongoDB-like
-          queries and on-device vector search — browser, Node.js, and React
-          Native. No cloud. No round-trips. No compromise.
+          Most JS apps stitch together a document store, a vector DB, and a
+          sync layer — each with its own API, each requiring a server. TalaDB
+          replaces all three with one embedded database built in Rust, running
+          on device across browser, Node.js, and React Native.
         </p>
 
         <div class="hero-actions">

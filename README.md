@@ -5,6 +5,7 @@
 **The embedded database for local-first JavaScript apps.**<br/>
 Documents + vector search built in Rust — browser, Node.js, and React Native. No cloud. No compromise.
 
+[![npm](https://img.shields.io/npm/v/taladb?label=npm)](https://www.npmjs.com/package/taladb)
 [![Status: Stable](https://img.shields.io/badge/Status-Stable-green)](https://github.com/thinkgrid-labs/taladb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust)](https://www.rust-lang.org)
@@ -19,7 +20,20 @@ Documents + vector search built in Rust — browser, Node.js, and React Native. 
 
 ---
 
-TalaDB is an open-source, **embedded database for local-first JavaScript apps** built in Rust. It gives web and React Native developers a MongoDB-like query API alongside on-device vector similarity search — store documents, search embeddings, and combine both in a single query, all running entirely on the user's device with no server, no network, and no cloud subscription.
+Most JavaScript apps require three separate tools to handle structured queries, vector similarity search, and offline-first storage — each with its own API, each requiring a server. TalaDB replaces all three with a single embedded database that runs entirely on the user's device, across every JavaScript runtime.
+
+## Why TalaDB?
+
+|  | TalaDB | RxDB / Dexie | Expo SQLite | LanceDB |
+|---|---|---|---|---|
+| Runs in browser | ✓ | ✓ | ✗ | ✗ |
+| React Native | ✓ | ✗ | ✓ | ✗ |
+| On-device vector search | ✓ | ✗ | ✗ | ✓ |
+| Unified API across runtimes | ✓ | ✗ | ✗ | ✗ |
+| No cloud required | ✓ | ✓ | ✓ | ✗ |
+| Rust core | ✓ | ✗ | ✗ | ✓ |
+
+*The only embedded database with vector search that runs on all three JS runtimes with a single API.*
 
 The same Rust core powers all three runtimes:
 
@@ -36,14 +50,10 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 - **Vector search** — on-device similarity search (cosine, dot, euclidean) with optional metadata pre-filter; pairs naturally with on-device AI models (transformers.js, ONNX Web)
 - **Hybrid queries** — combine a regular document filter with vector ranking in one call: find the 5 most semantically similar *english-language support articles* without two round-trips
 - **MongoDB-like API** — familiar filter and update DSL, fully typed with TypeScript generics
-- **Secondary indexes** — type-safe B-tree indexes with automatic index selection and O(log n) range scans
 - **ACID transactions** — powered by [redb](https://github.com/cberner/redb), a pure-Rust B-tree storage engine
-- **Full-text search** — inverted token index with `$contains` filter
 - **Live queries** — subscribe to a filter and receive snapshots after every write, no polling
-- **Encryption at rest** — transparent AES-GCM-256 via `EncryptedBackend`, keys derived with PBKDF2-HMAC-SHA256
-- **Schema migrations** — versioned, atomic, run at open time
-- **Snapshot export / import** — portable binary format for backup and cross-device sync
-- **CLI dev tools** — `taladb inspect`, `export`, `import`, `count`, `drop`
+
+\+ encryption at rest, full-text search, schema migrations, snapshot export/import, CLI tools.
 
 ## Usage
 
@@ -60,15 +70,13 @@ pnpm add taladb @taladb/node
 pnpm add taladb @taladb/react-native
 ```
 
-### Open a database
+### Quick start
 
 ```ts
 import { openDB } from 'taladb'
 
 const db = await openDB('myapp.db')  // OPFS in browser, file on Node.js / React Native
 ```
-
----
 
 ### As a document database
 
@@ -149,7 +157,7 @@ results.forEach(({ document, score }) => {
 
 ---
 
-### Hybrid search — the killer feature
+### Hybrid search — filter then rank
 
 Filter by metadata first, then rank by vector similarity. One call, no extra round-trips.
 
@@ -202,7 +210,7 @@ Full documentation is at **[taladb.dev](https://taladb.dev)**.
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) stable 1.75+
-- [wasm-pack](https://rustwasm.github.io/wasm-pack/) — for browser builds
+- [wasm-pack](https://rustwasm.github.io/wasm-bindgen/wasm-pack/) — for browser builds
 - [Node.js](https://nodejs.org/) 18+ and [pnpm](https://pnpm.io/) 9+
 - `@napi-rs/cli` — for Node.js native module builds
 
@@ -245,33 +253,29 @@ pnpm docs:preview # preview production build
 
 ## Contributing
 
-TalaDB is built by and for the community. Whether you're fixing a bug, adding a new query operator, or improving documentation, your help is welcome!
+TalaDB is maintained by Dennis. Bug reports, PRs, and feedback are all welcome.
 
 1. Fork the repo and create a branch: `git checkout -b feat/my-feature`
 2. Make your changes and add tests
 3. Run `cargo test --workspace` and `pnpm --filter taladb test`
 4. Open a pull request with a clear description
 
-Please open an issue first for large features or architectural changes. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
+Open an issue before large features or architectural changes. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
+Reach out: [dennis@thinkgrid.dev](mailto:dennis@thinkgrid.dev)
 
-| Name | Contact |
-|---|---|
-| Dennis P | [dennis@thinkgrid.dev](mailto:dennis@thinkgrid.dev) |
+## Support TalaDB
+
+TalaDB is free and open-source, maintained by one person. If it saves you time, [sponsoring on GitHub](https://github.com/sponsors/thinkgrid-labs) directly funds continued development: new runtimes, query operators, and performance work.
 
 ## License
 
 MIT © [thinkgrid-labs](https://github.com/thinkgrid-labs)
 
-## Sponsors
-
-If you find TalaDB useful, please consider [sponsoring the project](https://github.com/sponsors/thinkgrid-labs). Your support helps me maintain the project and develop new features.
-
-
 ---
 
 <div align="center">
 
-Built with Rust · Documents and vectors, on device · [taladb.dev](https://taladb.dev)
+Documents + vectors, on-device. No cloud. · [taladb.dev](https://taladb.dev)
 
 </div>

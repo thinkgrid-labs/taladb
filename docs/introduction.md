@@ -7,7 +7,7 @@ description: Learn what TalaDB is, how it works, and why it was built — the em
 
 ## What is TalaDB?
 
-TalaDB is an open-source, **local-first document and vector database** built in Rust and designed for the modern JavaScript ecosystem. It lets React and React Native developers store and query structured data — and search vector embeddings — directly on the user's device, with no server, no network dependency, and no cloud subscription.
+Most JavaScript apps require three separate tools to handle structured queries, vector similarity search, and offline-first storage — each with its own API, each requiring a server. TalaDB replaces all three with a single **embedded database built in Rust** that runs entirely on the user's device, with no network dependency and no cloud subscription.
 
 Data is stored as schemaless JSON-like documents organised into named **collections**. Queries use a MongoDB-inspired filter DSL. Vector indexes sit alongside regular document fields: a single `findNearest` call can rank by embedding similarity while filtering by metadata, giving you the hybrid search pattern that cloud vector databases charge for, running entirely on-device.
 

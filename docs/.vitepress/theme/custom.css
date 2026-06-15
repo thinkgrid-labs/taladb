@@ -947,6 +947,23 @@ a.sp-badge:hover {
     color: rgba(255, 255, 255, 0.2);
 }
 
+.cta-sponsor-note {
+    margin-top: 20px;
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.38);
+}
+
+.cta-sponsor-note a {
+    color: rgba(255, 255, 255, 0.55);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    transition: color 0.15s;
+}
+
+.cta-sponsor-note a:hover {
+    color: rgba(255, 255, 255, 0.85);
+}
+
 /* ----------------------------------------------------------
    VitePress nav / footer overrides
    ---------------------------------------------------------- */
