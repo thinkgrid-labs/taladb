@@ -210,7 +210,7 @@ Full documentation is at **[taladb.dev](https://taladb.dev)**.
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) stable 1.75+
-- [wasm-pack](https://rustwasm.github.io/wasm-bindgen/wasm-pack/) — for browser builds
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/) — for browser builds
 - [Node.js](https://nodejs.org/) 18+ and [pnpm](https://pnpm.io/) 9+
 - `@napi-rs/cli` — for Node.js native module builds
 
