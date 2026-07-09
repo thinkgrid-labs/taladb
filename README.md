@@ -55,6 +55,21 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 
 \+ encryption at rest, full-text search, schema migrations, snapshot export/import, CLI tools.
 
+## Performance
+
+Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench` for Node.js, `pnpm bench:web` for the browser) on a **2018 MacBook Pro** (Intel i5-8259U, 8 GB) — deliberately modest hardware; treat these as a floor. TalaDB v0.8.3, `@taladb/node`, file-backed database, medians after warmup.
+
+| Operation | Scale | Result |
+|---|---|---|
+| `findOne` by `_id` | 100k docs | **23 µs** |
+| `find` on indexed field | 100k docs | **167 µs** |
+| Bulk ingest (`insertMany`) | batches of 5k | **~34k docs/s** |
+| `findNearest` (384-dim, exact k-NN) | 10k vectors | **38 ms** |
+| `findNearest` (384-dim, exact k-NN) | 100k vectors | **387 ms** |
+| Hybrid: indexed filter + vector rank | 100k vectors | **428 ms** |
+
+Vector search is exact — no approximation, no recall trade-off. For a typical on-device corpus (1k–10k chunks) semantic search answers in **under 40 ms**, faster than a round-trip to any cloud vector database. The browser build (WASM + OPFS, measured in headless Chrome) runs vector search at **parity with native** (35 ms at 10k vectors) and point reads in ~100–300 µs. Full tables, browser results, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
+
 ## Usage
 
 ### Install
@@ -195,6 +210,7 @@ Full documentation is at **[taladb.dev](https://taladb.dev)**.
 | Introduction & architecture | [/introduction](https://taladb.dev/introduction) |
 | Core concepts | [/concepts](https://taladb.dev/concepts) |
 | Feature overview | [/features](https://taladb.dev/features) |
+| Benchmarks | [/benchmarks](https://taladb.dev/benchmarks) |
 | Web (Browser / WASM) guide | [/guide/web](https://taladb.dev/guide/web) |
 | Node.js guide | [/guide/node](https://taladb.dev/guide/node) |
 | React Native guide | [/guide/react-native](https://taladb.dev/guide/react-native) |

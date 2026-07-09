@@ -5,6 +5,26 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-07-09
+
+Published benchmarks and a Node.js vector-index fix. Ships a rebuilt `.node`
+binary — `@taladb/node` gains HNSW support.
+
+### Fixed
+
+- **`@taladb/node` — HNSW vector indexes were silently unavailable** — the prebuilt native module was compiled without the `vector-hnsw` feature, so `createVectorIndex(..., { indexType: 'hnsw' })` and `upgradeVectorIndex()` were silent no-ops and every `findNearest` ran the flat (brute-force) path regardless of the requested index type. The published binary now compiles with `vector-hnsw`. (Web and React Native binaries still ship flat-only; enabling HNSW there is tracked separately — WASM size and mobile memory need evaluation first.)
+
+### Added
+
+- **Benchmark suite — `scripts/bench.mjs` (`pnpm bench`)** — reproducible benchmarks against the release `@taladb/node` build: document write throughput (single vs batched), query latency at 100k documents (point get, indexed equality/range, full scan), and vector search at 1k–100k × 384-dim vectors (flat and HNSW, including hybrid pre-filtered search and recall measurement). Deterministic seeded data, medians after warmup.
+- **Browser benchmark suite — `scripts/bench-web.mjs` (`pnpm bench:web`)** — the same workload against `@taladb/web` in real headless Chrome with OPFS active, driven over the worker message protocol with no automation dependency (the page reports results back over HTTP). Confirms WASM vector search at parity with native and documents the browser's debounced-snapshot durability model.
+- **Docs — `/benchmarks` page** — full result tables for both runtimes, methodology, and tuning guidance (batch your writes, index your hybrid filter fields, prefer one-sided indexed ranges), plus a performance summary in the README.
+
+### Known limitations (documented, not new)
+
+- Two-sided indexed ranges (`$gte` + `$lt` on the same field) use the index for the lower bound only and post-filter the rest; the greedy planner does not yet emit bounded range plans.
+- `findNearest` pre-filters materialise full documents (including embedding fields) to collect matching ids; an id-only path would make hybrid queries cheaper.
+
 ## [0.8.2] - 2026-06-12
 
 Hardening: sync data-loss fixes, query

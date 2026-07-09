@@ -1,7 +1,7 @@
 {
   "name": "taladb-workspace",
   "private": true,
-  "version": "0.8.2",
+  "version": "0.8.3",
   "type": "module",
   "scripts": {
     "sync-version": "node scripts/sync-version.js",
@@ -13,6 +13,8 @@
     "build:node": "pnpm --filter @taladb/node build",
     "build:react-native": "pnpm --filter @taladb/react-native build",
     "test": "cargo test --workspace && pnpm run -r test",
+    "bench": "node scripts/bench.mjs",
+    "bench:web": "node scripts/bench-web.mjs",
     "test:rust": "cargo test --workspace",
     "test:web": "wasm-pack test packages/taladb-web --headless --chrome",
     "clean": "rimraf packages/*/pkg packages/*/dist packages/taladb-node/*.node target",
