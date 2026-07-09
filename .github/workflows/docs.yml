@@ -25,7 +25,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # needed for git-based lastUpdated
+          fetch-depth: 0 # needed for git-based lastUpdated
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -35,7 +35,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "22"
           cache: pnpm
 
       - name: Install dependencies
