@@ -12,7 +12,7 @@ binary — `@taladb/node` gains HNSW support.
 
 ### Fixed
 
-- **`@taladb/node` — HNSW vector indexes were silently unavailable** — the prebuilt native module was compiled without the `vector-hnsw` feature, so `createVectorIndex(..., { indexType: 'hnsw' })` and `upgradeVectorIndex()` were silent no-ops and every `findNearest` ran the flat (brute-force) path regardless of the requested index type. The published binary now compiles with `vector-hnsw`. (Web and React Native binaries still ship flat-only; enabling HNSW there is tracked separately — WASM size and mobile memory need evaluation first.)
+- **`@taladb/node` — HNSW vector indexes were silently unavailable** — the prebuilt native module was compiled without the `vector-hnsw` feature, so `createVectorIndex(..., { indexType: 'hnsw' })` and `upgradeVectorIndex()` were silent no-ops and every `findNearest` ran the flat (brute-force) path regardless of the requested index type. The published binary now compiles with `vector-hnsw`; measured at 50k × 384-dim vectors, HNSW answers in 14.6 ms vs 188 ms flat, with 100% recall@10 on clustered (embedding-like) test vectors — see the benchmarks page for the recall and graph-build-cost caveats. (Web and React Native binaries still ship flat-only; enabling HNSW there is tracked separately — WASM size and mobile memory need evaluation first.)
 
 ### Added
 

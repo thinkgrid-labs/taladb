@@ -61,14 +61,14 @@ Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench` fo
 
 | Operation | Scale | Result |
 |---|---|---|
-| `findOne` by `_id` | 100k docs | **23 µs** |
-| `find` on indexed field | 100k docs | **167 µs** |
-| Bulk ingest (`insertMany`) | batches of 5k | **~34k docs/s** |
-| `findNearest` (384-dim, exact k-NN) | 10k vectors | **38 ms** |
-| `findNearest` (384-dim, exact k-NN) | 100k vectors | **387 ms** |
-| Hybrid: indexed filter + vector rank | 100k vectors | **428 ms** |
+| `findOne` by `_id` | 100k docs | **25 µs** |
+| `find` on indexed field | 100k docs | **169 µs** |
+| Bulk ingest (`insertMany`) | batches of 5k | **~36k docs/s** |
+| `findNearest` (384-dim, exact k-NN) | 10k vectors | **40 ms** |
+| `findNearest` (384-dim, exact k-NN) | 100k vectors | **369 ms** |
+| Hybrid: indexed filter + vector rank | 100k vectors | **448 ms** |
 
-Vector search is exact — no approximation, no recall trade-off. For a typical on-device corpus (1k–10k chunks) semantic search answers in **under 40 ms**, faster than a round-trip to any cloud vector database. The browser build (WASM + OPFS, measured in headless Chrome) runs vector search at **parity with native** (35 ms at 10k vectors) and point reads in ~100–300 µs. Full tables, browser results, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
+Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js (188 ms → 14.6 ms at 50k vectors). For a typical on-device corpus (1k–10k chunks) semantic search answers in **under 40 ms**, faster than a round-trip to any cloud vector database. The browser build (WASM + OPFS, measured in headless Chrome) runs vector search at **parity with native** (35 ms at 10k vectors) and point reads in ~100–300 µs. Full tables, browser results, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
 
 ## Usage
 

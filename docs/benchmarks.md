@@ -40,28 +40,28 @@ File-backed, every operation durable on disk when the call returns.
 | `insert` (single doc) | one transaction per call | **~47 ops/s** |
 | `insertMany` (batch 100) | single transaction per batch | **~3.9k docs/s** |
 | `insertMany` (batch 1,000) | single transaction per batch | **~19k docs/s** |
-| `insertMany` (batch 5,000) | single transaction per batch | **~34k docs/s** |
+| `insertMany` (batch 5,000) | single transaction per batch | **~36k docs/s** |
 | `updateOne` (by `_id`) | point update, `$set` one field | **~47 ops/s** |
 | `deleteOne` (by `_id`) | point delete | **~46 ops/s** |
 
 ::: tip Batch your writes
-Every individual write is a full ACID transaction — the ~47 ops/s ceiling for single-document calls is the cost of a durable commit to disk (redb `fsync`), not of TalaDB's write path. The same machine sustains **34k docs/s** when writes share a transaction. If you are inserting more than a handful of documents, use `insertMany`.
+Every individual write is a full ACID transaction — the ~47 ops/s ceiling for single-document calls is the cost of a durable commit to disk (redb `fsync`), not of TalaDB's write path. The same machine sustains **36k docs/s** when writes share a transaction. If you are inserting more than a handful of documents, use `insertMany`.
 :::
 
 ## Node.js — query latency at 100,000 documents
 
 | Operation | Detail | Result |
 |---|---|---|
-| `findOne` by `_id` | primary-key point get | **23 µs** |
-| `find`, indexed equality | secondary index, ~10 matches | **167 µs** |
+| `findOne` by `_id` | primary-key point get | **25 µs** |
+| `find`, indexed equality | secondary index, ~10 matches | **169 µs** |
 | `find`, indexed range (`$gte`) | newest ~100 docs by `publishedAt` | **1.4 ms** |
-| `find`, unindexed field | full scan of 100k docs | **434 ms** |
-| `count`, unindexed equality | scan, 12.5k matches | **461 ms** |
+| `find`, unindexed field | full scan of 100k docs | **437 ms** |
+| `count`, unindexed equality | scan, 12.5k matches | **464 ms** |
 
-Point gets and indexed lookups stay in the microsecond range at 100k documents — the B-tree index layout gives `O(log n)` lookups regardless of collection size. Unindexed queries fall back to a full collection scan; if a field appears in your filters regularly, `createIndex` turns a 434 ms scan into a 167 µs lookup — a **~2,600×** difference.
+Point gets and indexed lookups stay in the microsecond range at 100k documents — the B-tree index layout gives `O(log n)` lookups regardless of collection size. Unindexed queries fall back to a full collection scan; if a field appears in your filters regularly, `createIndex` turns a 437 ms scan into a 169 µs lookup — a **~2,600×** difference.
 
 ::: warning Two-sided ranges
-The query planner is currently greedy rather than cost-based: a two-sided range (`$gte` + `$lt` on the same field) uses the index for the lower bound only and post-filters the rest, so it can scan far more index entries than the window contains (~449 ms for a ~100-doc window at 100k docs, versus 1.4 ms for the one-sided form). Bounded range plans are on the roadmap. Until then, prefer one-sided ranges on recent data, or an indexed equality alongside the range.
+The query planner is currently greedy rather than cost-based: a two-sided range (`$gte` + `$lt` on the same field) uses the index for the lower bound only and post-filters the rest, so it can scan far more index entries than the window contains (~463 ms for a ~100-doc window at 100k docs, versus 1.4 ms for the one-sided form). Bounded range plans are on the roadmap. Until then, prefer one-sided ranges on recent data, or an indexed equality alongside the range.
 :::
 
 ## Node.js — vector search (384-dim, cosine, top-10)
@@ -71,22 +71,35 @@ The default (flat) index is exact k-nearest-neighbour over all vectors — no ap
 | Collection size | `findNearest` (median) |
 |---|---|
 | 1,000 vectors | **4.0 ms** |
-| 10,000 vectors | **38 ms** |
+| 10,000 vectors | **40 ms** |
 | 50,000 vectors | **188 ms** |
-| 100,000 vectors | **387 ms** |
+| 100,000 vectors | **369 ms** |
 
 Hybrid search — metadata pre-filter, then rank — costs roughly the same as pure vector search when the filter field is indexed:
 
 | Operation | Detail | Result |
 |---|---|---|
-| `findNearest` + filter, 100k vectors | indexed pre-filter matching 10% of docs, then rank | **428 ms** |
-| Vector ingest, 100k vectors | `insertMany` with a live vector index | **~4.1k docs/s** |
+| `findNearest` + filter, 100k vectors | indexed pre-filter matching 10% of docs, then rank | **448 ms** |
+| Vector ingest, 100k vectors | `insertMany` with a live vector index | **~4.6k docs/s** |
 
 ::: tip Index your filter fields
-The hybrid pre-filter is an ordinary document query, so it benefits from secondary indexes exactly like `find` does. In this suite, indexing the filter field brought filtered search from ~3 s down to 428 ms at 100k vectors.
+The hybrid pre-filter is an ordinary document query, so it benefits from secondary indexes exactly like `find` does. In this suite, indexing the filter field brought filtered search from ~3 s down to 448 ms at 100k vectors.
 :::
 
-For context: a typical on-device semantic search corpus (notes app, offline docs, chat history) is 1k–10k chunks, where exact search answers in **under 40 ms** — faster than a network round-trip to any cloud vector database, with zero data leaving the device.
+For context: a typical on-device semantic search corpus (notes app, offline docs, chat history) is 1k–10k chunks, where exact search answers in **~40 ms or less** — faster than a network round-trip to any cloud vector database, with zero data leaving the device.
+
+### Optional HNSW index (Node.js, since 0.8.3)
+
+For larger corpora, `@taladb/node` ships with an approximate HNSW index (`createVectorIndex(field, { dimensions, indexType: 'hnsw' })`):
+
+| Metric | 50,000 × 384-dim vectors |
+|---|---|
+| `findNearest` (HNSW) | **14.6 ms** (vs 188 ms flat — ~13× faster) |
+| Graph build (one-off) | **~30 min** on this hardware (47 s at 10k) |
+| recall@10, uniform random vectors | 38% — the adversarial worst case |
+| recall@10, clustered vectors (embedding-like structure) | **100%** |
+
+Read the recall rows carefully: uniform random vectors have no neighbourhood structure and are the known worst case for graph-based ANN. Real model embeddings are strongly clustered, where HNSW recall is excellent — but measure on *your* data before relying on it. Two operational caveats: the graph is built at `createVectorIndex` / `upgradeVectorIndex` time and is **not** updated by later writes (rebuild during idle periods after bulk ingests), and graph construction is CPU-intensive — plan the one-off build cost. The flat index stays the right default for most on-device corpora; `@taladb/web` and React Native are currently flat-only.
 
 ## Browser — WASM + OPFS (Chrome headless)
 
@@ -111,11 +124,11 @@ Browser writes are much faster than Node's single-write numbers because the dura
 
 | Operation | Detail | Browser | Node.js |
 |---|---|---|---|
-| `findOne` by `_id` | primary-key point get | **100 µs** | 23 µs |
-| `find`, indexed equality | secondary index, ~10 matches | **300 µs** | 167 µs |
+| `findOne` by `_id` | primary-key point get | **100 µs** | 25 µs |
+| `find`, indexed equality | secondary index, ~10 matches | **300 µs** | 169 µs |
 | `find`, indexed range (`$gte`) | newest ~100 docs | **800 µs** | 1.4 ms |
-| `find`, unindexed field | full scan of 100k docs | **157 ms** | 434 ms |
-| `count`, unindexed equality | scan, 12.5k matches | **166 ms** | 461 ms |
+| `find`, unindexed field | full scan of 100k docs | **157 ms** | 437 ms |
+| `count`, unindexed equality | scan, 12.5k matches | **166 ms** | 464 ms |
 
 Sub-millisecond operations pay the worker `postMessage` round-trip (~50–100 µs), so browser point reads land around 100–300 µs — still far below anything network-bound. Scans are actually *faster* in the browser because the memory-resident engine reads no disk pages.
 
@@ -124,7 +137,7 @@ Sub-millisecond operations pay the worker `postMessage` round-trip (~50–100 µ
 | Collection size | `findNearest` (median) | Node.js |
 |---|---|---|
 | 1,000 vectors | **5.3 ms** | 4.0 ms |
-| 10,000 vectors | **35 ms** | 38 ms |
+| 10,000 vectors | **35 ms** | 40 ms |
 | 50,000 vectors | **171 ms** | 188 ms |
 
 | Operation | Detail | Result |
