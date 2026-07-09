@@ -17,6 +17,20 @@ export declare class TalaDbNode {
    */
   static open(path: string, configJson?: string | undefined | null): TalaDbNode
   /**
+   * Compact the underlying storage file, reclaiming space freed by deletes
+   * and updates. Call during idle periods after large bulk deletes or
+   * tombstone compaction. Returns the number of bytes reclaimed (may be 0).
+   */
+  compact(): void
+  /**
+   * Close the database, releasing the file handle and its lock.
+   *
+   * Subsequent calls on this object return an error. Collections obtained
+   * before `close()` keep the underlying storage alive until they are
+   * garbage-collected — drop them too to fully release the file.
+   */
+  close(): void
+  /**
    * Get a collection by name. If an HTTP sync hook is configured it is
    * automatically attached to the returned collection.
    */
@@ -69,4 +83,36 @@ export declare class CollectionNode {
    * Returns an array of `{ document: {...}, score: number }` objects.
    */
   findNearest(field: string, query: Array<number>, topK: number, filter?: JsonValue | undefined | null): Array<JsonValue>
+  /**
+   * Zero-copy Float32Array fast path. Avoids the f64→f32 conversion loop
+   * used by `findNearest(number[])`, which matters for large embeddings
+   * (768/1024/1536 dims) called on the hot path.
+   */
+  findNearestF32(field: string, query: Float32Array, topK: number, filter?: JsonValue | undefined | null): Array<JsonValue>
+  /**
+   * Async variant of `findNearest` — runs on the libuv thread pool so large
+   * scans or unfiltered HNSW queries don't block the JS thread. Accepts a
+   * `Float32Array` for zero-copy embedding transfer.
+   */
+  findNearestAsync(field: string, query: Float32Array, topK: number, filter?: JsonValue | undefined | null): Promise<Array<any>>
+  /**
+   * Async variant of `find` — runs on the libuv thread pool so large
+   * collection scans don't block the JS thread.
+   */
+  findAsync(filter: JsonValue): Promise<Array<any>>
+  /**
+   * Async variant of `insert` — the write (and any HTTP sync hook retries)
+   * runs on the libuv thread pool instead of blocking the JS thread.
+   */
+  insertAsync(doc: JsonValue): Promise<string>
+  /** Async variant of `insertMany`. */
+  insertManyAsync(docs: Array<JsonValue>): Promise<Array<string>>
+  /** Async variant of `updateOne`. */
+  updateOneAsync(filter: JsonValue, update: JsonValue): Promise<boolean>
+  /** Async variant of `updateMany`. */
+  updateManyAsync(filter: JsonValue, update: JsonValue): Promise<number>
+  /** Async variant of `deleteOne`. */
+  deleteOneAsync(filter: JsonValue): Promise<boolean>
+  /** Async variant of `deleteMany`. */
+  deleteManyAsync(filter: JsonValue): Promise<number>
 }

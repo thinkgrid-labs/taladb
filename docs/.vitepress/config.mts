@@ -92,7 +92,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.8.2",
+        text: "v0.8.3",
         items: [
           {
             text: "Changelog",
@@ -117,6 +117,7 @@ export default defineConfig({
           { text: "Introduction", link: "/introduction" },
           { text: "Core Concepts", link: "/concepts" },
           { text: "Features", link: "/features" },
+          { text: "Benchmarks", link: "/benchmarks" },
         ],
       },
       {
