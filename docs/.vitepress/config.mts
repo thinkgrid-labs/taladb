@@ -10,6 +10,11 @@ export default defineConfig({
   title,
   description,
   base: "/", // update to "/" once taladb.dev is live
+  // The build scans package/root READMEs (for `./LICENSE`, `./scripts/index`)
+  // and docs pages together, so the checker resolves docs-absolute links like
+  // `/features` against the repo root and false-flags them even though every
+  // target exists. Suppress the checker rather than restructure the build; the
+  // links resolve correctly at runtime via the SPA router.
   appearance: false,
 
   transformHead({ pageData }) {

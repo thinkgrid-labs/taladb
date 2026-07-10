@@ -122,6 +122,22 @@ Import directly from `@taladb/react-native`. Calls are synchronous via JSI — n
 
 The `taladb` package lists the platform packages as `optionalDependencies`, which means npm/pnpm won't fail the install if one isn't present — but it won't install them automatically either. You must add whichever platform package you need alongside `taladb`.
 
+## TalaDB vs Recached
+
+[Recached](https://recached.dev) is our sibling project at ThinkGrid Labs. They are deliberately complementary, not competing — the question is never "which one," it's "which layer."
+
+| | TalaDB | Recached |
+|---|---|---|
+| What it is | Embedded **database** inside the app | Cache + **sync fabric** between backend and clients |
+| Data model | Documents with MongoDB-like queries, indexes, ACID transactions | Keys — strings, collections, JSON |
+| Superpower | On-device vector + hybrid search, rich queries | Multi-client sync: scoped auth, live fan-out, offline outbox, exactly-once delivery |
+| Server | None — runs entirely on-device | The server is the product (Redis-compatible) |
+| Truth model | **Device-local truth** | **Shared truth** across users and devices |
+
+The one-line rule: **TalaDB is where one device's data lives; Recached is how many devices agree.** Reach for TalaDB when you need queryable structured data and semantic search on-device. Reach for Recached when many users or devices need to see the same live state.
+
+They meet where an app needs both — locally queryable data that also syncs across users. TalaDB's [`SyncAdapter`](/roadmap) interface is designed to plug into a sync backbone, and Recached is a natural one: TalaDB owns the on-device query and vector engine, Recached owns the cross-device agreement.
+
 ## Status
 
 TalaDB is production-ready. The Rust core, browser WASM, Node.js bindings, and React Native JSI layer are fully functional, tested, and stable across all supported platforms.
