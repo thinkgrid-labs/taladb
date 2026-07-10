@@ -1,6 +1,6 @@
 ---
 title: Roadmap
-description: Planned and in-progress features for TalaDB — ordered by impact and priority.
+description: Planned and in-progress features for TalaDB
 ---
 
 # Roadmap
