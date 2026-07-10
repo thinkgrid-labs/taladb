@@ -10,12 +10,13 @@ const rootPkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const version = rootPkg.version;
 
 const packages = [
-  "packages/taladb",
-  "packages/taladb-web",
-  "packages/taladb-node",
-  "packages/taladb-react-native",
-  "packages/taladb-react",
-  "packages/taladb-cloudflare",
+  "packages/clients/taladb",
+  "packages/bindings/web",
+  "packages/bindings/node",
+  "packages/bindings/react-native",
+  "packages/clients/react",
+  "packages/integrations/cloudflare",
+  "packages/adapters/mongodb",
 ];
 
 for (const pkg of packages) {

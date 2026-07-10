@@ -57,8 +57,9 @@ export default defineConfig({
       {},
       "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-SWTD98L8XR');",
     ],
-    ["link", { rel: "icon", href: "/taladb/favicon.png", type: "image/png" }],
-    ["link", { rel: "apple-touch-icon", href: "/taladb/apple-touch-icon.png" }],
+    ["link", { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }],
+    ["link", { rel: "icon", href: "/favicon.png", type: "image/png" }],
+    ["link", { rel: "apple-touch-icon", href: "/apple-touch-icon.png" }],
     ["meta", { name: "theme-color", content: "#B54B31" }],
     ["meta", { name: "author", content: "thinkgrid-labs" }],
     [
@@ -92,7 +93,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.8.3",
+        text: "v0.8.4",
         items: [
           {
             text: "Changelog",
@@ -128,6 +129,7 @@ export default defineConfig({
           { text: "React Native", link: "/guide/react-native" },
           { text: "Cloudflare Workers", link: "/guide/cloudflare" },
           { text: "CLI Dev Tools", link: "/guide/cli" },
+          { text: "Bidirectional Sync", link: "/guide/bidirectional-sync" },
           { text: "HTTP Push Sync", link: "/guide/http-sync" },
           { text: "CRDT Sync", link: "/guide/crdt-sync" },
         ],
@@ -142,6 +144,7 @@ export default defineConfig({
           { text: "Collection", link: "/api/collection" },
           { text: "Schema Validation", link: "/api/schema" },
           { text: "Filters", link: "/api/filters" },
+          { text: "Aggregation", link: "/api/aggregation" },
           { text: "Updates", link: "/api/updates" },
           { text: "Migrations", link: "/api/migrations" },
           { text: "Encryption", link: "/api/encryption" },

@@ -1,6 +1,6 @@
 ---
 title: Roadmap
-description: Planned and in-progress features for TalaDB — ordered by impact and priority.
+description: Planned and in-progress features for TalaDB
 ---
 
 # Roadmap
@@ -15,20 +15,22 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 Better DX drives adoption and reduces time-to-production.
 
-### Sync 
+### Sync
 
-- Native NoSQL adapters (`sync.adapter: mongodb | firestore | dynamodb`) with direct connection strings, removing the need for an intermediate API
-- Bi-directional pull: `taladb sync --pull` fetches from the remote and merges locally
-- Per-collection sync config (sync some collections, skip others)
+- ✅ **Bidirectional sync** *(shipped, Node.js)* — `db.sync(adapter, { collections, direction })` pulls remote changes and pushes local ones with Last-Write-Wins merge and an incremental cursor. Ships with a reference `HttpSyncAdapter`; any transport plugs in via the `SyncAdapter` interface. See [Bidirectional Sync](/guide/bidirectional-sync). *Next: wire the browser (WASM) and React Native bindings — the engine already supports it on all three runtimes.*
+- Native NoSQL adapters — for **server-side** TalaDB, sync directly to a database with no intermediate API. (Browser/mobile apps still relay through your own API — a database credential must never reach a client.)
+  - ✅ **`@taladb/sync-mongodb`** *(shipped)* — Last-Write-Wins conditional upsert into a MongoDB collection; also acts as a sync hub for a fleet of peers. Server-side only. See [Bidirectional Sync → MongoDB adapter](/guide/bidirectional-sync#mongodb-adapter).
+  - `@taladb/sync-firestore`, `@taladb/sync-dynamodb` — same `SyncAdapter` interface, next up.
+- ✅ **Per-collection sync** *(shipped)* — `db.sync()` syncs all collections by default; scope with `collections` (allow-list) or `exclude` (deny-list). Reserved `_`-prefixed collections are never synced. See [Bidirectional Sync → Selecting collections](/guide/bidirectional-sync#selecting-collections).
 
 ### Aggregation API
 
-A pipeline-style aggregation API for computing summaries inside the engine without materialising every document in JavaScript:
+✅ **Shipped (all runtimes)** — a pipeline-style aggregation API for computing summaries inside the engine without materialising every document in JavaScript. Available on Node.js, the browser (direct + OPFS worker), and React Native. See [Aggregation](/api/aggregation).
 
 - `collection.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }])`
-- Supported stages (v1): `$match`, `$group`, `$sort`, `$limit`, `$project`
-- Group accumulators: `$sum`, `$count`, `$avg`, `$min`, `$max`
-- Runs as a single pass over the B-tree / index; result never fully materialised in Rust heap for large collections
+- Stages: `$match`, `$group`, `$sort`, `$skip`, `$limit`, `$project`
+- Group accumulators: `$sum`, `$count`, `$avg`, `$min`, `$max`, `$push`, `$addToSet`, `$first`, `$last`
+- Runs as a single pass over the B-tree / index; `$match` as the first stage uses an index
 
 ### Compound indexes
 
@@ -53,6 +55,7 @@ Both packages are thin wrappers over the same event model used by the React hook
 
 Thin adapter packages that implement the `SyncAdapter` interface for popular backends, so no custom server is required:
 
+- **`@taladb/sync-recached`** — uses [Recached](https://recached.dev), our sibling sync fabric, as the transport. Unlike the poll-based adapters below, this one is push-native: scoped live queries deliver changes in real time, and Recached's durable outbox provides offline queueing and exactly-once delivery, so the adapter inherits reconnect and conflict handling rather than reimplementing them. The flagship adapter for real-time, multi-user apps.
 - **`@taladb/sync-supabase`** — uses a Supabase table + Realtime channel as the changeset transport
 - **`@taladb/sync-turso`** — writes changesets to a Turso (libSQL) table; useful for Electron and server-side apps
 - **`@taladb/sync-d1`** — Cloudflare D1 table as the sync relay; pairs naturally with `@taladb/cloudflare`
@@ -65,7 +68,44 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 ---
 
-## 2 · Advanced sync
+## 2 · Performance & vector search
+
+Driven by findings from the v0.8.3 [benchmark suites](/benchmarks) (`pnpm bench`, `pnpm bench:web`).
+
+### Query planner — bounded range plans
+
+A two-sided range (`$gte` + `$lt` on the same field) currently uses the index for the lower bound only and post-filters the rest — ~463 ms for a ~100-doc window at 100k docs, versus 1.4 ms for the one-sided form:
+
+- Emit a single bounded index scan when both bounds constrain the same indexed field
+- Extend to `$in` + range combinations on compound indexes once those land
+
+### Non-blocking HNSW graph builds
+
+`createVectorIndex(..., { indexType: 'hnsw' })` blocks while the graph is constructed — tens of minutes at 50k × 384-dim on laptop hardware:
+
+- Build on a background thread with an `onProgress` callback; queries fall back to the flat scan until the graph is ready
+- Incremental graph inserts, so steady-state writes don't require a full `upgradeVectorIndex` rebuild
+- Document expected build cost by collection size so apps can schedule rebuilds during idle periods
+
+### Faster hybrid pre-filters
+
+`findNearest` with a pre-filter materialises every matching document — including its embedding array — just to collect ids. An id-only execution path in the query executor would make hybrid queries substantially cheaper at scale.
+
+### HNSW on web and React Native
+
+The `vector-hnsw` feature ships in `@taladb/node` since v0.8.3 but not in the WASM or JSI builds. Evaluate enabling it per platform: WASM bundle size, mobile memory ceilings, and graph build time on phone CPUs all need numbers first.
+
+### WASM SIMD for vector search
+
+Browser flat-scan search already runs at parity with the native module. Chrome and Safari both ship WASM SIMD — a `+simd128` build (with runtime feature detection and a scalar fallback) could deliver a multi-× speedup on dot products, the hot loop of `findNearest`.
+
+### Continuous benchmarks
+
+Run the Node and browser suites in CI on a fixed runner class per release and publish the trend, so performance regressions are caught before they ship. Extend with a React Native suite (the one runtime not yet covered).
+
+---
+
+## 3 · Advanced sync
 
 ### Sync over WebSockets
 
@@ -73,9 +113,16 @@ The CRDT merge protocol (field-level logical clocks, `CrdtSyncAdapter`) shipped 
 
 ---
 
-## 3 · Storage
+## 4 · Storage
 
 Internal improvements that improve efficiency and interoperability.
+
+### Configurable browser durability
+
+The browser engine persists a snapshot to OPFS on a fixed 500 ms debounce, so a hard crash can lose the most recent writes (see [benchmarks](/benchmarks) for the trade-off this buys). Expose it per `openDB`:
+
+- `durability: { flushMs?: number, flushEveryWrite?: boolean }` — tune the debounce, or opt into flush-per-commit for apps where the last write matters more than write throughput
+- `db.flush()` — explicit await-able flush for "save now" moments (before checkout, on visibilitychange)
 
 ### Pluggable serialisation
 
@@ -91,7 +138,7 @@ Set an expiry on any document at write time:
 
 ---
 
-## 4 · Platform
+## 5 · Platform
 
 Expanding the runtimes TalaDB can target.
 

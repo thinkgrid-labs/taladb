@@ -53,37 +53,42 @@ TalaDB is built in three layers:
 
 ## Repository structure
 
+Packages are grouped by role, so it's clear at a glance what is the engine, what wraps it, and what consumes it:
+
 ```
 taladb/
 ├── Cargo.toml                      # Rust workspace
 ├── pnpm-workspace.yaml
 │
 ├── packages/
-│   ├── taladb-core/                # Pure Rust core — no JS bindings
-│   │   └── src/
-│   │       ├── document.rs         # Value enum, Document struct (ULID IDs)
-│   │       ├── engine.rs           # StorageBackend trait + redb implementation
-│   │       ├── index.rs            # Secondary index key encoding
-│   │       ├── collection.rs       # CRUD + vector index operations
-│   │       ├── vector.rs           # Vector index, similarity math, encoding
-│   │       ├── migration.rs        # Schema versioning
-│   │       ├── crypto.rs           # AES-GCM-256 encryption wrapper
-│   │       ├── watch.rs            # Live query subscriptions
-│   │       └── query/
-│   │           ├── filter.rs       # Filter AST
-│   │           ├── planner.rs      # Index selection
-│   │           └── executor.rs     # Scan + post-filter
+│   ├── core/                       # THE engine — pure Rust, no JS bindings (crate: taladb-core)
+│   │   └── src/                    #   document/engine/index/collection/vector/query/…
 │   │
-│   ├── @taladb/web/                # Browser (wasm-bindgen + OPFS)
-│   ├── @taladb/node/                # Node.js (napi-rs native module)
-│   ├── @taladb/react-native/        # React Native (JSI HostObject + C FFI)
-│   └── taladb/                     # Unified TypeScript package
+│   ├── bindings/                   # Thin runtime WRAPPERS over core
+│   │   ├── node/                   #   Node.js (napi-rs)          → @taladb/node
+│   │   ├── web/                    #   Browser (wasm-bindgen+OPFS) → @taladb/web
+│   │   └── react-native/           #   React Native (JSI + C FFI) → @taladb/react-native
+│   │
+│   ├── clients/                    # What apps import directly (pure TS)
+│   │   ├── taladb/                 #   Unified meta-package        → taladb
+│   │   └── react/                  #   React hooks                 → @taladb/react
+│   │
+│   ├── adapters/                   # Sync adapters (pure TS)
+│   │   └── mongodb/                #   MongoDB bidirectional sync  → @taladb/sync-mongodb
+│   │
+│   ├── integrations/
+│   │   └── cloudflare/             #   Cloudflare Workers deploy   → @taladb/cloudflare
+│   │
+│   └── tools/
+│       └── cli/                    #   Dev CLI (crate: taladb-cli)
 │
 └── examples/
     ├── web-vite/                   # React + Vite demo
     ├── expo-app/                   # Expo React Native demo
     └── node-script/                # Node.js script demo
 ```
+
+**core** is the engine; **bindings** are the runtime wrappers over it; **clients**, **adapters**, and **integrations** consume it. npm package names (right column) are unchanged by this layout — only their folders are grouped.
 
 ## Packages
 
@@ -121,6 +126,22 @@ pnpm add @taladb/react-native
 Import directly from `@taladb/react-native`. Calls are synchronous via JSI — no `await` needed. See the [React Native guide](/guide/react-native#standalone-installation) for details.
 
 The `taladb` package lists the platform packages as `optionalDependencies`, which means npm/pnpm won't fail the install if one isn't present — but it won't install them automatically either. You must add whichever platform package you need alongside `taladb`.
+
+## TalaDB vs Recached
+
+[Recached](https://recached.dev) is our sibling project at ThinkGrid Labs. They are deliberately complementary, not competing — the question is never "which one," it's "which layer."
+
+| | TalaDB | Recached |
+|---|---|---|
+| What it is | Embedded **database** inside the app | Cache + **sync fabric** between backend and clients |
+| Data model | Documents with MongoDB-like queries, indexes, ACID transactions | Keys — strings, collections, JSON |
+| Superpower | On-device vector + hybrid search, rich queries | Multi-client sync: scoped auth, live fan-out, offline outbox, exactly-once delivery |
+| Server | None — runs entirely on-device | The server is the product (Redis-compatible) |
+| Truth model | **Device-local truth** | **Shared truth** across users and devices |
+
+The one-line rule: **TalaDB is where one device's data lives; Recached is how many devices agree.** Reach for TalaDB when you need queryable structured data and semantic search on-device. Reach for Recached when many users or devices need to see the same live state.
+
+They meet where an app needs both — locally queryable data that also syncs across users. TalaDB's [`SyncAdapter`](/roadmap) interface is designed to plug into a sync backbone, and Recached is a natural one: TalaDB owns the on-device query and vector engine, Recached owns the cross-device agreement.
 
 ## Status
 

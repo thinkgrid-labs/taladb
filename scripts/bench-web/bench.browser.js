@@ -182,7 +182,7 @@ async function main() {
   // ?quick=1 — tiny scales for smoke-testing the harness (not for publishing).
   const QUICK = new URLSearchParams(location.search).has('quick')
   const opfs = await detectOpfs()
-  const workerUrl = new URL('/packages/taladb-web/worker/taladb.worker.js', location.origin)
+  const workerUrl = new URL('/packages/bindings/web/worker/taladb.worker.js', location.origin)
   const client = new WorkerClient(workerUrl)
   await client.call('init', { dbName: 'bench.db' })
   progress(`worker initialised (opfs=${opfs}, quick=${QUICK})`)

@@ -21,8 +21,8 @@ import { fileURLToPath } from 'node:url'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
-const { TalaDbNode } = require(join(__dir, '../packages/taladb-node/index.js'))
-const pkg = require(join(__dir, '../packages/taladb-node/package.json'))
+const { TalaDbNode } = require(join(__dir, '../packages/bindings/node/index.js'))
+const pkg = require(join(__dir, '../packages/bindings/node/package.json'))
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -5,6 +5,17 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4] - 2026-07-11
+
+Bidirectional sync arrives: a local TalaDB can now pull remote changes and push
+local ones with Last-Write-Wins merge, plus a first-party MongoDB adapter.
+
+### Added
+
+- **Bidirectional sync — `db.sync(adapter, { collections, direction })`** *(Node.js)* — pulls remote changes into the local database and pushes local ones, tracked by a persisted incremental cursor, with automatic Last-Write-Wins conflict resolution. `direction` is `'both'` (default), `'push'`, or `'pull'`. Built on two new low-level primitives exposed across the bindings — `db.exportChanges(collections, sinceMs)` and `db.importChanges(changeset)` (idempotent under LWW, so replays and at-least-once transports are safe). The local changeset is snapshotted before the remote import, so a change just pulled is never echoed back. Cursors live in a reserved `__taladb_sync` collection (hidden from `listCollectionNames`, never itself synced). See [Bidirectional Sync](https://taladb.dev/guide/bidirectional-sync). *Browser (WASM) and React Native share the same engine and API; their binding wiring is in progress and `db.sync()` throws a clear error there until it lands.*
+- **`SyncAdapter` interface + reference `HttpSyncAdapter`** — any transport becomes a sync peer by implementing `push(changeset)` / `pull(sinceMs)`. `HttpSyncAdapter` (a `POST /push` + `GET /pull?since=` REST client) ships inside the `taladb` package with zero extra dependencies — the batteries-included default.
+- **`@taladb/sync-mongodb` — MongoDB sync adapter** — syncs directly to a MongoDB collection with no intermediate API. Push does a Last-Write-Wins conditional upsert (a `$cond` pipeline update — correct even when several peers push the same document out of order); pull returns changes newer than the caller's cursor. Doubles as a lightweight sync hub for a fleet of peers. Document bodies are stored as opaque JSON, so field names containing `$` or `.` never collide with MongoDB operators. **Server-side only** — it holds a database credential, so run it on a Node.js backend; browser/mobile apps sync through your own API. See [Bidirectional Sync → MongoDB adapter](https://taladb.dev/guide/bidirectional-sync#mongodb-adapter).
+
 ## [0.8.3] - 2026-07-09
 
 Published benchmarks and a Node.js vector-index fix. Ships a rebuilt `.node`
