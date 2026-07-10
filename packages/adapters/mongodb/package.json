@@ -1,6 +1,6 @@
 {
   "name": "@taladb/sync-mongodb",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "MongoDB bidirectional sync adapter for TalaDB — sync a local TalaDB with a MongoDB collection, no intermediate API",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -13,7 +13,9 @@
       "require": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "prepublishOnly": "npm run build",
     "build": "tsup",
@@ -21,7 +23,14 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": ["taladb", "mongodb", "sync", "replication", "local-first", "offline"],
+  "keywords": [
+    "taladb",
+    "mongodb",
+    "sync",
+    "replication",
+    "local-first",
+    "offline"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -29,11 +38,15 @@
     "directory": "packages/adapters/mongodb"
   },
   "homepage": "https://thinkgrid-labs.github.io/taladb/guide/bidirectional-sync",
-  "bugs": { "url": "https://github.com/thinkgrid-labs/taladb/issues" },
-  "engines": { "node": ">=18" },
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/taladb/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "peerDependencies": {
     "mongodb": ">=5.0.0",
-    "taladb": "^0.8.3"
+    "taladb": "^0.8.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
