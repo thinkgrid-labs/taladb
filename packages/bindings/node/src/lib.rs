@@ -352,6 +352,13 @@ impl TalaDBNode {
             .ok_or_else(|| napi::Error::from_reason("database is closed"))
     }
 
+    /// List user collection names (excludes reserved `_`-prefixed collections
+    /// such as the sync cursor store). Backs "sync all collections".
+    #[napi(js_name = "listCollectionNames")]
+    pub fn list_collection_names(&self) -> napi::Result<Vec<String>> {
+        self.db()?.list_collection_names().map_err(err_to_napi)
+    }
+
     /// Export changes to `collections` after `sinceMs` (exclusive) as a JSON
     /// changeset string, for the bidirectional sync orchestration. `sinceMs`
     /// is a millisecond epoch timestamp (the persisted sync cursor).
@@ -454,6 +461,19 @@ impl CollectionNode {
         let f = json_to_filter(&filter)?;
         let doc = self.inner.find_one(f).map_err(err_to_napi)?;
         Ok(doc.map(|d| doc_to_json(&d)))
+    }
+
+    /// Run a MongoDB-style aggregation pipeline. `pipeline` is a JSON array of
+    /// stage objects (`$match`, `$group`, `$sort`, `$skip`, `$limit`,
+    /// `$project`). Returns the resulting documents.
+    #[napi]
+    pub fn aggregate(&self, pipeline: JsonValue) -> napi::Result<Vec<JsonValue>> {
+        let pl = taladb_core::aggregate::parse_pipeline(&pipeline, &|v| {
+            json_to_filter(v).map_err(|e| e.to_string())
+        })
+        .map_err(napi::Error::from_reason)?;
+        let docs = self.inner.aggregate(pl).map_err(err_to_napi)?;
+        Ok(docs.iter().map(doc_to_json).collect())
     }
 
     /// Update the first matching document.

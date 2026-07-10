@@ -222,6 +222,20 @@ impl CollectionWasm {
         Ok(n as u32)
     }
 
+    /// Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
+    /// `$skip`, `$limit`, `$project`). Returns the resulting documents.
+    pub fn aggregate(&self, pipeline: JsValue) -> Result<JsValue, JsValue> {
+        let json: serde_json::Value =
+            from_value(pipeline).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let pl = taladb_core::aggregate::parse_pipeline(&json, &|v| {
+            json_to_filter(v).ok_or_else(|| "invalid $match filter".to_string())
+        })
+        .map_err(|e| JsValue::from_str(&e))?;
+        let docs = self.inner.aggregate(pl).map_err(err_to_js)?;
+        let result: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
+        to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     /// Create a secondary index on a field.
     #[wasm_bindgen(js_name = createIndex)]
     pub fn create_index(&self, field: &str) -> Result<(), JsValue> {

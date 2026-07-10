@@ -546,6 +546,24 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Run an aggregation pipeline. Returns a JSON array of result documents.
+    pub fn aggregate(&self, collection: &str, pipeline_json: &str) -> Result<String, JsValue> {
+        let value: serde_json::Value =
+            serde_json::from_str(pipeline_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let pipeline = taladb_core::aggregate::parse_pipeline(&value, &|v| {
+            json_to_filter_val(v).ok_or_else(|| "invalid filter in $match".to_string())
+        })
+        .map_err(|e| JsValue::from_str(&e))?;
+        let docs = self
+            .db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .aggregate(pipeline)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let json: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
+        serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     // ------------------------------------------------------------------
     // Index management
     // ------------------------------------------------------------------

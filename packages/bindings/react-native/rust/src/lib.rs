@@ -546,6 +546,54 @@ pub unsafe extern "C" fn taladb_count(
     }
 }
 
+/// Run an aggregation pipeline (`pipeline_json` is a JSON array of stages).
+/// Returns a JSON array of result documents, or NULL on error.
+/// Caller must free with `taladb_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn taladb_aggregate(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    pipeline_json: *const c_char,
+) -> *mut c_char {
+    let (db, col_name, json) = match parse_db_args(handle, collection, pipeline_json) {
+        Some(t) => t,
+        None => return std::ptr::null_mut(),
+    };
+    let value: serde_json::Value = match serde_json::from_str(&json) {
+        Ok(v) => v,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let pipeline = match taladb_core::aggregate::parse_pipeline(&value, &|v| {
+        json_to_filter(v).ok_or_else(|| "invalid filter in $match".to_string())
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            set_last_error(e);
+            return std::ptr::null_mut();
+        }
+    };
+    let col = match db.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    match col.aggregate(pipeline) {
+        Ok(docs) => {
+            let json_docs: Vec<serde_json::Value> = docs.iter().map(doc_to_json).collect();
+            to_cstring(serde_json::to_string(&json_docs).unwrap_or_default())
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Index management
 // ---------------------------------------------------------------------------

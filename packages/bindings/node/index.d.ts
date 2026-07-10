@@ -31,6 +31,11 @@ export declare class TalaDbNode {
    */
   close(): void
   /**
+   * List user collection names (excludes reserved `_`-prefixed collections
+   * such as the sync cursor store). Backs "sync all collections".
+   */
+  listCollectionNames(): Array<string>
+  /**
    * Export changes to `collections` after `sinceMs` (exclusive) as a JSON
    * changeset string, for the bidirectional sync orchestration. `sinceMs`
    * is a millisecond epoch timestamp (the persisted sync cursor).
@@ -56,6 +61,12 @@ export declare class CollectionNode {
   find(filter: JsonValue): Array<JsonValue>
   /** Find a single document or return null. */
   findOne(filter: JsonValue): JsonValue | null
+  /**
+   * Run a MongoDB-style aggregation pipeline. `pipeline` is a JSON array of
+   * stage objects (`$match`, `$group`, `$sort`, `$skip`, `$limit`,
+   * `$project`). Returns the resulting documents.
+   */
+  aggregate(pipeline: JsonValue): Array<JsonValue>
   /** Update the first matching document. */
   updateOne(filter: JsonValue, update: JsonValue): boolean
   /** Update all matching documents. */

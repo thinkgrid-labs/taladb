@@ -31,6 +31,19 @@ export interface SyncHandle {
   exportChanges(collections: string[], sinceMs: number): Promise<SerializedChangeset>;
   importChanges(changeset: SerializedChangeset): Promise<number>;
   collection(name: string): Collection<CursorDoc>;
+  /** User collection names (reserved `_`-prefixed excluded). Backs "sync all". */
+  listCollectionNames(): Promise<string[]>;
+}
+
+/**
+ * Resolve which collections a sync pass covers: the explicit `collections` list
+ * or, when omitted, every user collection — then minus `exclude` and any
+ * reserved `_`-prefixed name (the cursor store must never sync).
+ */
+async function resolveCollections(handle: SyncHandle, options: SyncOptions): Promise<string[]> {
+  const base = options.collections ?? (await handle.listCollectionNames());
+  const excluded = new Set(options.exclude ?? []);
+  return base.filter((c) => !excluded.has(c) && !c.startsWith('_'));
 }
 
 /**
@@ -103,13 +116,14 @@ export async function runSync(
     throw new Error(`sync direction '${direction}' requires adapter.push()`);
   }
 
+  const collections = await resolveCollections(handle, options);
   const cursorCol = handle.collection(CURSOR_COLLECTION);
   const sinceMs = await readCursor(cursorCol, target);
   const startedAt = Date.now();
 
   // Snapshot local changes before importing anything, so pulled changes aren't
   // pushed back to the peer they came from.
-  const local = doPush ? await handle.exportChanges(options.collections, sinceMs) : '[]';
+  const local = doPush ? await handle.exportChanges(collections, sinceMs) : '[]';
 
   let pulled = 0;
   if (doPull) {

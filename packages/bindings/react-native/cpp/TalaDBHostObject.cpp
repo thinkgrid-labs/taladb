@@ -244,6 +244,7 @@ std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
         "updateOne", "updateMany",
         "deleteOne", "deleteMany",
         "count",
+        "aggregate",
         "createIndex", "dropIndex",
         "createFtsIndex", "dropFtsIndex",
         "createVectorIndex", "dropVectorIndex", "upgradeVectorIndex",
@@ -422,6 +423,24 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 int32_t res = taladb_count(db_, col.c_str(), filterJson.c_str());
                 if (res < 0) throw JSError(rt, "taladb_count failed");
                 return Value(static_cast<double>(res));
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // aggregate(collection: string, pipeline: object[]): object[]
+    // ------------------------------------------------------------------
+    if (name == "aggregate") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "aggregate"), 2,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 2) throw JSError(rt, "aggregate requires 2 arguments");
+                auto col          = args[0].getString(rt).utf8(rt);
+                auto pipelineJson = stringify(rt, args[1]);
+                char *result      = taladb_aggregate(db_, col.c_str(), pipelineJson.c_str());
+                if (!result) throw JSError(rt, "taladb_aggregate failed");
+                std::string json(result);
+                taladb_free_string(result);
+                return parse(rt, json);
             });
     }
 

@@ -1,4 +1,13 @@
-import type { Collection, CollectionIndexInfo, CollectionOptions, Document, TalaDB } from './types';
+import type {
+  Collection,
+  CollectionIndexInfo,
+  CollectionOptions,
+  Document,
+  TalaDB,
+  SyncAdapter,
+  SyncOptions,
+  AggregatePipeline,
+} from './types';
 import { loadConfig, validateConfig } from './config';
 import type { TalaDbConfig, SyncConfig } from './config';
 import { runSync, unsupportedSync, type SyncHandle } from './sync';
@@ -17,6 +26,8 @@ export type {
   VectorMetric,
   VectorIndexOptions,
   VectorSearchResult,
+  AggregateStage,
+  AggregatePipeline,
   SyncAdapter,
   SyncOptions,
   SyncResult,
@@ -237,6 +248,8 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
       deleteOne: async (filter) => col.deleteOne(filter),
       deleteMany: async (filter) => col.deleteMany(filter),
       count: async (filter?) => col.count(filter ?? null),
+      aggregate: async <R extends Document = Document>(pipeline: AggregatePipeline<T>): Promise<R[]> =>
+        col.aggregate(pipeline as never) as R[],
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
       createFtsIndex: async (field) => col.createFtsIndex(field),
@@ -350,6 +363,13 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
         proxy.send<number>('count', {
           collection: name, filterJson: filter ? s(filter) : 'null',
         }),
+
+      aggregate: async <R extends Document = Document>(pipeline: AggregatePipeline<T>): Promise<R[]> => {
+        const json = await proxy.send<string>('aggregate', {
+          collection: name, pipelineJson: s(pipeline),
+        });
+        return JSON.parse(json) as R[];
+      },
 
       createIndex: (field) =>
         proxy.send<void>('createIndex', { collection: name, field }),
@@ -488,6 +508,8 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
       deleteMany: async (filter) =>
         col.deleteManyAsync ? col.deleteManyAsync(filter) : col.deleteMany(filter),
       count: async (filter?) => col.count(filter ?? null),
+      aggregate: async <R extends Document = Document>(pipeline: AggregatePipeline<T>): Promise<R[]> =>
+        col.aggregate(pipeline as never) as R[],
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
       createFtsIndex: async (field) => col.createFtsIndex(field),
@@ -510,16 +532,21 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
 
-  const handle: TalaDB = {
+  // Not annotated `: TalaDB` so the extra `listCollectionNames` (needed by the
+  // internal SyncHandle, not part of the public interface) doesn't trip the
+  // excess-property check. Structurally still a TalaDB.
+  const handle = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => db.compact(),
     // Releases the native file handle/lock (no-op on older .node binaries).
     close: async () => db.close?.(),
-    exportChanges: async (collections, sinceMs) => db.exportChanges(sinceMs, collections),
-    importChanges: async (changeset) => db.importChanges(changeset),
-    sync: (adapter, options) => runSync(handle as unknown as SyncHandle, adapter, options),
+    exportChanges: async (collections: string[], sinceMs: number) => db.exportChanges(sinceMs, collections),
+    importChanges: async (changeset: string) => db.importChanges(changeset),
+    listCollectionNames: async () => db.listCollectionNames(),
+    sync: (adapter: SyncAdapter, options: SyncOptions) =>
+      runSync(handle as unknown as SyncHandle, adapter, options),
   };
-  return handle;
+  return handle satisfies TalaDB;
 }
 
 // ============================================================
@@ -538,6 +565,7 @@ interface NativeDB {
   deleteOne(collection: string, filter: Record<string, unknown>): boolean;
   deleteMany(collection: string, filter: Record<string, unknown>): number;
   count(collection: string, filter: Record<string, unknown>): number;
+  aggregate(collection: string, pipeline: unknown[]): Record<string, unknown>[];
   createIndex(collection: string, field: string): void;
   dropIndex(collection: string, field: string): void;
   createFtsIndex(collection: string, field: string): void;
@@ -574,6 +602,8 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
       deleteOne: async (filter) => native.deleteOne(name, filter),
       deleteMany: async (filter) => native.deleteMany(name, filter),
       count: async (filter?) => native.count(name, filter ?? {}),
+      aggregate: async <R extends Document = Document>(pipeline: AggregatePipeline<T>): Promise<R[]> =>
+        native.aggregate(name, pipeline as unknown[]) as R[],
       createIndex: async (field) => native.createIndex(name, field),
       dropIndex: async (field) => native.dropIndex(name, field),
       createFtsIndex: async (field) => native.createFtsIndex(name, field),

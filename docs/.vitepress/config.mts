@@ -144,6 +144,7 @@ export default defineConfig({
           { text: "Collection", link: "/api/collection" },
           { text: "Schema Validation", link: "/api/schema" },
           { text: "Filters", link: "/api/filters" },
+          { text: "Aggregation", link: "/api/aggregation" },
           { text: "Updates", link: "/api/updates" },
           { text: "Migrations", link: "/api/migrations" },
           { text: "Encryption", link: "/api/encryption" },

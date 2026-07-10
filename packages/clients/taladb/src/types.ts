@@ -130,6 +130,24 @@ export interface CollectionOptions<T extends Document = Document> {
   validateOnRead?: boolean;
 }
 
+// --------------- Aggregation ---------------
+
+/** A single MongoDB-style aggregation stage. */
+export type AggregateStage<T extends Document = Document> =
+  | { $match: Filter<T> }
+  | {
+      /** `_id` is a `"$field"` reference or `null` (single group); other keys are
+       * accumulator outputs, e.g. `total: { $sum: '$amount' }`, `n: { $sum: 1 }`. */
+      $group: { _id: string | null } & Record<string, unknown>;
+    }
+  | { $sort: Record<string, 1 | -1> }
+  | { $skip: number }
+  | { $limit: number }
+  | { $project: Record<string, 0 | 1> };
+
+/** An ordered aggregation pipeline. */
+export type AggregatePipeline<T extends Document = Document> = AggregateStage<T>[];
+
 // --------------- Collection interface ---------------
 
 export interface Collection<T extends Document = Document> {
@@ -142,6 +160,18 @@ export interface Collection<T extends Document = Document> {
   deleteOne(filter: Filter<T>): Promise<boolean>;
   deleteMany(filter: Filter<T>): Promise<number>;
   count(filter?: Filter<T>): Promise<number>;
+  /**
+   * Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
+   * `$skip`, `$limit`, `$project`) inside the engine. Returns the resulting
+   * documents. Currently available on Node.js and the in-memory browser build.
+   *
+   * @example
+   * const byStatus = await orders.aggregate([
+   *   { $group: { _id: '$status', total: { $sum: '$amount' }, n: { $sum: 1 } } },
+   *   { $sort: { total: -1 } },
+   * ]);
+   */
+  aggregate<R extends Document = Document>(pipeline: AggregatePipeline<T>): Promise<R[]>;
   createIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   dropIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   /**
@@ -255,8 +285,18 @@ export interface SyncAdapter {
 }
 
 export interface SyncOptions {
-  /** Collections to include in this sync. Required. */
-  collections: string[];
+  /**
+   * Collections to sync. Omit to sync **all** user collections (reserved
+   * `_`-prefixed collections are always skipped). Provide an array to sync only
+   * those.
+   */
+  collections?: string[];
+  /**
+   * Collections to skip. Applied after `collections` (or after the
+   * all-collections default), so `{ exclude: ['logs'] }` means "sync everything
+   * except logs".
+   */
+  exclude?: string[];
   /** Direction of the pass. Default `'both'` (bidirectional). */
   direction?: SyncDirection;
   /**

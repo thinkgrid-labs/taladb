@@ -39,6 +39,7 @@
  * deleteOne     { collection, filterJson }
  * deleteMany    { collection, filterJson }
  * count         { collection, filterJson }
+ * aggregate     { collection, pipelineJson }        → JSON array of result docs
  * createIndex   { collection, field }
  * dropIndex     { collection, field }
  * createFtsIndex    { collection, field }
@@ -430,6 +431,9 @@ async function dispatch(op, args) {
 
     case 'count':
       return db.count(args.collection, args.filterJson ?? 'null');
+
+    case 'aggregate':
+      return db.aggregate(args.collection, args.pipelineJson ?? '[]');
 
     case 'createIndex':
       db.createIndex(args.collection, args.field);

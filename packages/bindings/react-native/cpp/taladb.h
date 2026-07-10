@@ -142,6 +142,19 @@ int32_t taladb_count(TalaDbHandle *handle,
                      const char   *filter_json);
 
 /* -------------------------------------------------------------------------
+ * Aggregate
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Run an aggregation pipeline. pipeline_json is a JSON array of stages.
+ * Returns a JSON array of result documents, or NULL on error.
+ * Caller must free with taladb_free_string().
+ */
+char *taladb_aggregate(TalaDbHandle *handle,
+                       const char   *collection,
+                       const char   *pipeline_json);
+
+/* -------------------------------------------------------------------------
  * Index management
  * ---------------------------------------------------------------------- */
 

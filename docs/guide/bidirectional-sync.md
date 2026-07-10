@@ -29,6 +29,18 @@ const { pulled, pushed } = await db.sync(adapter, { collections: ['notes', 'task
 
 Call it on an interval, on reconnect, or after a batch of writes — each pass only exchanges what changed since the last one.
 
+## Selecting collections
+
+By default `db.sync()` syncs **every** collection. Narrow it with `collections` (an allow-list) or `exclude` (a deny-list):
+
+```ts
+await db.sync(adapter);                                   // all collections
+await db.sync(adapter, { collections: ['notes', 'tasks'] }); // only these
+await db.sync(adapter, { exclude: ['logs', 'drafts'] });     // all except these
+```
+
+Reserved `_`-prefixed collections (including the internal sync cursor store) are never synced, regardless of these options. `exclude` is applied after `collections`, so you can combine them if needed.
+
 ## Direction
 
 Bidirectional is the default. Narrow it when you only want one way:

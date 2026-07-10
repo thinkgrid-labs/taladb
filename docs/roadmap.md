@@ -21,16 +21,16 @@ Better DX drives adoption and reduces time-to-production.
 - Native NoSQL adapters — for **server-side** TalaDB, sync directly to a database with no intermediate API. (Browser/mobile apps still relay through your own API — a database credential must never reach a client.)
   - ✅ **`@taladb/sync-mongodb`** *(shipped)* — Last-Write-Wins conditional upsert into a MongoDB collection; also acts as a sync hub for a fleet of peers. Server-side only. See [Bidirectional Sync → MongoDB adapter](/guide/bidirectional-sync#mongodb-adapter).
   - `@taladb/sync-firestore`, `@taladb/sync-dynamodb` — same `SyncAdapter` interface, next up.
-- Per-collection sync config (sync some collections, skip others)
+- ✅ **Per-collection sync** *(shipped)* — `db.sync()` syncs all collections by default; scope with `collections` (allow-list) or `exclude` (deny-list). Reserved `_`-prefixed collections are never synced. See [Bidirectional Sync → Selecting collections](/guide/bidirectional-sync#selecting-collections).
 
 ### Aggregation API
 
-A pipeline-style aggregation API for computing summaries inside the engine without materialising every document in JavaScript:
+✅ **Shipped (all runtimes)** — a pipeline-style aggregation API for computing summaries inside the engine without materialising every document in JavaScript. Available on Node.js, the browser (direct + OPFS worker), and React Native. See [Aggregation](/api/aggregation).
 
 - `collection.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }])`
-- Supported stages (v1): `$match`, `$group`, `$sort`, `$limit`, `$project`
-- Group accumulators: `$sum`, `$count`, `$avg`, `$min`, `$max`
-- Runs as a single pass over the B-tree / index; result never fully materialised in Rust heap for large collections
+- Stages: `$match`, `$group`, `$sort`, `$skip`, `$limit`, `$project`
+- Group accumulators: `$sum`, `$count`, `$avg`, `$min`, `$max`, `$push`, `$addToSet`, `$first`, `$last`
+- Runs as a single pass over the B-tree / index; `$match` as the first stage uses an index
 
 ### Compound indexes
 

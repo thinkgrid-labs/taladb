@@ -17,11 +17,11 @@ interface Row {
 }
 
 class MemHandle implements SyncHandle {
-  private rows = new Map<string, Row>();
+  private rows = new Map<string, Row & { collection: string }>();
   private cursors = new Map<string, number>();
 
-  put(id: string, body: string, changed_at: number) {
-    this.rows.set(id, { id, changed_at, body });
+  put(id: string, body: string, changed_at: number, collection = 'notes') {
+    this.rows.set(id, { id, changed_at, body, collection });
   }
   get(id: string) {
     return this.rows.get(id)?.body;
@@ -30,15 +30,23 @@ class MemHandle implements SyncHandle {
     return this.rows.size;
   }
 
-  exportChanges = async (_collections: string[], sinceMs: number): Promise<string> => {
+  // Respects the collections filter, so collection-resolution is testable.
+  exportChanges = async (collections: string[], sinceMs: number): Promise<string> => {
+    const include = new Set(collections);
     const out = [...this.rows.values()]
-      .filter((r) => r.changed_at > sinceMs)
-      .map((r) => ({ collection: 'notes', id: r.id, op: { Upsert: { body: r.body } }, changed_at: r.changed_at }));
+      .filter((r) => r.changed_at > sinceMs && include.has(r.collection))
+      .map((r) => ({
+        collection: r.collection,
+        id: r.id,
+        op: { Upsert: { body: r.body } },
+        changed_at: r.changed_at,
+      }));
     return JSON.stringify(out);
   };
 
   importChanges = async (changeset: string): Promise<number> => {
     const changes = JSON.parse(changeset) as {
+      collection: string;
       id: string;
       changed_at: number;
       op: { Upsert: { body: string } };
@@ -46,14 +54,22 @@ class MemHandle implements SyncHandle {
     let applied = 0;
     for (const c of changes) {
       const existing = this.rows.get(c.id);
-      // Last-Write-Wins: only apply strictly newer changes (idempotent replay).
       if (!existing || c.changed_at > existing.changed_at) {
-        this.rows.set(c.id, { id: c.id, changed_at: c.changed_at, body: c.op.Upsert.body });
+        this.rows.set(c.id, {
+          id: c.id,
+          changed_at: c.changed_at,
+          body: c.op.Upsert.body,
+          collection: c.collection,
+        });
         applied++;
       }
     }
     return applied;
   };
+
+  // User collections present in this database (reserved `_`-prefixed excluded).
+  listCollectionNames = async (): Promise<string[]> =>
+    [...new Set([...this.rows.values()].map((r) => r.collection))].filter((c) => !c.startsWith('_'));
 
   // Minimal cursor collection backed by the cursors map.
   collection = (_name: string): never => {
@@ -139,6 +155,52 @@ describe('runSync orchestration', () => {
     await expect(
       runSync(local, pushOnly, { collections: ['notes'], direction: 'both' }),
     ).rejects.toThrow(/requires adapter.pull/);
+  });
+
+  it('syncs ALL collections when `collections` is omitted', async () => {
+    const local = new MemHandle();
+    const server = new MemHandle();
+    local.put('n1', 'note', 1000, 'notes');
+    local.put('t1', 'task', 1000, 'tasks');
+
+    const res = await runSync(local, memAdapter(server), {}); // no collections
+    expect(res.pushed).toBe(2);
+    expect(server.get('n1')).toBe('note');
+    expect(server.get('t1')).toBe('task');
+  });
+
+  it('`exclude` skips the named collections (sync all-except)', async () => {
+    const local = new MemHandle();
+    const server = new MemHandle();
+    local.put('n1', 'note', 1000, 'notes');
+    local.put('l1', 'log', 1000, 'logs');
+
+    const res = await runSync(local, memAdapter(server), { exclude: ['logs'] });
+    expect(res.pushed).toBe(1);
+    expect(server.get('n1')).toBe('note'); // synced
+    expect(server.get('l1')).toBeUndefined(); // excluded
+  });
+
+  it('explicit `collections` syncs only those', async () => {
+    const local = new MemHandle();
+    const server = new MemHandle();
+    local.put('n1', 'note', 1000, 'notes');
+    local.put('t1', 'task', 1000, 'tasks');
+
+    await runSync(local, memAdapter(server), { collections: ['notes'] });
+    expect(server.get('n1')).toBe('note');
+    expect(server.get('t1')).toBeUndefined();
+  });
+
+  it('never syncs reserved `_`-prefixed collections', async () => {
+    const local = new MemHandle();
+    const server = new MemHandle();
+    local.put('n1', 'note', 1000, 'notes');
+    local.put('c1', 'cursor', 1000, '__taladb_sync'); // reserved
+
+    const res = await runSync(local, memAdapter(server), {}); // all
+    expect(res.pushed).toBe(1); // only 'notes', not the reserved collection
+    expect(server.get('c1')).toBeUndefined();
   });
 });
 
