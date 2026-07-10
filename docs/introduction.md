@@ -53,37 +53,42 @@ TalaDB is built in three layers:
 
 ## Repository structure
 
+Packages are grouped by role, so it's clear at a glance what is the engine, what wraps it, and what consumes it:
+
 ```
 taladb/
 ├── Cargo.toml                      # Rust workspace
 ├── pnpm-workspace.yaml
 │
 ├── packages/
-│   ├── taladb-core/                # Pure Rust core — no JS bindings
-│   │   └── src/
-│   │       ├── document.rs         # Value enum, Document struct (ULID IDs)
-│   │       ├── engine.rs           # StorageBackend trait + redb implementation
-│   │       ├── index.rs            # Secondary index key encoding
-│   │       ├── collection.rs       # CRUD + vector index operations
-│   │       ├── vector.rs           # Vector index, similarity math, encoding
-│   │       ├── migration.rs        # Schema versioning
-│   │       ├── crypto.rs           # AES-GCM-256 encryption wrapper
-│   │       ├── watch.rs            # Live query subscriptions
-│   │       └── query/
-│   │           ├── filter.rs       # Filter AST
-│   │           ├── planner.rs      # Index selection
-│   │           └── executor.rs     # Scan + post-filter
+│   ├── core/                       # THE engine — pure Rust, no JS bindings (crate: taladb-core)
+│   │   └── src/                    #   document/engine/index/collection/vector/query/…
 │   │
-│   ├── @taladb/web/                # Browser (wasm-bindgen + OPFS)
-│   ├── @taladb/node/                # Node.js (napi-rs native module)
-│   ├── @taladb/react-native/        # React Native (JSI HostObject + C FFI)
-│   └── taladb/                     # Unified TypeScript package
+│   ├── bindings/                   # Thin runtime WRAPPERS over core
+│   │   ├── node/                   #   Node.js (napi-rs)          → @taladb/node
+│   │   ├── web/                    #   Browser (wasm-bindgen+OPFS) → @taladb/web
+│   │   └── react-native/           #   React Native (JSI + C FFI) → @taladb/react-native
+│   │
+│   ├── clients/                    # What apps import directly (pure TS)
+│   │   ├── taladb/                 #   Unified meta-package        → taladb
+│   │   └── react/                  #   React hooks                 → @taladb/react
+│   │
+│   ├── adapters/                   # Sync adapters (pure TS)
+│   │   └── mongodb/                #   MongoDB bidirectional sync  → @taladb/sync-mongodb
+│   │
+│   ├── integrations/
+│   │   └── cloudflare/             #   Cloudflare Workers deploy   → @taladb/cloudflare
+│   │
+│   └── tools/
+│       └── cli/                    #   Dev CLI (crate: taladb-cli)
 │
 └── examples/
     ├── web-vite/                   # React + Vite demo
     ├── expo-app/                   # Expo React Native demo
     └── node-script/                # Node.js script demo
 ```
+
+**core** is the engine; **bindings** are the runtime wrappers over it; **clients**, **adapters**, and **integrations** consume it. npm package names (right column) are unchanged by this layout — only their folders are grouped.
 
 ## Packages
 

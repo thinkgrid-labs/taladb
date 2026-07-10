@@ -68,10 +68,10 @@ jobs:
         run: pnpm install
 
       - name: tsc --noEmit (taladb)
-        run: node_modules/.bin/tsc -p packages/taladb/tsconfig.json --noEmit
+        run: node_modules/.bin/tsc -p packages/clients/taladb/tsconfig.json --noEmit
 
       - name: tsc --noEmit (@taladb/react)
-        run: node_modules/.bin/tsc -p packages/taladb-react/tsconfig.json --noEmit
+        run: node_modules/.bin/tsc -p packages/clients/react/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
   # Validate — @taladb/cloudflare (JS-only, no build step)
@@ -99,11 +99,11 @@ jobs:
 
       - name: Verify package files exist
         run: |
-          test -f packages/taladb-cloudflare/src/index.js  || (echo "Missing src/index.js"  && exit 1)
-          test -f packages/taladb-cloudflare/src/index.d.ts || (echo "Missing src/index.d.ts" && exit 1)
+          test -f packages/integrations/cloudflare/src/index.js  || (echo "Missing src/index.js"  && exit 1)
+          test -f packages/integrations/cloudflare/src/index.d.ts || (echo "Missing src/index.d.ts" && exit 1)
 
       - name: tsc --noEmit (@taladb/cloudflare)
-        run: node_modules/.bin/tsc -p packages/taladb-cloudflare/tsconfig.json --noEmit
+        run: node_modules/.bin/tsc -p packages/integrations/cloudflare/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
   # Build — WASM (wasm-pack)
@@ -135,13 +135,13 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM (release)
-        run: wasm-pack build packages/taladb-web --target web --out-dir pkg --release
+        run: wasm-pack build packages/bindings/web --target web --out-dir pkg --release
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
           name: taladb-web-pkg
-          path: packages/taladb-web/pkg/
+          path: packages/bindings/web/pkg/
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -194,14 +194,14 @@ jobs:
         run: pnpm install
 
       - name: Build native module
-        working-directory: packages/taladb-node
+        working-directory: packages/bindings/node
         run: pnpm build
 
       - name: Upload native module
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: packages/taladb-node/*.node
+          path: packages/bindings/node/*.node
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -276,11 +276,11 @@ jobs:
         run: pnpm install
 
       - name: Build
-        working-directory: packages/taladb
+        working-directory: packages/clients/taladb
         run: pnpm exec tsup
 
       - name: Verify dist/ output
-        working-directory: packages/taladb
+        working-directory: packages/clients/taladb
         run: ls dist/index.mjs dist/index.js dist/index.d.ts dist/index.react-native.mjs
 
   # ---------------------------------------------------------------------------
@@ -307,15 +307,15 @@ jobs:
         run: pnpm install
 
       - name: Unit + integration tests
-        working-directory: packages/taladb-react
+        working-directory: packages/clients/react
         run: pnpm test
 
       - name: Build
-        working-directory: packages/taladb-react
+        working-directory: packages/clients/react
         run: pnpm exec tsup
 
       - name: Verify dist/ output
-        working-directory: packages/taladb-react
+        working-directory: packages/clients/react
         run: ls dist/index.mjs dist/index.js dist/index.d.ts
 
   # ---------------------------------------------------------------------------

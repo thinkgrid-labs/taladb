@@ -36,10 +36,10 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "==> Building TypeScript (taladb)..."
-(cd "$REPO/packages/taladb" && pnpm exec tsup)
+(cd "$REPO/packages/clients/taladb" && pnpm exec tsup)
 
 echo "==> Building React hooks (@taladb/react)..."
-(cd "$REPO/packages/taladb-react" && pnpm exec tsup)
+(cd "$REPO/packages/clients/react" && pnpm exec tsup)
 
 # ---------------------------------------------------------------------------
 # 2. Patch playground node_modules
@@ -50,15 +50,15 @@ echo "==> Patching playground node_modules..."
 # taladb — dist/, src/, package.json (package.json carries exports/react-native condition)
 TALADB_NM="$PLAYGROUND/node_modules/taladb"
 rm -rf "$TALADB_NM/dist" "$TALADB_NM/src"
-cp -r "$REPO/packages/taladb/dist"         "$TALADB_NM/dist"
-cp -r "$REPO/packages/taladb/src"          "$TALADB_NM/src"
-cp    "$REPO/packages/taladb/package.json"  "$TALADB_NM/package.json"
+cp -r "$REPO/packages/clients/taladb/dist"         "$TALADB_NM/dist"
+cp -r "$REPO/packages/clients/taladb/src"          "$TALADB_NM/src"
+cp    "$REPO/packages/clients/taladb/package.json"  "$TALADB_NM/package.json"
 
 # @taladb/react — dist/, package.json
 REACT_NM="$PLAYGROUND/node_modules/@taladb/react"
 rm -rf "$REACT_NM/dist"
-cp -r "$REPO/packages/taladb-react/dist"         "$REACT_NM/dist"
-cp    "$REPO/packages/taladb-react/package.json"  "$REACT_NM/package.json"
+cp -r "$REPO/packages/clients/react/dist"         "$REACT_NM/dist"
+cp    "$REPO/packages/clients/react/package.json"  "$REACT_NM/package.json"
 
 # @taladb/react-native — src/, cpp/, android/ (without jniLibs), package.json, podspec
 #
@@ -67,13 +67,13 @@ cp    "$REPO/packages/taladb-react/package.json"  "$REACT_NM/package.json"
 RN_NM="$PLAYGROUND/node_modules/@taladb/react-native"
 
 rm -rf "$RN_NM/src"
-cp -r "$REPO/packages/taladb-react-native/src" "$RN_NM/src"
+cp -r "$REPO/packages/bindings/react-native/src" "$RN_NM/src"
 
 rm -rf "$RN_NM/cpp"
-cp -r "$REPO/packages/taladb-react-native/cpp" "$RN_NM/cpp"
+cp -r "$REPO/packages/bindings/react-native/cpp" "$RN_NM/cpp"
 
 # android/ — sync everything except src/main/jniLibs
-ANDROID_SRC="$REPO/packages/taladb-react-native/android"
+ANDROID_SRC="$REPO/packages/bindings/react-native/android"
 ANDROID_NM="$RN_NM/android"
 
 cp "$ANDROID_SRC/CMakeLists.txt"                       "$ANDROID_NM/CMakeLists.txt"
@@ -81,8 +81,8 @@ cp "$ANDROID_SRC/build.gradle"                         "$ANDROID_NM/build.gradle
 cp "$ANDROID_SRC/src/main/AndroidManifest.xml"         "$ANDROID_NM/src/main/AndroidManifest.xml"
 cp -r "$ANDROID_SRC/src/main/java"                     "$ANDROID_NM/src/main/"
 
-cp "$REPO/packages/taladb-react-native/package.json"                   "$RN_NM/package.json"
-cp "$REPO/packages/taladb-react-native/taladb-react-native.podspec"    "$RN_NM/taladb-react-native.podspec"
+cp "$REPO/packages/bindings/react-native/package.json"                   "$RN_NM/package.json"
+cp "$REPO/packages/bindings/react-native/taladb-react-native.podspec"    "$RN_NM/taladb-react-native.podspec"
 
 # ---------------------------------------------------------------------------
 # 3. Clear Gradle CMake cache (required when CMakeLists.txt or cpp/ changes)

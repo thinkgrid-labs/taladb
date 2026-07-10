@@ -100,10 +100,10 @@ jobs:
         run: pnpm install
 
       - name: tsc --noEmit (taladb)
-        run: node_modules/.bin/tsc -p packages/taladb/tsconfig.json --noEmit
+        run: node_modules/.bin/tsc -p packages/clients/taladb/tsconfig.json --noEmit
 
       - name: tsc --noEmit (@taladb/react)
-        run: node_modules/.bin/tsc -p packages/taladb-react/tsconfig.json --noEmit
+        run: node_modules/.bin/tsc -p packages/clients/react/tsconfig.json --noEmit
 
   # ---------------------------------------------------------------------------
   # Build WASM
@@ -133,10 +133,10 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM
-        run: wasm-pack build packages/taladb-web --target web --out-dir pkg --release
+        run: wasm-pack build packages/bindings/web --target web --out-dir pkg --release
 
       - name: Archive WASM pkg
-        run: tar -czf taladb-web-${{ needs.preflight.outputs.version }}.tar.gz -C packages/taladb-web/pkg .
+        run: tar -czf taladb-web-${{ needs.preflight.outputs.version }}.tar.gz -C packages/bindings/web/pkg .
 
       - uses: actions/upload-artifact@v4
         with:
@@ -193,14 +193,14 @@ jobs:
         run: pnpm install
 
       - name: Build native module
-        working-directory: packages/taladb-node
+        working-directory: packages/bindings/node
         run: pnpm build
 
       - name: Upload native module
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: packages/taladb-node/*.node
+          path: packages/bindings/node/*.node
 
   # ---------------------------------------------------------------------------
   # Build CLI binary (linux / macos / windows)
@@ -285,7 +285,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-rn-ios-
 
       - name: Build iOS targets
-        working-directory: packages/taladb-react-native/rust
+        working-directory: packages/bindings/react-native/rust
         run: |
           cargo build --release --target aarch64-apple-ios
           cargo build --release --target aarch64-apple-ios-sim
@@ -302,15 +302,15 @@ jobs:
           # Build XCFramework (device slice + universal simulator slice)
           xcodebuild -create-xcframework \
             -library target/aarch64-apple-ios/release/libtaladb_ffi.a \
-            -headers packages/taladb-react-native/cpp \
+            -headers packages/bindings/react-native/cpp \
             -library /tmp/libtaladb_ffi_sim.a \
-            -headers packages/taladb-react-native/cpp \
-            -output packages/taladb-react-native/ios/TalaDBFfi.xcframework
+            -headers packages/bindings/react-native/cpp \
+            -output packages/bindings/react-native/ios/TalaDBFfi.xcframework
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-rn-ios
-          path: packages/taladb-react-native/ios/TalaDBFfi.xcframework
+          path: packages/bindings/react-native/ios/TalaDBFfi.xcframework
 
   # ---------------------------------------------------------------------------
   # Build React Native Android shared libraries (arm64-v8a, armeabi-v7a, x86_64)
@@ -347,7 +347,7 @@ jobs:
         run: cargo install cargo-ndk --locked --force
 
       - name: Build Android targets
-        working-directory: packages/taladb-react-native/rust
+        working-directory: packages/bindings/react-native/rust
         run: |
           cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
             -o ../android/src/main/jniLibs \
@@ -356,7 +356,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-rn-android
-          path: packages/taladb-react-native/android/src/main/jniLibs/
+          path: packages/bindings/react-native/android/src/main/jniLibs/
 
   # ---------------------------------------------------------------------------
   # Build — taladb TypeScript package (tsup)
@@ -381,7 +381,7 @@ jobs:
       - run: pnpm install
 
       - name: Build
-        working-directory: packages/taladb
+        working-directory: packages/clients/taladb
         run: |
           pnpm exec tsup
           ls dist/index.mjs dist/index.js dist/index.d.ts dist/index.react-native.mjs
@@ -389,7 +389,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-taladb
-          path: packages/taladb/dist/
+          path: packages/clients/taladb/dist/
 
   # ---------------------------------------------------------------------------
   # Build — @taladb/react hooks package (tsup)
@@ -414,7 +414,7 @@ jobs:
       - run: pnpm install
 
       - name: Build
-        working-directory: packages/taladb-react
+        working-directory: packages/clients/react
         run: |
           pnpm exec tsup
           ls dist/index.mjs dist/index.js dist/index.d.ts
@@ -422,7 +422,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-taladb-react
-          path: packages/taladb-react/dist/
+          path: packages/clients/react/dist/
 
   # ---------------------------------------------------------------------------
   # Publish npm packages
@@ -468,15 +468,15 @@ jobs:
 
       - name: Extract WASM pkg into package
         run: |
-          mkdir -p packages/taladb-web/pkg
-          tar -xzf /tmp/wasm-artifact/*.tar.gz -C packages/taladb-web/pkg
+          mkdir -p packages/bindings/web/pkg
+          tar -xzf /tmp/wasm-artifact/*.tar.gz -C packages/bindings/web/pkg
           # wasm-pack generates pkg/.gitignore with "*.wasm" which causes npm to
           # silently exclude the binary during publish. Remove it so the files
           # field in package.json is the only include/exclude authority.
-          rm -f packages/taladb-web/pkg/.gitignore
+          rm -f packages/bindings/web/pkg/.gitignore
 
       - name: Publish @taladb/web
-        working-directory: packages/taladb-web
+        working-directory: packages/bindings/web
         run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -486,22 +486,22 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: taladb-node-linux
-          path: packages/taladb-node
+          path: packages/bindings/node
 
       - name: Download Node.js binaries (macos)
         uses: actions/download-artifact@v4
         with:
           name: taladb-node-macos
-          path: packages/taladb-node
+          path: packages/bindings/node
 
       - name: Download Node.js binaries (windows)
         uses: actions/download-artifact@v4
         with:
           name: taladb-node-windows
-          path: packages/taladb-node
+          path: packages/bindings/node
 
       - name: Publish @taladb/node
-        working-directory: packages/taladb-node
+        working-directory: packages/bindings/node
         run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -511,16 +511,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: release-rn-ios
-          path: packages/taladb-react-native/ios/TalaDBFfi.xcframework
+          path: packages/bindings/react-native/ios/TalaDBFfi.xcframework
 
       - name: Download React Native Android libraries
         uses: actions/download-artifact@v4
         with:
           name: release-rn-android
-          path: packages/taladb-react-native/android/src/main/jniLibs
+          path: packages/bindings/react-native/android/src/main/jniLibs
 
       - name: Publish @taladb/react-native
-        working-directory: packages/taladb-react-native
+        working-directory: packages/bindings/react-native
         run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -530,17 +530,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: release-taladb-react
-          path: packages/taladb-react/dist
+          path: packages/clients/react/dist
 
       - name: Publish @taladb/react
-        working-directory: packages/taladb-react
+        working-directory: packages/clients/react
         run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # -- @taladb/cloudflare --------------------------------------------------
       - name: Publish @taladb/cloudflare
-        working-directory: packages/taladb-cloudflare
+        working-directory: packages/integrations/cloudflare
         run: pnpm publish --no-git-checks --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -550,14 +550,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: release-taladb
-          path: packages/taladb/dist
+          path: packages/clients/taladb/dist
 
       - name: Inspect pack contents
-        working-directory: packages/taladb
+        working-directory: packages/clients/taladb
         run: npm pack --dry-run
 
       - name: Publish taladb
-        working-directory: packages/taladb
+        working-directory: packages/clients/taladb
         run: npm publish --access public || echo 'Already published, skipping'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -74,16 +74,40 @@ Vector search is exact by default — no approximation, no recall trade-off — 
 
 ### Install
 
+Every app installs the unified **`taladb`** package plus **one runtime binding** for its platform. Everything else is optional.
+
+**Web app (browser)**
+
 ```bash
-# Browser
-pnpm add taladb @taladb/web
-
-# Node.js
-pnpm add taladb @taladb/node
-
-# React Native
-pnpm add taladb @taladb/react-native
+pnpm add taladb @taladb/web          # required
+pnpm add @taladb/react               # optional — React hooks (useFind, useFindOne, …)
 ```
+
+**Mobile app (React Native / Expo)**
+
+```bash
+pnpm add taladb @taladb/react-native # required
+pnpm add @taladb/react               # optional — the same hooks work in React Native
+```
+
+**Node.js (server / scripts)**
+
+```bash
+pnpm add taladb @taladb/node                 # required
+pnpm add @taladb/sync-mongodb mongodb        # optional — sync to MongoDB (server-side only)
+```
+
+| Package | Web | Mobile (RN) | Node | Role |
+|---|:--:|:--:|:--:|---|
+| `taladb` | ✅ required | ✅ required | ✅ required | Unified API |
+| `@taladb/web` | ✅ required | — | — | Browser WASM binding |
+| `@taladb/react-native` | — | ✅ required | — | React Native (JSI) binding |
+| `@taladb/node` | — | — | ✅ required | Node.js native binding |
+| `@taladb/react` | ⭕ optional | ⭕ optional | — | React / React Native hooks |
+| `@taladb/sync-mongodb` | — | — | ⭕ optional | MongoDB sync ([server-side only](https://taladb.dev/guide/bidirectional-sync#mongodb-adapter)) |
+| `@taladb/cloudflare` | — | — | ⭕ optional | Cloudflare Workers deploy target |
+
+Bidirectional HTTP sync (`HttpSyncAdapter`) ships inside `taladb` — no extra install. Database sync adapters like `@taladb/sync-mongodb` hold DB credentials and run **server-side only**; a web or mobile app syncs through your own API, never a direct database connection.
 
 ### Quick start
 

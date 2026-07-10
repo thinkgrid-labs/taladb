@@ -15,10 +15,12 @@ Have an idea or want to help prioritise? Open a [GitHub Discussion](https://gith
 
 Better DX drives adoption and reduces time-to-production.
 
-### Sync 
+### Sync
 
-- Native NoSQL adapters (`sync.adapter: mongodb | firestore | dynamodb`) with direct connection strings, removing the need for an intermediate API
-- Bi-directional pull: `taladb sync --pull` fetches from the remote and merges locally
+- ✅ **Bidirectional sync** *(shipped, Node.js)* — `db.sync(adapter, { collections, direction })` pulls remote changes and pushes local ones with Last-Write-Wins merge and an incremental cursor. Ships with a reference `HttpSyncAdapter`; any transport plugs in via the `SyncAdapter` interface. See [Bidirectional Sync](/guide/bidirectional-sync). *Next: wire the browser (WASM) and React Native bindings — the engine already supports it on all three runtimes.*
+- Native NoSQL adapters — for **server-side** TalaDB, sync directly to a database with no intermediate API. (Browser/mobile apps still relay through your own API — a database credential must never reach a client.)
+  - ✅ **`@taladb/sync-mongodb`** *(shipped)* — Last-Write-Wins conditional upsert into a MongoDB collection; also acts as a sync hub for a fleet of peers. Server-side only. See [Bidirectional Sync → MongoDB adapter](/guide/bidirectional-sync#mongodb-adapter).
+  - `@taladb/sync-firestore`, `@taladb/sync-dynamodb` — same `SyncAdapter` interface, next up.
 - Per-collection sync config (sync some collections, skip others)
 
 ### Aggregation API

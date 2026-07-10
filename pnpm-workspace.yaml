@@ -1,5 +1,10 @@
 packages:
-  - "packages/*"
+  - "packages/core"
+  - "packages/bindings/*"
+  - "packages/clients/*"
+  - "packages/adapters/*"
+  - "packages/integrations/*"
+  - "packages/tools/*"
 
 onlyBuiltDependencies:
   - esbuild

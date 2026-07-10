@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "packages/taladb-core",
-    "packages/taladb-web",
-    "packages/taladb-node",
-    "packages/taladb-cli",
-    "packages/taladb-react-native/rust",
+    "packages/core",
+    "packages/bindings/web",
+    "packages/bindings/node",
+    "packages/tools/cli",
+    "packages/bindings/react-native/rust",
 ]
 
 [workspace.package]
