@@ -138,6 +138,15 @@ interface ResolvedReplicationConfig {
     };
 }
 
+/** A slice to warm on first run — a collection, optionally on a specific endpoint. */
+type PrefetchSlice = {
+    collection: string;
+    endpoint?: string;
+};
+/** A prefetch entry: a collection name (shorthand) or a {@link PrefetchSlice}. */
+type PrefetchEntry = string | PrefetchSlice;
+/** `'once'` warms a slice only if it has never synced; `'always'` on every mount. */
+type PrefetchMode = 'once' | 'always';
 /**
  * Replication settings shared by `useQuery` / `useMutation`, supplied once by
  * `<ReplicationProvider>` and overridable per hook.
@@ -169,12 +178,24 @@ interface ReplicationConfig {
      * opt in per query. `30_000` matches the guide's own example cadence.
      */
     pollMs?: number;
+    /**
+     * Slices to warm into the local replica in the background on first run, so a
+     * later `useQuery` for that collection reads local instead of waiting on the
+     * network. Best-effort and non-blocking: deferred to browser idle, run in the
+     * sync Worker on web, and silently skipped on failure. Each entry is a
+     * collection name or a {@link PrefetchSlice}.
+     */
+    prefetch?: PrefetchEntry[];
+    /** How prefetch decides to warm a slice. Default `'once'`. */
+    prefetchMode?: PrefetchMode;
+    /** Max concurrent prefetch pulls — keeps the active page from starving. Default `2`. */
+    prefetchConcurrency?: number;
 }
 interface ReplicationProviderProps extends ReplicationConfig {
     children: ReactNode;
 }
 /**
- * Supplies replication defaults (endpoint, auth, poll interval) to the
+ * Supplies replication defaults (endpoint, auth, poll interval, prefetch) to the
  * `useQuery` / `useMutation` hooks below it. Compose it inside a
  * `<TalaDBProvider>`:
  *
@@ -184,6 +205,7 @@ interface ReplicationProviderProps extends ReplicationConfig {
  *     endpoint="/api/sync"
  *     getAuth={async () => ({ Authorization: `Bearer ${await session.token()}` })}
  *     pollMs={30_000}
+ *     prefetch={['products', 'categories']}
  *   >
  *     <App />
  *   </ReplicationProvider>
@@ -325,4 +347,4 @@ interface MutationResult<T extends Document> {
  */
 declare function useMutation<T extends Document>(options: UseMutationOptions): MutationResult<T>;
 
-export { type FindOneResult, type FindResult, type MutationResult, type QueryResult, type ReadSource, type ReplicationConfig, ReplicationProvider, type ReplicationProviderProps, TalaDBProvider, type TalaDBProviderProps, type UseMutationOptions, type UseQueryOptions, type WriteOp, useCollection, useFind, useFindOne, useMutation, useQueries, useQuery, useReplicationConfig, useTalaDB };
+export { type FindOneResult, type FindResult, type MutationResult, type PrefetchEntry, type PrefetchMode, type PrefetchSlice, type QueryResult, type ReadSource, type ReplicationConfig, ReplicationProvider, type ReplicationProviderProps, TalaDBProvider, type TalaDBProviderProps, type UseMutationOptions, type UseQueryOptions, type WriteOp, useCollection, useFind, useFindOne, useMutation, useQueries, useQuery, useReplicationConfig, useTalaDB };

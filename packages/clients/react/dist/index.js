@@ -151,40 +151,6 @@ function useFindOne(collection, filter) {
 
 // src/replication/config.tsx
 var import_react5 = require("react");
-var import_jsx_runtime2 = require("react/jsx-runtime");
-var ReplicationContext = (0, import_react5.createContext)(null);
-function ReplicationProvider({ children, ...config }) {
-  const key = `${config.endpoint}|${config.pollMs ?? ""}|${JSON.stringify(config.paths ?? null)}`;
-  const value = (0, import_react5.useMemo)(
-    () => config,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [key]
-  );
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ReplicationContext.Provider, { value, children });
-}
-function resolveReplicationConfig(base, overrides) {
-  const endpoint = overrides?.endpoint ?? base?.endpoint;
-  const pollMs = overrides?.pollMs ?? base?.pollMs ?? 0;
-  if (!endpoint) return { config: null, pollMs };
-  return {
-    config: {
-      endpoint,
-      getAuth: overrides?.getAuth ?? base?.getAuth,
-      fetch: overrides?.fetch ?? base?.fetch,
-      paths: overrides?.paths ?? base?.paths
-    },
-    pollMs
-  };
-}
-function useReplicationBase() {
-  return (0, import_react5.useContext)(ReplicationContext);
-}
-function useReplicationConfig(overrides) {
-  return resolveReplicationConfig((0, import_react5.useContext)(ReplicationContext), overrides);
-}
-
-// src/useQuery.ts
-var import_react6 = require("react");
 
 // src/replication/engine.ts
 var import_taladb = require("taladb");
@@ -237,7 +203,109 @@ async function replicateWithRetry(db, config, collection, direction) {
   throw lastError;
 }
 
+// src/replication/config.tsx
+var import_jsx_runtime2 = require("react/jsx-runtime");
+var ReplicationContext = (0, import_react5.createContext)(null);
+function ReplicationProvider({ children, ...config }) {
+  const key = `${config.endpoint}|${config.pollMs ?? ""}|${JSON.stringify(config.paths ?? null)}|${JSON.stringify(config.prefetch ?? null)}|${config.prefetchMode ?? ""}|${config.prefetchConcurrency ?? ""}`;
+  const value = (0, import_react5.useMemo)(
+    () => config,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [key]
+  );
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(ReplicationContext.Provider, { value, children: [
+    value.prefetch && value.prefetch.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(PrefetchRunner, {}) : null,
+    children
+  ] });
+}
+function resolveReplicationConfig(base, overrides) {
+  const endpoint = overrides?.endpoint ?? base?.endpoint;
+  const pollMs = overrides?.pollMs ?? base?.pollMs ?? 0;
+  if (!endpoint) return { config: null, pollMs };
+  return {
+    config: {
+      endpoint,
+      getAuth: overrides?.getAuth ?? base?.getAuth,
+      fetch: overrides?.fetch ?? base?.fetch,
+      paths: overrides?.paths ?? base?.paths
+    },
+    pollMs
+  };
+}
+function useReplicationBase() {
+  return (0, import_react5.useContext)(ReplicationContext);
+}
+function useReplicationConfig(overrides) {
+  return resolveReplicationConfig((0, import_react5.useContext)(ReplicationContext), overrides);
+}
+var CURSOR_COLLECTION = "__taladb_sync";
+function normalizePrefetch(entries) {
+  return (entries ?? []).map((e) => typeof e === "string" ? { collection: e } : e);
+}
+var idleScheduler = (fn) => {
+  const g = globalThis;
+  if (typeof g.requestIdleCallback === "function") {
+    const id2 = g.requestIdleCallback(fn, { timeout: 2e3 });
+    return () => g.cancelIdleCallback?.(id2);
+  }
+  const id = setTimeout(fn, 0);
+  return () => clearTimeout(id);
+};
+var schedule = idleScheduler;
+async function hasSynced(db, target) {
+  try {
+    const doc = await db.collection(CURSOR_COLLECTION).findOne({ target });
+    return doc != null;
+  } catch {
+    return false;
+  }
+}
+function PrefetchRunner() {
+  const db = useTalaDB();
+  const base = useReplicationBase();
+  const slices = normalizePrefetch(base?.prefetch);
+  const mode = base?.prefetchMode ?? "once";
+  const concurrency = Math.max(1, base?.prefetchConcurrency ?? 2);
+  const baseRef = (0, import_react5.useRef)(base);
+  baseRef.current = base;
+  const sig = JSON.stringify({ slices, mode, concurrency, endpoint: base?.endpoint ?? null });
+  (0, import_react5.useEffect)(() => {
+    if (slices.length === 0) return void 0;
+    let cancelled = false;
+    const cancelSchedule = schedule(() => {
+      void run();
+    });
+    async function run() {
+      const b = baseRef.current;
+      const queue = normalizePrefetch(b?.prefetch);
+      const worker = async () => {
+        while (!cancelled) {
+          const slice = queue.shift();
+          if (!slice) return;
+          const { config } = resolveReplicationConfig(b, { endpoint: slice.endpoint });
+          if (!config) continue;
+          const target = replicationTarget(config.endpoint, slice.collection);
+          if (mode === "once" && await hasSynced(db, target)) continue;
+          if (cancelled) return;
+          try {
+            await replicate(db, config, slice.collection, "pull");
+          } catch {
+          }
+        }
+      };
+      const lanes = Math.min(concurrency, queue.length);
+      await Promise.all(Array.from({ length: lanes }, () => worker()));
+    }
+    return () => {
+      cancelled = true;
+      cancelSchedule();
+    };
+  }, [db, sig]);
+  return null;
+}
+
 // src/useQuery.ts
+var import_react6 = require("react");
 function useQuery(options) {
   const { collection, filter, source = "local-first" } = options;
   const networked = source !== "local-only";

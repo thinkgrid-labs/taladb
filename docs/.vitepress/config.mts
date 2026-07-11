@@ -154,7 +154,10 @@ export default defineConfig({
       },
       {
         text: "Packages",
-        items: [{ text: "React Hooks (@taladb/react)", link: "/guide/react" }],
+        items: [
+          { text: "React Hooks (@taladb/react)", link: "/guide/react" },
+          { text: "Scoped Replication Hooks", link: "/guide/scoped-replication" },
+        ],
       },
       {
         text: "API Reference",

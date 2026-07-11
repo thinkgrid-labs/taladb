@@ -192,7 +192,7 @@ Because the hooks write through the **normal collection API** into the same loca
 Two things to design for:
 
 - **At rest ≠ in transit.** The DB key protects the on-disk replica; it does **not** encrypt the network hop. The wire is a separate concern — HTTPS/TLS on your API plus the auth header below. Document both so nobody assumes the DB key covers the wire.
-- **Schema mismatch on hydrate.** If a remote document fails the local schema, the upsert fails. Pick a policy explicitly: reject the whole slice (strict) or skip-and-surface the offending docs (lenient). Recommend **lenient-with-a-surfaced-error**, so one bad server record doesn't blank a page.
+- **Schema mismatch on hydrate.** If a remote document fails the local schema, the upsert fails. Pick a policy explicitly: reject the whole slice (strict) or skip-and-surface the offending docs (lenient). Recommend **lenient-with-a-surfaced-error**, so one bad server record doesn't blank a page. **Caveat — this only bites at the React layer.** The core `importChanges` used by `db.sync()` is pure Last-Write-Wins and does **not** validate, so a doc synced outside these hooks lands unchecked; and documents pulled after open bypass the client's migrations, so shapes drift across app versions. Making the "validate, never cast" guarantee hold *in the engine* (validate-on-import) plus per-document versioning and import-time normalization is tracked on the roadmap as *Schema evolution for synced data* (v0.9.2). Until then, use **additive-only** schema evolution for synced collections.
 
 ### Authorization — a provider-level async resolver, resolved at send time
 

@@ -106,41 +106,13 @@ function useFindOne(collection, filter) {
 }
 
 // src/replication/config.tsx
-import { createContext as createContext2, useContext as useContext2, useMemo as useMemo2 } from "react";
-import { jsx as jsx2 } from "react/jsx-runtime";
-var ReplicationContext = createContext2(null);
-function ReplicationProvider({ children, ...config }) {
-  const key = `${config.endpoint}|${config.pollMs ?? ""}|${JSON.stringify(config.paths ?? null)}`;
-  const value = useMemo2(
-    () => config,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [key]
-  );
-  return /* @__PURE__ */ jsx2(ReplicationContext.Provider, { value, children });
-}
-function resolveReplicationConfig(base, overrides) {
-  const endpoint = overrides?.endpoint ?? base?.endpoint;
-  const pollMs = overrides?.pollMs ?? base?.pollMs ?? 0;
-  if (!endpoint) return { config: null, pollMs };
-  return {
-    config: {
-      endpoint,
-      getAuth: overrides?.getAuth ?? base?.getAuth,
-      fetch: overrides?.fetch ?? base?.fetch,
-      paths: overrides?.paths ?? base?.paths
-    },
-    pollMs
-  };
-}
-function useReplicationBase() {
-  return useContext2(ReplicationContext);
-}
-function useReplicationConfig(overrides) {
-  return resolveReplicationConfig(useContext2(ReplicationContext), overrides);
-}
-
-// src/useQuery.ts
-import { useCallback as useCallback3, useEffect as useEffect2, useRef as useRef3, useState as useState2 } from "react";
+import {
+  createContext as createContext2,
+  useContext as useContext2,
+  useEffect as useEffect2,
+  useMemo as useMemo2,
+  useRef as useRef3
+} from "react";
 
 // src/replication/engine.ts
 import { HttpSyncAdapter } from "taladb";
@@ -193,7 +165,109 @@ async function replicateWithRetry(db, config, collection, direction) {
   throw lastError;
 }
 
+// src/replication/config.tsx
+import { jsx as jsx2, jsxs } from "react/jsx-runtime";
+var ReplicationContext = createContext2(null);
+function ReplicationProvider({ children, ...config }) {
+  const key = `${config.endpoint}|${config.pollMs ?? ""}|${JSON.stringify(config.paths ?? null)}|${JSON.stringify(config.prefetch ?? null)}|${config.prefetchMode ?? ""}|${config.prefetchConcurrency ?? ""}`;
+  const value = useMemo2(
+    () => config,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [key]
+  );
+  return /* @__PURE__ */ jsxs(ReplicationContext.Provider, { value, children: [
+    value.prefetch && value.prefetch.length > 0 ? /* @__PURE__ */ jsx2(PrefetchRunner, {}) : null,
+    children
+  ] });
+}
+function resolveReplicationConfig(base, overrides) {
+  const endpoint = overrides?.endpoint ?? base?.endpoint;
+  const pollMs = overrides?.pollMs ?? base?.pollMs ?? 0;
+  if (!endpoint) return { config: null, pollMs };
+  return {
+    config: {
+      endpoint,
+      getAuth: overrides?.getAuth ?? base?.getAuth,
+      fetch: overrides?.fetch ?? base?.fetch,
+      paths: overrides?.paths ?? base?.paths
+    },
+    pollMs
+  };
+}
+function useReplicationBase() {
+  return useContext2(ReplicationContext);
+}
+function useReplicationConfig(overrides) {
+  return resolveReplicationConfig(useContext2(ReplicationContext), overrides);
+}
+var CURSOR_COLLECTION = "__taladb_sync";
+function normalizePrefetch(entries) {
+  return (entries ?? []).map((e) => typeof e === "string" ? { collection: e } : e);
+}
+var idleScheduler = (fn) => {
+  const g = globalThis;
+  if (typeof g.requestIdleCallback === "function") {
+    const id2 = g.requestIdleCallback(fn, { timeout: 2e3 });
+    return () => g.cancelIdleCallback?.(id2);
+  }
+  const id = setTimeout(fn, 0);
+  return () => clearTimeout(id);
+};
+var schedule = idleScheduler;
+async function hasSynced(db, target) {
+  try {
+    const doc = await db.collection(CURSOR_COLLECTION).findOne({ target });
+    return doc != null;
+  } catch {
+    return false;
+  }
+}
+function PrefetchRunner() {
+  const db = useTalaDB();
+  const base = useReplicationBase();
+  const slices = normalizePrefetch(base?.prefetch);
+  const mode = base?.prefetchMode ?? "once";
+  const concurrency = Math.max(1, base?.prefetchConcurrency ?? 2);
+  const baseRef = useRef3(base);
+  baseRef.current = base;
+  const sig = JSON.stringify({ slices, mode, concurrency, endpoint: base?.endpoint ?? null });
+  useEffect2(() => {
+    if (slices.length === 0) return void 0;
+    let cancelled = false;
+    const cancelSchedule = schedule(() => {
+      void run();
+    });
+    async function run() {
+      const b = baseRef.current;
+      const queue = normalizePrefetch(b?.prefetch);
+      const worker = async () => {
+        while (!cancelled) {
+          const slice = queue.shift();
+          if (!slice) return;
+          const { config } = resolveReplicationConfig(b, { endpoint: slice.endpoint });
+          if (!config) continue;
+          const target = replicationTarget(config.endpoint, slice.collection);
+          if (mode === "once" && await hasSynced(db, target)) continue;
+          if (cancelled) return;
+          try {
+            await replicate(db, config, slice.collection, "pull");
+          } catch {
+          }
+        }
+      };
+      const lanes = Math.min(concurrency, queue.length);
+      await Promise.all(Array.from({ length: lanes }, () => worker()));
+    }
+    return () => {
+      cancelled = true;
+      cancelSchedule();
+    };
+  }, [db, sig]);
+  return null;
+}
+
 // src/useQuery.ts
+import { useCallback as useCallback3, useEffect as useEffect3, useRef as useRef4, useState as useState2 } from "react";
 function useQuery(options) {
   const { collection, filter, source = "local-first" } = options;
   const networked = source !== "local-only";
@@ -207,7 +281,7 @@ function useQuery(options) {
     paths: options.paths,
     pollMs: options.pollMs
   });
-  const configRef = useRef3(config);
+  const configRef = useRef4(config);
   configRef.current = config;
   const [syncing, setSyncing] = useState2(false);
   const [syncError, setSyncError] = useState2(null);
@@ -227,7 +301,7 @@ function useQuery(options) {
       setFirstSyncDone(true);
     }
   }, [db, collection, networked, endpoint]);
-  useEffect2(() => {
+  useEffect3(() => {
     if (!networked) return;
     void refetch();
     if (pollMs > 0) {
@@ -246,7 +320,7 @@ function useQuery(options) {
 }
 
 // src/useQueries.ts
-import { useEffect as useEffect3, useRef as useRef4, useState as useState3 } from "react";
+import { useEffect as useEffect4, useRef as useRef5, useState as useState3 } from "react";
 var NOOP_REFETCH = async () => {
 };
 function emptyResult() {
@@ -272,14 +346,14 @@ function useQueries(queries) {
       pollMs: q.pollMs ?? null
     }))
   );
-  const queriesRef = useRef4(queries);
+  const queriesRef = useRef5(queries);
   queriesRef.current = queries;
-  const baseRef = useRef4(base);
+  const baseRef = useRef5(base);
   baseRef.current = base;
   const [results, setResults] = useState3(
     () => queries.map(() => emptyResult())
   );
-  useEffect3(() => {
+  useEffect4(() => {
     const qs = queriesRef.current;
     const b = baseRef.current;
     let cancelled = false;
@@ -352,7 +426,7 @@ function useQueries(queries) {
 }
 
 // src/useMutation.ts
-import { useCallback as useCallback4, useEffect as useEffect4, useRef as useRef5, useState as useState4 } from "react";
+import { useCallback as useCallback4, useEffect as useEffect5, useRef as useRef6, useState as useState4 } from "react";
 function useMutation(options) {
   const { collection, direction = "push", drainOnMount = true } = options;
   const db = useTalaDB();
@@ -363,7 +437,7 @@ function useMutation(options) {
     fetch: options.fetch,
     paths: options.paths
   });
-  const configRef = useRef5(config);
+  const configRef = useRef6(config);
   configRef.current = config;
   const [pending, setPending] = useState4(false);
   const [error, setError] = useState4(null);
@@ -412,7 +486,7 @@ function useMutation(options) {
     },
     [mutateAsync]
   );
-  useEffect4(() => {
+  useEffect5(() => {
     if (!drainOnMount || !configRef.current) return;
     void drain().catch(() => {
     });
