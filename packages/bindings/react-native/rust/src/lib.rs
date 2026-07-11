@@ -135,25 +135,35 @@ pub unsafe extern "C" fn taladb_open_with_config(
         Err(_) => return std::ptr::null_mut(),
     };
 
+    let mut passphrase: Option<String> = None;
     let sync_hook: Option<Arc<HttpSyncHook>> = if !config_json.is_null() {
         match unsafe { CStr::from_ptr(config_json) }.to_str() {
-            Ok(json_str) => match serde_json::from_str::<TalaDbConfig>(json_str) {
-                Ok(config) => {
-                    if let Err(e) = config.validate() {
-                        set_last_error(e.to_string());
+            Ok(json_str) => {
+                passphrase = serde_json::from_str::<serde_json::Value>(json_str)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("passphrase")
+                            .and_then(|p| p.as_str())
+                            .map(str::to_owned)
+                    });
+                match serde_json::from_str::<TalaDbConfig>(json_str) {
+                    Ok(config) => {
+                        if let Err(e) = config.validate() {
+                            set_last_error(e.to_string());
+                            return std::ptr::null_mut();
+                        }
+                        if config.sync.enabled {
+                            Some(Arc::new(HttpSyncHook::new(config.sync)))
+                        } else {
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        set_last_error(format!("invalid config JSON: {e}"));
                         return std::ptr::null_mut();
                     }
-                    if config.sync.enabled {
-                        Some(Arc::new(HttpSyncHook::new(config.sync)))
-                    } else {
-                        None
-                    }
                 }
-                Err(e) => {
-                    set_last_error(format!("invalid config JSON: {e}"));
-                    return std::ptr::null_mut();
-                }
-            },
+            }
             Err(_) => {
                 set_last_error("config JSON is not valid UTF-8".into());
                 return std::ptr::null_mut();
@@ -163,7 +173,11 @@ pub unsafe extern "C" fn taladb_open_with_config(
         None
     };
 
-    match Database::open(Path::new(path_str)) {
+    let opened = match passphrase {
+        Some(passphrase) => Database::open_encrypted(Path::new(path_str), &passphrase),
+        None => Database::open(Path::new(path_str)),
+    };
+    match opened {
         Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db, sync_hook })),
         Err(e) => {
             set_last_error(e.to_string());

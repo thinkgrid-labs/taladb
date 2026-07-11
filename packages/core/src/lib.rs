@@ -26,7 +26,10 @@ pub use crdt::{
     FieldMutation,
 };
 #[cfg(feature = "encryption")]
-pub use crypto::{EncryptionKey, migrate_encrypted_v0_to_v1, rekey};
+pub use crypto::{
+    EncryptedBackend, EncryptionKey, MIN_PBKDF2_ITERATIONS, derive_key, migrate_encrypted_v0_to_v1,
+    rekey,
+};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
@@ -69,6 +72,57 @@ pub struct Database {
 }
 
 impl Database {
+    /// Open a file-backed database with transparent authenticated encryption.
+    #[cfg(feature = "encryption")]
+    pub fn open_encrypted(path: &Path, passphrase: &str) -> Result<Self, TalaDbError> {
+        if passphrase.is_empty() {
+            return Err(TalaDbError::Config(
+                "encryption passphrase must not be empty".into(),
+            ));
+        }
+        let salt_path = path.with_extension(format!(
+            "{}taladb-salt",
+            path.extension()
+                .and_then(|v| v.to_str())
+                .map(|v| format!("{v}."))
+                .unwrap_or_default()
+        ));
+        let salt = match std::fs::read(&salt_path) {
+            Ok(salt) if salt.len() == 16 => salt,
+            Ok(_) => {
+                return Err(TalaDbError::Encryption(
+                    "invalid encryption salt file".into(),
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut salt = vec![0u8; 16];
+                getrandom::fill(&mut salt).map_err(|e| TalaDbError::Encryption(e.to_string()))?;
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                use std::io::Write;
+                options
+                    .open(&salt_path)
+                    .and_then(|mut file| file.write_all(&salt))
+                    .map_err(|e| {
+                        TalaDbError::Storage(format!("cannot write encryption salt: {e}"))
+                    })?;
+                salt
+            }
+            Err(e) => {
+                return Err(TalaDbError::Storage(format!(
+                    "cannot read encryption salt: {e}"
+                )));
+            }
+        };
+        let raw: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);
+        let key = crypto::derive_key(passphrase, &salt, crypto::MIN_PBKDF2_ITERATIONS)?;
+        Self::open_with_backend(Box::new(crypto::EncryptedBackend::new(raw, key)))
+    }
     /// Open a file-backed database at the given path.
     pub fn open(path: &Path) -> Result<Self, TalaDbError> {
         let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);

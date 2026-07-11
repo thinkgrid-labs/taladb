@@ -74,9 +74,29 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
                   resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
     @try {
-        NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSString *support = [NSSearchPathForDirectoriesInDomains(
+            NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
+        [[NSFileManager defaultManager] createDirectoryAtPath:support
+                                  withIntermediateDirectories:YES
+                                                   attributes:@{NSFileProtectionKey: NSFileProtectionCompleteUntilFirstUserAuthentication}
+                                                        error:nil];
+        NSString *dbPath = [support stringByAppendingPathComponent:dbName];
+        NSString *documents = [NSSearchPathForDirectoriesInDomains(
             NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        NSString *dbPath = [docs stringByAppendingPathComponent:dbName];
+        NSString *legacyPath = [documents stringByAppendingPathComponent:dbName];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:dbPath] &&
+            [[NSFileManager defaultManager] fileExistsAtPath:legacyPath]) {
+            NSError *migrationError = nil;
+            if (![[NSFileManager defaultManager] moveItemAtPath:legacyPath toPath:dbPath error:&migrationError]) {
+                reject(@"TALADB_MIGRATION_ERROR", migrationError.localizedDescription, migrationError);
+                return;
+            }
+            NSString *legacySalt = [legacyPath stringByAppendingString:@".taladb-salt"];
+            NSString *newSalt = [dbPath stringByAppendingString:@".taladb-salt"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:legacySalt]) {
+                [[NSFileManager defaultManager] moveItemAtPath:legacySalt toPath:newSalt error:nil];
+            }
+        }
 
         RCTCxxBridge *bridge = (RCTCxxBridge *)[RCTBridge currentBridge];
         if (!bridge || !bridge.runtime) {
@@ -89,7 +109,17 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
             auto &rt = *(Runtime *)bridge.runtime;
             NSString *error = [TalaDB installInRuntime:rt dbPath:dbPath configJson:configJson];
             if (error) reject(@"TALADB_INSTALL_ERROR", error, nil);
-            else resolve(nil);
+            else {
+                NSDictionary *protection = @{NSFileProtectionKey: NSFileProtectionCompleteUntilFirstUserAuthentication};
+                [[NSFileManager defaultManager] setAttributes:protection ofItemAtPath:dbPath error:nil];
+                NSString *saltPath = [dbPath stringByAppendingString:@".taladb-salt"];
+                [[NSFileManager defaultManager] setAttributes:protection ofItemAtPath:saltPath error:nil];
+                NSURL *dbURL = [NSURL fileURLWithPath:dbPath];
+                [dbURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+                NSURL *saltURL = [NSURL fileURLWithPath:saltPath];
+                [saltURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+                resolve(nil);
+            }
         });
     } @catch (NSException *ex) {
         reject(@"TALADB_INIT_ERROR", ex.reason, nil);

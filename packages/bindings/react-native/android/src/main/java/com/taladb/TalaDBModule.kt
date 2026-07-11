@@ -60,7 +60,19 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
 
     override fun initialize(dbName: String, configJson: String?, promise: Promise) {
         try {
-            val dbPath = reactContext.filesDir.absolutePath + "/$dbName"
+            // Private app storage excluded from Android Auto Backup. The OS
+            // file-based-encryption layer protects it while the device is locked.
+            val dbFile = java.io.File(reactContext.noBackupFilesDir, dbName)
+            val legacyFile = java.io.File(reactContext.filesDir, dbName)
+            if (!dbFile.exists() && legacyFile.exists() && !legacyFile.renameTo(dbFile)) {
+                throw java.io.IOException("failed to migrate TalaDB into no-backup storage")
+            }
+            val legacySalt = java.io.File(legacyFile.absolutePath + ".taladb-salt")
+            val saltFile = java.io.File(dbFile.absolutePath + ".taladb-salt")
+            if (!saltFile.exists() && legacySalt.exists() && !legacySalt.renameTo(saltFile)) {
+                throw java.io.IOException("failed to migrate TalaDB encryption salt")
+            }
+            val dbPath = dbFile.absolutePath
 
             // javaScriptContextHolder.get() returns the raw jsi::Runtime* pointer.
             val jsContextPtr = reactContext.javaScriptContextHolder!!.get()

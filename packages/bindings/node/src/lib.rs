@@ -329,8 +329,16 @@ impl TalaDBNode {
     /// `sync-http` feature is compiled in, an `HttpSyncHook` is attached to
     /// every collection returned by `collection()`.
     #[napi(factory)]
-    pub fn open(path: String, config_json: Option<String>) -> napi::Result<Self> {
-        let db = Database::open(std::path::Path::new(&path)).map_err(err_to_napi)?;
+    pub fn open(
+        path: String,
+        config_json: Option<String>,
+        passphrase: Option<String>,
+    ) -> napi::Result<Self> {
+        let db = match passphrase {
+            Some(passphrase) => Database::open_encrypted(std::path::Path::new(&path), &passphrase),
+            None => Database::open(std::path::Path::new(&path)),
+        }
+        .map_err(err_to_napi)?;
         let sync_hook = build_sync_hook(config_json)?;
         Ok(TalaDBNode {
             inner: Some(db),

@@ -567,19 +567,16 @@ pub fn decrypt_fields(
 ) -> Result<(), crate::error::TalaDbError> {
     let doc_id = doc.id;
     for (name, val) in &mut doc.fields {
-        if config.fields.iter().any(|f| f == name) {
-            if let crate::document::Value::Bytes(ciphertext) = val {
-                let plain =
-                    match decrypt(&config.key, "field", &field_aad(doc_id, name), ciphertext) {
-                        Ok(p) => p,
-                        Err(_) => {
-                            decrypt(&config.key, "field", &legacy_field_aad(name), ciphertext)?
-                        }
-                    };
-                let original: crate::document::Value = postcard::from_bytes(&plain)
-                    .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
-                *val = original;
-            }
+        if config.fields.iter().any(|f| f == name)
+            && let crate::document::Value::Bytes(ciphertext) = val
+        {
+            let plain = match decrypt(&config.key, "field", &field_aad(doc_id, name), ciphertext) {
+                Ok(p) => p,
+                Err(_) => decrypt(&config.key, "field", &legacy_field_aad(name), ciphertext)?,
+            };
+            let original: crate::document::Value = postcard::from_bytes(&plain)
+                .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
+            *val = original;
         }
     }
     Ok(())
