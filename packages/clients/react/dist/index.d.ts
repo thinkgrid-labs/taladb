@@ -1,27 +1,52 @@
 import * as react_jsx_runtime from 'react/jsx-runtime';
 import { ReactNode } from 'react';
-import { TalaDB, Document, Collection, Filter } from 'taladb';
+import { TalaDB, OpenDBOptions, Document, Collection, Filter } from 'taladb';
 
-interface TalaDBProviderProps {
-    /** The TalaDB instance returned by `openDB()`. */
-    db: TalaDB;
+type TalaDBProviderProps = {
     children: ReactNode;
-}
+} & ({
+    /** A TalaDB instance you opened yourself with `openDB()`. */
+    db: TalaDB;
+    name?: never;
+    options?: never;
+    fallback?: never;
+} | {
+    /**
+     * Database name — the provider owns the `openDB(name)` lifecycle:
+     * it opens lazily on the client (never during SSR), provides the handle
+     * once ready, and closes it on unmount. The natural form for Next.js,
+     * where `openDB` cannot run during server rendering.
+     */
+    name: string;
+    /** Options forwarded to `openDB(name, options)` (e.g. inline sync config). */
+    options?: OpenDBOptions;
+    /**
+     * Rendered while the database is opening (and during SSR).
+     * Defaults to `null`. Children only render once the db is ready, so
+     * `useTalaDB()` never observes a missing instance.
+     */
+    fallback?: ReactNode;
+    db?: never;
+});
 /**
  * Provides a TalaDB instance to all child hooks.
  *
- * @example
- * const db = await openDB('myapp.db')
+ * Two forms:
  *
- * function App() {
- *   return (
- *     <TalaDBProvider db={db}>
- *       <MyComponent />
- *     </TalaDBProvider>
- *   )
- * }
+ * **Instance form** — you own the lifecycle (plain React, React Native):
+ * ```tsx
+ * const db = await openDB('myapp.db')
+ * <TalaDBProvider db={db}>…</TalaDBProvider>
+ * ```
+ *
+ * **Name form** — the provider owns the lifecycle (recommended for Next.js):
+ * ```tsx
+ * <TalaDBProvider name="myapp.db" fallback={<Splash />}>…</TalaDBProvider>
+ * ```
+ * The database opens client-side only; during SSR (and while opening) the
+ * `fallback` renders instead of children, so hooks always see a ready db.
  */
-declare function TalaDBProvider({ db, children }: TalaDBProviderProps): react_jsx_runtime.JSX.Element;
+declare function TalaDBProvider(props: TalaDBProviderProps): react_jsx_runtime.JSX.Element;
 /**
  * Returns the TalaDB instance from the nearest `<TalaDBProvider>`.
  *

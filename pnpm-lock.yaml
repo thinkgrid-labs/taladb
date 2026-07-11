@@ -145,6 +145,36 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/integrations/next:
+    devDependencies:
+      '@taladb/node':
+        specifier: workspace:*
+        version: link:../../bindings/node
+      '@taladb/react':
+        specifier: workspace:*
+        version: link:../../clients/react
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.17
+      '@types/react':
+        specifier: ^18.0.0
+        version: 18.3.28
+      react:
+        specifier: ^18.0.0
+        version: 18.3.1
+      taladb:
+        specifier: workspace:*
+        version: link:../../clients/taladb
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(postcss@8.5.8)(typescript@5.9.3)(yaml@2.8.3)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.17)(jsdom@26.1.0)(terser@5.46.1)(yaml@2.8.3)
+
 packages:
 
   '@algolia/abtesting@1.16.0':

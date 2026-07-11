@@ -1,14 +1,50 @@
+'use client';
+
 // src/context.tsx
-import { createContext, useContext } from "react";
-import { jsx } from "react/jsx-runtime";
+import { createContext, useContext, useEffect, useState } from "react";
+import { Fragment, jsx } from "react/jsx-runtime";
 var TalaDBContext = createContext(null);
-function TalaDBProvider({ db, children }) {
+function TalaDBProvider(props) {
+  if ("db" in props && props.db) {
+    return /* @__PURE__ */ jsx(TalaDBContext.Provider, { value: props.db, children: props.children });
+  }
+  return /* @__PURE__ */ jsx(NamedProvider, { ...props });
+}
+function NamedProvider({
+  name,
+  options,
+  fallback = null,
+  children
+}) {
+  const [db, setDb] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    let opened = null;
+    import("taladb").then(({ openDB }) => openDB(name, options)).then((instance) => {
+      if (cancelled) {
+        void instance.close();
+        return;
+      }
+      opened = instance;
+      setDb(instance);
+    }).catch((e) => {
+      if (!cancelled) setError(e);
+    });
+    return () => {
+      cancelled = true;
+      if (opened) void opened.close();
+      setDb(null);
+    };
+  }, [name]);
+  if (error !== null) throw error;
+  if (db === null) return /* @__PURE__ */ jsx(Fragment, { children: fallback });
   return /* @__PURE__ */ jsx(TalaDBContext.Provider, { value: db, children });
 }
 function useTalaDB() {
   const db = useContext(TalaDBContext);
   if (db === null) {
-    throw new Error("useTalaDB must be used inside <TalaDBProvider db={...}>");
+    throw new Error('useTalaDB must be used inside <TalaDBProvider db={...}> or <TalaDBProvider name="...">');
   }
   return db;
 }

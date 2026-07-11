@@ -95,7 +95,44 @@ The whole pass — change export, LWW merge — executes inside TalaDB's worker,
 
 ### Next.js
 
-Same packages as React. The one rule: **TalaDB is browser-only — keep it out of the server render.** Open the database lazily from client components:
+Same packages as React, plus the first-party integration (v0.8.5) that reduces both sides to a few lines:
+
+```bash
+pnpm add taladb @taladb/web @taladb/react @taladb/next
+```
+
+```ts
+// app/api/sync/[[...action]]/route.ts — your complete sync backend
+import { openDB } from 'taladb'
+import { createSyncHandlers, taladbSyncStore } from '@taladb/next/server'
+
+const hub = await openDB('sync-hub.db') // server-side TalaDB as the change store
+export const { POST, GET } = createSyncHandlers({
+  store: taladbSyncStore(hub),          // or memorySyncStore() for dev, or your own SyncStore
+  authorize: async (req) => verifySession(req.headers.get('authorization')), // → per-user scope, 401 on null
+})
+```
+
+```tsx
+// app/providers.tsx — and the client side
+'use client'
+import { TalaDBProvider } from '@taladb/react'
+import { SyncProvider } from '@taladb/next/client'
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <TalaDBProvider name="myapp.db" fallback={<Splash />}>
+      <SyncProvider endpoint="/api/sync" headers={() => ({ Authorization: `Bearer ${getToken()}` })}>
+        {children}
+      </SyncProvider>
+    </TalaDBProvider>
+  )
+}
+```
+
+`<TalaDBProvider name>` owns the client-only `openDB()` (SSR renders the fallback; hooks never see a missing db — `@taladb/react` ships `'use client'` so imports never trip the RSC boundary). `<SyncProvider>` drives `db.sync()` on start, every 30 s, on reconnect, and on tab focus. `authorize` is your security boundary: it returns a scope key (user id) and the store never mixes scopes.
+
+Prefer to wire it manually — or on an older version? The one rule: **TalaDB is browser-only — keep it out of the server render.** Open the database lazily from client components:
 
 ```ts
 // lib/db.ts — client-only singleton, safe to import anywhere
