@@ -9,7 +9,7 @@
       <div class="cta-actions">
         <a href="/introduction" class="btn btn-primary btn-lg">Read the Docs</a>
         <a
-          href="https://taladb-playground.vercel.app/"
+          href="https://demo-web.taladb.dev/"
           class="btn btn-secondary btn-lg"
           target="_blank"
           rel="noopener"

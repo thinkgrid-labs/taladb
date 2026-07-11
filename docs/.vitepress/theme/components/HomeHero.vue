@@ -22,7 +22,7 @@
 
         <div class="hero-actions">
           <a href="/introduction" class="btn btn-primary">Get Started</a>
-          <a href="https://taladb-playground.vercel.app/" class="btn btn-secondary" target="_blank" rel="noopener">
+          <a href="https://demo-web.taladb.dev/" class="btn btn-secondary" target="_blank" rel="noopener">
             Web Demo →
           </a>
           <a href="https://appetize.io/app/b_ugmjhjghdkgnjux4lzkepvsfma" class="btn btn-secondary" target="_blank" rel="noopener">
