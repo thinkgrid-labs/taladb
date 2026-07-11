@@ -213,6 +213,13 @@ fn plan_inner(
                 }
             }
 
+            // Two-sided range on one indexed field → a single bounded scan,
+            // instead of the half-open scan the single-field fallback would
+            // pick (which post-filters the far bound over the whole tail).
+            if let Some(plan) = bounded_range_from_and(filters, indexed_fields) {
+                return plan;
+            }
+
             // Fall back to single-field index on any sub-filter
             for f in filters {
                 let sub = plan_inner(f, indexed_fields, fts_fields, compound_indexes);
@@ -356,6 +363,122 @@ fn f64_next_up(f: f64) -> f64 {
         f.to_bits() - 1
     };
     f64::from_bits(bits)
+}
+
+/// One-ULP decrement. NaN and -∞ are returned unchanged.
+fn f64_next_down(f: f64) -> f64 {
+    -f64_next_up(-f)
+}
+
+/// Plan a two-sided range (`lower ≤ field {<,≤} upper`) on a single indexed
+/// field as one bounded index scan, instead of a half-open scan that
+/// post-filters the far bound. The executor always re-applies the full filter
+/// (see `executor::execute`), so a conservatively *wide* range is safe — it
+/// only affects how much of the index is scanned, never the result.
+///
+/// For numeric bounds this emits an `IndexOr` of an Int-typed and a Float-typed
+/// bounded sub-range, each converted outward, so values stored as either
+/// numeric type are covered (index keys are type-prefixed — the cross-type
+/// correctness the single-bound planners handle for one side). Same-typed
+/// string/bool bounds emit a single exact range; mismatched types return
+/// `None` so the caller falls back to single-bound planning.
+fn bounded_range_plan(
+    field: &str,
+    lower: (&Value, bool),
+    upper: (&Value, bool),
+) -> Option<QueryPlan> {
+    let (lv, li) = lower;
+    let (uv, ui) = upper;
+    let both_numeric = matches!(lv, Value::Int(_) | Value::Float(_))
+        && matches!(uv, Value::Int(_) | Value::Float(_));
+
+    if both_numeric {
+        // Int-typed sub-range: convert each float bound outward to a whole
+        // number so no integer in the true range is excluded.
+        let int_lo = match lv {
+            Value::Int(n) => (Value::Int(*n), li),
+            Value::Float(f) => (Value::Int(f.floor() as i64), true),
+            _ => return None,
+        };
+        let int_hi = match uv {
+            Value::Int(n) => (Value::Int(*n), ui),
+            Value::Float(f) => (Value::Int(f.ceil() as i64), true),
+            _ => return None,
+        };
+        // Float-typed sub-range: nudge integer bounds one ULP outward so
+        // rounding on the i64→f64 conversion can never drop a boundary value.
+        let flt_lo = match lv {
+            Value::Float(f) => (Value::Float(*f), li),
+            Value::Int(n) => (Value::Float(f64_next_down(*n as f64)), true),
+            _ => return None,
+        };
+        let flt_hi = match uv {
+            Value::Float(f) => (Value::Float(*f), ui),
+            Value::Int(n) => (Value::Float(f64_next_up(*n as f64)), true),
+            _ => return None,
+        };
+
+        let mut plans = Vec::with_capacity(2);
+        if let Some((start, end)) =
+            index_range_cmp(Some((&int_lo.0, int_lo.1)), Some((&int_hi.0, int_hi.1)))
+        {
+            plans.push(QueryPlan::IndexRange {
+                field: field.to_string(),
+                start,
+                end,
+            });
+        }
+        if let Some((start, end)) =
+            index_range_cmp(Some((&flt_lo.0, flt_lo.1)), Some((&flt_hi.0, flt_hi.1)))
+        {
+            plans.push(QueryPlan::IndexRange {
+                field: field.to_string(),
+                start,
+                end,
+            });
+        }
+        return match plans.len() {
+            0 => None,
+            1 => plans.pop(),
+            _ => Some(QueryPlan::IndexOr { plans }),
+        };
+    }
+
+    // Same non-numeric type — one exact bounded range.
+    if std::mem::discriminant(lv) == std::mem::discriminant(uv) {
+        let (start, end) = index_range_cmp(Some((lv, li)), Some((uv, ui)))?;
+        return Some(QueryPlan::IndexRange {
+            field: field.to_string(),
+            start,
+            end,
+        });
+    }
+
+    None
+}
+
+/// Scan an `And`'s direct sub-filters for a lower **and** upper bound on the
+/// same indexed field and, if found, plan it as one bounded range.
+fn bounded_range_from_and(filters: &[Filter], indexed_fields: &[&str]) -> Option<QueryPlan> {
+    for field in indexed_fields {
+        let mut lower: Option<(&Value, bool)> = None;
+        let mut upper: Option<(&Value, bool)> = None;
+        for f in filters {
+            match f {
+                Filter::Gt(fl, v) if fl == field => lower = Some((v, false)),
+                Filter::Gte(fl, v) if fl == field => lower = Some((v, true)),
+                Filter::Lt(fl, v) if fl == field => upper = Some((v, false)),
+                Filter::Lte(fl, v) if fl == field => upper = Some((v, true)),
+                _ => {}
+            }
+        }
+        if let (Some(lo), Some(hi)) = (lower, upper)
+            && let Some(plan) = bounded_range_plan(field, lo, hi)
+        {
+            return Some(plan);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

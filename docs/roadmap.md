@@ -84,14 +84,33 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 ## 2 · Performance & vector search
 
-Driven by findings from the v0.8.3 [benchmark suites](/benchmarks) (`pnpm bench`, `pnpm bench:web`).
+Driven by findings from the [benchmark suites](/benchmarks) (`pnpm bench`, `pnpm bench:web`). The goal: keep TalaDB among the fastest embedded databases on every JS runtime.
 
-### Query planner — bounded range plans
+### ✅ Faster flat vector search *(shipped in v0.9.x)*
 
-A two-sided range (`$gte` + `$lt` on the same field) currently uses the index for the lower bound only and post-filters the rest — ~463 ms for a ~100-doc window at 100k docs, versus 1.4 ms for the one-sided form:
+The brute-force `findNearest` scoring loop was rewritten and is now **~2× faster** (measured on the benchmark laptop: 100k × 384-dim from 369 ms → ~197 ms; 10k from 40 ms → ~18 ms). Four changes, all in the core scan:
 
-- Emit a single bounded index scan when both bounds constrain the same indexed field
-- Extend to `$in` + range combinations on compound indexes once those land
+- **Score straight from stored bytes** — the old path decoded every stored vector into a fresh `Vec<f32>` (one heap allocation per vector per query, ~100k/query at scale) before scoring. Scoring now streams f32s directly from the raw LE bytes, so the allocation storm is gone.
+- **Hoist the query norm** — `cosine_similarity` recomputed the *query's* own L2 norm against every candidate; it's constant, so it's now computed once per query.
+- **Top-k by partial selection** — `select_nth_unstable` (O(n) average) replaces the full O(n log n) sort over all candidates; only the k results are then ordered.
+- **Filter-first for hybrid** — a pre-filter now resolves to an id set *before* the scan, so filtered-out vectors are never scored (a 10 %-selective filter skips 90 % of the work).
+
+### Cached decoded vectors — avoid re-reading storage per query
+
+The flat path still `scan_all`s the entire vector table from redb on **every** query (150 MB of reads for 100k × 384-dim). A persistent in-memory decoded-vector cache — invalidated on writes, mirroring the existing HNSW-graph cache — would make repeated queries memory-bound instead of storage-bound. Likely the single largest remaining flat-search win.
+
+### SIMD dot products — WASM (validated) + native
+
+The scoring reductions are scalar today. The WASM lever is **measured and confirmed**, and productizing it is the top browser-perf task:
+
+- **WASM** — a `+simd128` build was A/B'd on the benchmark laptop and **~halves** browser vector search (50k: 172 ms → 81 ms; 10k: 35 ms → 17 ms), restoring near-native parity. The remaining work is *shipping* it safely: a single simd128 module fails to instantiate on browsers without WASM SIMD (Safari 15.2–16.3, which TalaDB otherwise supports via OPFS), so this needs either dual builds with runtime feature detection (load simd or scalar `.wasm`) or a deliberate baseline bump to simd128-capable browsers. The build itself is just `RUSTFLAGS="-C target-feature=+simd128"` — LLVM autovectorizes the v0.9.0 byte-streaming loops with no code change. (Also: the `release-wasm` profile in `Cargo.toml` sets `opt-level = "z"` but is *unused* — remove it so nobody ships size-optimized vectors by accident.)
+- **Native**: the release profile sets no `target-cpu`, so distributed binaries can't assume AVX2/NEON. An explicit `std::simd` (or chunked-FMA) dot-product kernel with runtime feature detection would vectorise the multiply-add without breaking portability of the prebuilt `.node`.
+
+### ✅ Query planner — bounded range plans *(shipped in v0.9.0)*
+
+A two-sided range (`$gte` + `$lt` on the same indexed field) is now planned as **one bounded index scan** instead of a half-open scan that post-filtered the far bound over the whole tail. Measured: a ~100-doc `publishedAt` window at 100k docs dropped from ~463 ms to **0.76 ms** (~600×). The combined plan covers both Int- and Float-typed index entries (keys are type-prefixed) and a cross-type parity test asserts it returns exactly the unindexed result.
+
+- ⬜ Still to do: extend to `$in` + range combinations on compound indexes once those land.
 
 ### Non-blocking HNSW graph builds
 
@@ -101,17 +120,13 @@ A two-sided range (`$gte` + `$lt` on the same field) currently uses the index fo
 - Incremental graph inserts, so steady-state writes don't require a full `upgradeVectorIndex` rebuild
 - Document expected build cost by collection size so apps can schedule rebuilds during idle periods
 
-### Faster hybrid pre-filters
+### Faster hybrid pre-filters (id-only path)
 
-`findNearest` with a pre-filter materialises every matching document — including its embedding array — just to collect ids. An id-only execution path in the query executor would make hybrid queries substantially cheaper at scale.
+The [v0.9.x scan rewrite](#faster-flat-vector-search-shipped-in-v0-9-x) already skips *scoring* filtered-out vectors, but the pre-filter itself still runs `find()`, which materialises every matching document — embedding arrays included — just to collect their ids. An id-only execution path in the query executor (return ids without decoding document bodies) would cut the filter cost, especially for low-selectivity filters over large documents.
 
 ### HNSW on web and React Native
 
 The `vector-hnsw` feature ships in `@taladb/node` since v0.8.3 but not in the WASM or JSI builds. Evaluate enabling it per platform: WASM bundle size, mobile memory ceilings, and graph build time on phone CPUs all need numbers first.
-
-### WASM SIMD for vector search
-
-Browser flat-scan search already runs at parity with the native module. Chrome and Safari both ship WASM SIMD — a `+simd128` build (with runtime feature detection and a scalar fallback) could deliver a multi-× speedup on dot products, the hot loop of `findNearest`.
 
 ### Continuous benchmarks
 

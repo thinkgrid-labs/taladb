@@ -12,6 +12,12 @@ Bidirectional sync lands in the browser — a local-first web app can now
 fixed, including two that broke 0.8.4's Node sync and `openDB` entirely.
 Ships rebuilt `.node` and WASM binaries.
 
+### Performance
+
+- **Flat vector search is ~2× faster** — the brute-force `findNearest` scan was rewritten: it scores directly from stored bytes (removing one `Vec<f32>` heap allocation per vector per query — ~100k/query at scale), hoists the query's cosine norm out of the per-candidate loop, selects the top-k with `select_nth_unstable` instead of a full sort, and resolves a hybrid pre-filter to an id set *before* scanning so filtered-out vectors are never scored. Measured on the benchmark laptop: 100k × 384-dim from 369 ms → ~197 ms, 10k from 40 ms → ~18 ms, 100k hybrid from 448 ms → ~326 ms. No API or result change.
+- **Two-sided range queries use a bounded index scan** — `find({ field: { $gte: a, $lt: b } })` on an indexed field previously scanned from the lower bound to the end of the index and post-filtered the upper bound; the planner now emits a single bounded range scan. A ~100-doc `publishedAt` window at 100k docs dropped from ~463 ms to **0.76 ms** (~600×). The bounded plan covers both Int- and Float-typed index entries, with a cross-type parity test asserting it matches the unindexed result exactly.
+- Next perf levers (in-memory decoded-vector cache; SIMD — a `+simd128` WASM build was measured to ~halve browser vector search) are on the [roadmap](https://taladb.dev/roadmap).
+
 ### Added
 
 - **`db.sync()` in the browser** — both browser adapters (OPFS worker and the in-memory fallback) now wire the full bidirectional sync loop. All engine work (change export, LWW merge) runs inside the Dedicated Worker, off the main thread, so a sync pass never blocks rendering regardless of changeset size. Verified end-to-end against a real Chrome instance: browser ↔ HTTP sync server ↔ Node.js peer, with changeset format parity in both directions. React Native remains pending (its C FFI does not yet expose the changeset primitives).

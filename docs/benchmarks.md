@@ -68,18 +68,20 @@ The query planner is currently greedy rather than cost-based: a two-sided range 
 
 The default (flat) index is exact k-nearest-neighbour over all vectors — no approximation, no recall trade-off.
 
-| Collection size | `findNearest` (median) |
-|---|---|
-| 1,000 vectors | **4.0 ms** |
-| 10,000 vectors | **40 ms** |
-| 50,000 vectors | **188 ms** |
-| 100,000 vectors | **369 ms** |
+The scan was rewritten in v0.9.0 (byte-streaming scoring, hoisted query norm, partial top-k selection) — roughly **2× faster** than earlier releases:
 
-Hybrid search — metadata pre-filter, then rank — costs roughly the same as pure vector search when the filter field is indexed:
+| Collection size | `findNearest` (median) | v0.8.x |
+|---|---|---|
+| 1,000 vectors | **2.5 ms** | 4.0 ms |
+| 10,000 vectors | **18 ms** | 40 ms |
+| 50,000 vectors | **91 ms** | 188 ms |
+| 100,000 vectors | **197 ms** | 369 ms |
+
+Hybrid search — metadata pre-filter, then rank — is now cheaper still, because filtered-out vectors are skipped before scoring when the filter field is indexed:
 
 | Operation | Detail | Result |
 |---|---|---|
-| `findNearest` + filter, 100k vectors | indexed pre-filter matching 10% of docs, then rank | **448 ms** |
+| `findNearest` + filter, 100k vectors | indexed pre-filter matching 10% of docs, then rank | **326 ms** |
 | Vector ingest, 100k vectors | `insertMany` with a live vector index | **~4.6k docs/s** |
 
 ::: tip Index your filter fields
@@ -134,18 +136,20 @@ Sub-millisecond operations pay the worker `postMessage` round-trip (~50–100 µ
 
 ### Vector search (384-dim, cosine, top-10, flat)
 
-| Collection size | `findNearest` (median) | Node.js |
+| Collection size | Browser (WASM) | Node.js (native, v0.9.0) |
 |---|---|---|
-| 1,000 vectors | **5.3 ms** | 4.0 ms |
-| 10,000 vectors | **35 ms** | 40 ms |
-| 50,000 vectors | **171 ms** | 188 ms |
+| 1,000 vectors | **5.4 ms** | 2.5 ms |
+| 10,000 vectors | **35 ms** | 18 ms |
+| 50,000 vectors | **172 ms** | 91 ms |
 
 | Operation | Detail | Result |
 |---|---|---|
-| `findNearest` + filter, 50k vectors | indexed pre-filter matching 10%, then rank | **159 ms** |
+| `findNearest` + filter, 50k vectors | indexed pre-filter matching 10%, then rank | **164 ms** |
 | Vector ingest, 50k vectors | `insertMany` with a live vector index | **~2.3k docs/s** |
 
-WASM vector search runs at parity with the native module — the scan is pure Rust arithmetic in both builds, and semantic search over a typical 1k–10k chunk corpus stays **under 40 ms** in the browser too.
+::: warning WASM vector search trails native — a known, fixable gap
+The v0.9.0 scan rewrite roughly halved *native* vector search, but the browser barely moved: WASM is now ~2× slower than native at 50k. The cause is the instruction set, not the algorithm — the WASM build (`opt-level = 3`, same as native) doesn't enable `simd128`, so the 384-wide dot product runs one lane at a time while the native build gets autovectorized. A SIMD-enabled WASM build is the top browser-performance item on the [roadmap](/roadmap#simd-dot-products-native-wasm); until then, semantic search over a typical 1k–10k corpus still answers in **~35 ms or less** in the browser.
+:::
 
 ## Reading these numbers
 

@@ -373,6 +373,72 @@ pub fn compute_similarity(metric: &VectorMetric, a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// L2 (Euclidean) norm of a vector. Hoist this out of a scan loop for cosine —
+/// the query's norm is constant across every candidate, so recomputing it per
+/// candidate (as `cosine_similarity` does) wastes one dot+sqrt per stored
+/// vector.
+#[inline]
+pub fn l2_norm(a: &[f32]) -> f32 {
+    a.iter().map(|x| x * x).sum::<f32>().sqrt()
+}
+
+/// Score a query against a stored vector held as raw little-endian f32 bytes,
+/// without decoding it into an intermediate `Vec<f32>` first. In a flat scan
+/// this removes one heap allocation per stored vector per query.
+///
+/// `query_norm` is the query's precomputed L2 norm ([`l2_norm`]); it is only
+/// read for [`VectorMetric::Cosine`], so pass `0.0` for the other metrics.
+/// Returns `None` when `bytes` is not exactly `query.len() * 4` bytes (a
+/// dimension mismatch or a truncated/corrupt entry), which the caller skips.
+///
+/// The per-metric branch is hoisted out of the element loop so each variant
+/// compiles to a tight reduction the optimiser can vectorise.
+#[inline]
+pub fn score_from_bytes(
+    metric: &VectorMetric,
+    query: &[f32],
+    query_norm: f32,
+    bytes: &[u8],
+) -> Option<f32> {
+    if bytes.len() != query.len() * 4 {
+        return None;
+    }
+    let chunks = bytes.chunks_exact(4);
+    let score = match metric {
+        VectorMetric::Dot => {
+            let mut dot = 0.0f32;
+            for (q, c) in query.iter().zip(chunks) {
+                dot += q * f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            }
+            dot
+        }
+        VectorMetric::Cosine => {
+            let mut dot = 0.0f32;
+            let mut norm_b = 0.0f32;
+            for (q, c) in query.iter().zip(chunks) {
+                let b = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                dot += q * b;
+                norm_b += b * b;
+            }
+            let norm_b = norm_b.sqrt();
+            if query_norm == 0.0 || norm_b == 0.0 {
+                0.0
+            } else {
+                dot / (query_norm * norm_b)
+            }
+        }
+        VectorMetric::Euclidean => {
+            let mut dist_sq = 0.0f32;
+            for (q, c) in query.iter().zip(chunks) {
+                let d = q - f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                dist_sq += d * d;
+            }
+            1.0 / (1.0 + dist_sq.sqrt())
+        }
+    };
+    Some(score)
+}
+
 // ---------------------------------------------------------------------------
 // Search result
 // ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ use crate::query::planner::plan_full;
 use crate::sync::{SyncEvent, SyncHook, now_ms};
 use crate::vector::{
     HnswOptions, META_HNSW_TABLE, META_VECTOR_TABLE, VectorDef, VectorMetric, VectorSearchResult,
-    compute_similarity, decode_f32_vec, encode_f32_vec, value_to_f32_vec, vec_meta_key,
+    decode_f32_vec, encode_f32_vec, l2_norm, score_from_bytes, value_to_f32_vec, vec_meta_key,
     vec_table_name,
 };
 #[cfg(feature = "vector-hnsw")]
@@ -790,43 +790,54 @@ impl Collection {
         let all_entries = rtxn.scan_all(&vtable)?;
         drop(rtxn);
 
-        let mut vec_map: Vec<(ulid::Ulid, Vec<f32>)> = Vec::with_capacity(all_entries.len());
+        // 4. Resolve the pre-filter to a set of matching ids up front, so the
+        //    scan below scores only candidates that can appear in the result
+        //    (a 10%-selective filter skips scoring the other 90%).
+        let id_filter: Option<std::collections::HashSet<ulid::Ulid>> = match pre_filter {
+            Some(filter) => Some(self.find(filter)?.iter().map(|d| d.id).collect()),
+            None => None,
+        };
+
+        // 5. Score directly from the stored bytes — no intermediate
+        //    `Vec<f32>` per vector. The query's cosine norm is constant across
+        //    every candidate, so hoist it out of the loop once.
+        let metric = &def.metric;
+        let query_norm = if matches!(metric, VectorMetric::Cosine) {
+            l2_norm(query)
+        } else {
+            0.0
+        };
+        let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(all_entries.len());
         for (key_bytes, val_bytes) in &all_entries {
-            if key_bytes.len() == 16 {
-                let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
-                    Ok(a) => a,
-                    Err(_) => continue,
-                };
-                let id = ulid::Ulid::from_bytes(arr);
-                if let Some(v) = decode_f32_vec(val_bytes) {
-                    vec_map.push((id, v));
-                }
+            if key_bytes.len() != 16 {
+                continue;
+            }
+            let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let id = ulid::Ulid::from_bytes(arr);
+            if let Some(ids) = &id_filter
+                && !ids.contains(&id)
+            {
+                continue;
+            }
+            if let Some(s) = score_from_bytes(metric, query, query_norm, val_bytes) {
+                scored.push((id, s));
             }
         }
 
-        // 4. Apply pre-filter if provided (restrict to matching doc IDs)
-        let candidates: Vec<(ulid::Ulid, Vec<f32>)> = if let Some(filter) = pre_filter {
-            let filtered_docs = self.find(filter)?;
-            let id_set: std::collections::HashSet<ulid::Ulid> =
-                filtered_docs.iter().map(|d| d.id).collect();
-            vec_map
-                .into_iter()
-                .filter(|(id, _)| id_set.contains(id))
-                .collect()
-        } else {
-            vec_map
-        };
-
-        // 5. Score all candidates
-        let metric = &def.metric;
-        let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(candidates.len());
-        for (id, v) in &candidates {
-            scored.push((*id, compute_similarity(metric, query, v)));
+        // 6. Select the top_k by score. `select_nth_unstable` partitions in
+        //    O(n) average instead of the O(n log n) of a full sort, then only
+        //    the k retained results are sorted.
+        let k = top_k.min(scored.len());
+        if k > 0 && k < scored.len() {
+            scored.select_nth_unstable_by(k - 1, |a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(k);
         }
-
-        // 6. Sort descending, keep top_k
         scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
 
         self.load_results(scored)
     }

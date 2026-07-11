@@ -57,18 +57,19 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 
 ## Performance
 
-Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench` for Node.js, `pnpm bench:web` for the browser) on a **2018 MacBook Pro** (Intel i5-8259U, 8 GB) — deliberately modest hardware; treat these as a floor. TalaDB v0.8.3, `@taladb/node`, file-backed database, medians after warmup.
+Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench` for Node.js, `pnpm bench:web` for the browser) on a **2018 MacBook Pro** (Intel i5-8259U, 8 GB) — deliberately modest hardware; treat these as a floor. TalaDB v0.9.0, `@taladb/node`, file-backed database, medians after warmup.
 
 | Operation | Scale | Result |
 |---|---|---|
 | `findOne` by `_id` | 100k docs | **25 µs** |
 | `find` on indexed field | 100k docs | **169 µs** |
+| `find`, two-sided range (`$gte`+`$lt`) | 100k docs | **0.8 ms** |
 | Bulk ingest (`insertMany`) | batches of 5k | **~36k docs/s** |
-| `findNearest` (384-dim, exact k-NN) | 10k vectors | **40 ms** |
-| `findNearest` (384-dim, exact k-NN) | 100k vectors | **369 ms** |
-| Hybrid: indexed filter + vector rank | 100k vectors | **448 ms** |
+| `findNearest` (384-dim, exact k-NN) | 10k vectors | **18 ms** |
+| `findNearest` (384-dim, exact k-NN) | 100k vectors | **197 ms** |
+| Hybrid: indexed filter + vector rank | 100k vectors | **326 ms** |
 
-Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js (188 ms → 14.6 ms at 50k vectors). For a typical on-device corpus (1k–10k chunks) semantic search answers in **under 40 ms**, faster than a round-trip to any cloud vector database. The browser build (WASM + OPFS, measured in headless Chrome) runs vector search at **parity with native** (35 ms at 10k vectors) and point reads in ~100–300 µs. Full tables, browser results, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
+Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js (188 ms → 14.6 ms at 50k vectors). The v0.9.0 scan rewrite roughly **halved** flat vector search, and for a typical on-device corpus (1k–10k chunks) semantic search answers in **under 20 ms**, faster than a round-trip to any cloud vector database. The browser build (WASM + OPFS, measured in headless Chrome) is currently ~2× behind native on vector search — a SIMD build closes that gap and is [next up](https://taladb.dev/roadmap). Full tables, browser results, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
 
 ## Usage
 
@@ -293,7 +294,7 @@ pnpm docs:preview # preview production build
 
 ## Contributing
 
-TalaDB is maintained by Dennis. Bug reports, PRs, and feedback are all welcome.
+Bug reports, PRs, and feedback are all welcome.
 
 1. Fork the repo and create a branch: `git checkout -b feat/my-feature`
 2. Make your changes and add tests

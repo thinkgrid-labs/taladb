@@ -116,6 +116,67 @@ fn index_range_between() {
     }
 }
 
+// A two-sided range on an indexed field is planned as one bounded scan
+// (v0.9.0). The scan must return exactly the unindexed result — including
+// values stored as the *other* numeric type than the bounds, since index keys
+// are type-prefixed. This guards the cross-type correctness of the combined
+// bounded-range planner.
+#[test]
+fn index_bounded_range_matches_unindexed_across_numeric_types() {
+    let db = Database::open_in_memory().unwrap();
+
+    // Same data twice: one indexed collection, one not. Field mixes Int and
+    // Float values (the default when the data comes from JavaScript numbers).
+    let values = [
+        i(9),
+        f(9.5),
+        i(10),
+        f(10.5),
+        i(15),
+        f(19.9),
+        i(20),
+        f(20.5),
+        i(25),
+        f(-3.0),
+    ];
+
+    let indexed = db.collection("indexed").unwrap();
+    let plain = db.collection("plain").unwrap();
+    for v in &values {
+        indexed.insert(vec![("x".into(), v.clone())]).unwrap();
+        plain.insert(vec![("x".into(), v.clone())]).unwrap();
+    }
+    indexed.create_index("x").unwrap();
+
+    // Exercise Int bounds, Float bounds, and mixed — each must match the scan.
+    let ranges = [
+        (i(10), i(20)),    // Int/Int — must still catch Float 10.5 and 19.9
+        (f(9.5), f(20.5)), // Float/Float — must still catch Int 10, 15, 20
+        (i(10), f(20.5)),  // mixed
+        (f(9.5), i(20)),   // mixed
+    ];
+
+    for (lo, hi) in ranges {
+        let filter = Filter::And(vec![
+            Filter::Gte("x".into(), lo.clone()),
+            Filter::Lt("x".into(), hi.clone()),
+        ]);
+        let mut a = indexed.find(filter.clone()).unwrap();
+        let mut b = plain.find(filter).unwrap();
+        let key = |d: &taladb_core::Document| format!("{:?}", d.get("x"));
+        a.sort_by_key(key);
+        b.sort_by_key(key);
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "indexed vs unindexed count differs for range {lo:?}..{hi:?}"
+        );
+        for (da, db_) in a.iter().zip(b.iter()) {
+            assert_eq!(da.get("x"), db_.get("x"), "row mismatch for {lo:?}..{hi:?}");
+        }
+    }
+}
+
 #[test]
 fn index_in_lookup() {
     let db = Database::open_in_memory().unwrap();
