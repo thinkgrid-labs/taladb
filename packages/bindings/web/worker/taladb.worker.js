@@ -443,6 +443,14 @@ async function dispatch(op, args) {
       db.dropIndex(args.collection, args.field);
       return null;
 
+    case 'createCompoundIndex':
+      db.createCompoundIndex(args.collection, args.fieldsJson);
+      return null;
+
+    case 'dropCompoundIndex':
+      db.dropCompoundIndex(args.collection, args.fieldsJson);
+      return null;
+
     case 'createFtsIndex':
       db.createFtsIndex(args.collection, args.field);
       return null;

@@ -259,6 +259,24 @@ impl CollectionWasm {
         self.inner.drop_index(field).map_err(err_to_js)
     }
 
+    /// Create a compound index. `fields_json` is a JSON array of field names.
+    #[wasm_bindgen(js_name = createCompoundIndex)]
+    pub fn create_compound_index(&self, fields_json: &str) -> Result<(), JsValue> {
+        let fields: Vec<String> =
+            serde_json::from_str(fields_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.inner.create_compound_index(&refs).map_err(err_to_js)
+    }
+
+    /// Drop a compound index by its ordered field list (`fields_json`).
+    #[wasm_bindgen(js_name = dropCompoundIndex)]
+    pub fn drop_compound_index(&self, fields_json: &str) -> Result<(), JsValue> {
+        let fields: Vec<String> =
+            serde_json::from_str(fields_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.inner.drop_compound_index(&refs).map_err(err_to_js)
+    }
+
     /// Create a vector index on `field`.
     ///
     /// `dimensions`           - expected vector length.

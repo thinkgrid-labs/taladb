@@ -70,7 +70,7 @@ pub extern "C" fn taladb_last_error() -> *const c_char {
 #[derive(Clone)]
 pub struct TalaDbHandle {
     db: Database,
-    sync_hook: Option<Arc<dyn SyncHook>>,
+    sync_hook: Option<Arc<HttpSyncHook>>,
 }
 
 impl TalaDbHandle {
@@ -78,7 +78,7 @@ impl TalaDbHandle {
     fn collection(&self, name: &str) -> Result<taladb_core::Collection, taladb_core::TalaDbError> {
         let col = self.db.collection(name)?;
         if let Some(hook) = &self.sync_hook {
-            Ok(col.with_sync_hook(Arc::clone(hook)))
+            Ok(col.with_sync_hook(Arc::clone(hook) as Arc<dyn SyncHook>))
         } else {
             Ok(col)
         }
@@ -95,6 +95,10 @@ impl TalaDbHandle {
 /// The handle must be freed with `taladb_close`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
+    if path.is_null() {
+        set_last_error("database path is null".into());
+        return std::ptr::null_mut();
+    }
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
@@ -104,7 +108,10 @@ pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
             db,
             sync_hook: None,
         })),
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -119,17 +126,25 @@ pub unsafe extern "C" fn taladb_open_with_config(
     path: *const c_char,
     config_json: *const c_char,
 ) -> *mut TalaDbHandle {
+    if path.is_null() {
+        set_last_error("database path is null".into());
+        return std::ptr::null_mut();
+    }
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let sync_hook: Option<Arc<dyn SyncHook>> = if !config_json.is_null() {
+    let sync_hook: Option<Arc<HttpSyncHook>> = if !config_json.is_null() {
         match unsafe { CStr::from_ptr(config_json) }.to_str() {
             Ok(json_str) => match serde_json::from_str::<TalaDbConfig>(json_str) {
                 Ok(config) => {
+                    if let Err(e) = config.validate() {
+                        set_last_error(e.to_string());
+                        return std::ptr::null_mut();
+                    }
                     if config.sync.enabled {
-                        Some(Arc::new(HttpSyncHook::new(config.sync)) as Arc<dyn SyncHook>)
+                        Some(Arc::new(HttpSyncHook::new(config.sync)))
                     } else {
                         None
                     }
@@ -139,7 +154,10 @@ pub unsafe extern "C" fn taladb_open_with_config(
                     return std::ptr::null_mut();
                 }
             },
-            Err(_) => return std::ptr::null_mut(),
+            Err(_) => {
+                set_last_error("config JSON is not valid UTF-8".into());
+                return std::ptr::null_mut();
+            }
         }
     } else {
         None
@@ -147,7 +165,37 @@ pub unsafe extern "C" fn taladb_open_with_config(
 
     match Database::open(Path::new(path_str)) {
         Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db, sync_hook })),
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// HTTP push delivery counters as `{ "dropped": n, "failed": n }`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_sync_status(handle: *mut TalaDbHandle) -> *mut c_char {
+    let Some(h) = ptr_to_ref(handle) else {
+        return std::ptr::null_mut();
+    };
+    let (dropped, failed) = h
+        .sync_hook
+        .as_ref()
+        .map(|hook| (hook.dropped_event_count(), hook.failed_event_count()))
+        .unwrap_or((0, 0));
+    to_cstring(serde_json::json!({ "dropped": dropped, "failed": failed }).to_string())
+}
+
+/// Wait for queued HTTP push events. Returns 1 on success, 0 on timeout, -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_sync_flush(handle: *mut TalaDbHandle, timeout_ms: u64) -> i32 {
+    let Some(h) = ptr_to_ref(handle) else {
+        return -1;
+    };
+    match &h.sync_hook {
+        Some(hook) if hook.flush(std::time::Duration::from_millis(timeout_ms)) => 1,
+        Some(_) => 0,
+        None => 1,
     }
 }
 
@@ -729,6 +777,48 @@ pub unsafe extern "C" fn taladb_drop_index(
     ) && let Ok(c) = h.db.collection(&col)
     {
         let _ = c.drop_index(&f);
+    }
+}
+
+/// Create a compound index over `fields_json` (a JSON array of field names).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_create_compound_index(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    fields_json: *const c_char,
+) {
+    if let (Some(h), Some(col), Some(fj)) = (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(fields_json),
+    ) && let Ok(fields) = serde_json::from_str::<Vec<String>>(&fj)
+        && let Ok(c) = h.db.collection(&col)
+    {
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        if let Err(e) = c.create_compound_index(&refs) {
+            set_last_error(e.to_string());
+        }
+    }
+}
+
+/// Drop a compound index by its ordered field list (`fields_json`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_drop_compound_index(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    fields_json: *const c_char,
+) {
+    if let (Some(h), Some(col), Some(fj)) = (
+        ptr_to_ref(handle),
+        cstr_to_string(collection),
+        cstr_to_string(fields_json),
+    ) && let Ok(fields) = serde_json::from_str::<Vec<String>>(&fj)
+        && let Ok(c) = h.db.collection(&col)
+    {
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        if let Err(e) = c.drop_compound_index(&refs) {
+            set_last_error(e.to_string());
+        }
     }
 }
 
@@ -1464,5 +1554,16 @@ mod tests {
             parse_filter(r#"{"name":"Alice"}"#),
             Ok(Filter::Eq(..))
         ));
+    }
+
+    #[test]
+    fn open_with_config_rejects_invalid_http_endpoint() {
+        let path = CString::new("unused.db").unwrap();
+        let config =
+            CString::new(r#"{"sync":{"enabled":true,"endpoint":"file:///not-http"}}"#).unwrap();
+        let handle = unsafe { taladb_open_with_config(path.as_ptr(), config.as_ptr()) };
+        assert!(handle.is_null());
+        let error = unsafe { CStr::from_ptr(taladb_last_error()) }.to_string_lossy();
+        assert!(error.contains("must start with http:// or https://"));
     }
 }

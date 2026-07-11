@@ -81,6 +81,10 @@ export declare class CollectionNode {
   createIndex(field: string): void
   /** Drop a secondary index. */
   dropIndex(field: string): void
+  /** Create a compound (multi-field) index over an ordered list of fields. */
+  createCompoundIndex(fields: Array<string>): void
+  /** Drop a compound index by its ordered field list. */
+  dropCompoundIndex(fields: Array<string>): void
   /**
    * Create a vector index on `field`.
    *

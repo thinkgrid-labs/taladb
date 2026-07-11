@@ -38,6 +38,7 @@ TalaDBHostObject::TalaDBHostObject(TalaDbHandle *db) : db_(db) {}
 
 TalaDBHostObject::~TalaDBHostObject() {
     if (db_) {
+        taladb_sync_flush(db_, 5000);
         taladb_close(db_);
         db_ = nullptr;
     }
@@ -247,11 +248,13 @@ std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
         "aggregate",
         "exportChanges", "importChanges", "listCollectionNames",
         "createIndex", "dropIndex",
+        "createCompoundIndex", "dropCompoundIndex",
         "createFtsIndex", "dropFtsIndex",
         "createVectorIndex", "dropVectorIndex", "upgradeVectorIndex",
         "findNearest", "findNearestAsync",
         "findAsync",
         "compact",
+        "syncStatus", "flushSync",
         "close",
     };
     std::vector<PropNameID> result;
@@ -510,6 +513,24 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     }
 
     // ------------------------------------------------------------------
+    // createCompoundIndex / dropCompoundIndex(collection, fields: string[]): void
+    // ------------------------------------------------------------------
+    if (name == "createCompoundIndex" || name == "dropCompoundIndex") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forUtf8(rt, name), 2,
+            [this, name](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 2) throw JSError(rt, (name + " requires 2 arguments").c_str());
+                auto col        = args[0].getString(rt).utf8(rt);
+                auto fieldsJson = stringify(rt, args[1]);   // string[] → JSON array
+                if (name == "createCompoundIndex")
+                    taladb_create_compound_index(db_, col.c_str(), fieldsJson.c_str());
+                else
+                    taladb_drop_compound_index(db_, col.c_str(), fieldsJson.c_str());
+                return Value::undefined();
+            });
+    }
+
+    // ------------------------------------------------------------------
     // createVectorIndex(collection, field, dimensions, opts?): void
     //   opts: { metric?: 'cosine'|'dot'|'euclidean', hnsw?: HnswOptions }
     // ------------------------------------------------------------------
@@ -669,6 +690,26 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
             });
     }
 
+    if (name == "syncStatus") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "syncStatus"), 0,
+            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                char *raw = taladb_sync_status(db_);
+                if (!raw) throw ffiError(rt, "taladb_sync_status failed");
+                std::string json(raw); taladb_free_string(raw);
+                return parse(rt, json);
+            });
+    }
+
+    if (name == "flushSync") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "flushSync"), 1,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                uint64_t timeout = count && args[0].isNumber() ? (uint64_t)args[0].getNumber() : 5000;
+                return Value(taladb_sync_flush(db_, timeout) == 1);
+            });
+    }
+
     // ------------------------------------------------------------------
     // close(): void  (synchronous — the destructor does the real work)
     // ------------------------------------------------------------------
@@ -677,6 +718,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
             rt, PropNameID::forAscii(rt, "close"), 0,
             [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
                 if (db_) {
+                    taladb_sync_flush(db_, 5000);
                     taladb_close(db_);
                     db_ = nullptr;
                 }

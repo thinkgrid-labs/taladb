@@ -87,7 +87,17 @@ const db = await openDB('myapp.db')
 // Every write now fires an HTTP event in the background
 ```
 
-After every committed write, TalaDB spawns a background Rust thread and POSTs the event payload to the configured endpoint with up to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). The write path is never blocked.
+After every committed write, TalaDB queues the event on a fixed Rust worker pool and POSTs it with up to **3 retries** and exponential backoff (200 ms / 400 ms / 800 ms). The write path is never blocked. The queue is bounded: saturation drops events, and exhausted retries are recorded as permanent failures.
+
+You can observe delivery health and wait for accepted work before logout or shutdown:
+
+```ts
+const { dropped, failed } = TalaDBModule.syncStatus()
+const drained = TalaDBModule.flushSync(5_000)
+await TalaDBModule.close() // also attempts a bounded five-second flush
+```
+
+HTTP push sync is a best-effort event stream, not a durable replication queue. Use bidirectional sync or a persisted application outbox when events must survive process termination, prolonged offline operation, or queue saturation.
 
 Per-event endpoint overrides are supported:
 

@@ -189,6 +189,10 @@ void taladb_drop_index      (TalaDbHandle *handle, const char *collection, const
 void taladb_create_fts_index(TalaDbHandle *handle, const char *collection, const char *field);
 void taladb_drop_fts_index  (TalaDbHandle *handle, const char *collection, const char *field);
 
+/* Compound (multi-field) indexes. fields_json is a JSON array of field names. */
+void taladb_create_compound_index(TalaDbHandle *handle, const char *collection, const char *fields_json);
+void taladb_drop_compound_index  (TalaDbHandle *handle, const char *collection, const char *fields_json);
+
 /* -------------------------------------------------------------------------
  * Vector index management
  *
@@ -225,6 +229,9 @@ char *taladb_find_nearest(TalaDbHandle *handle,
                           size_t        top_k,
                           const char   *filter_json);
 
+char *taladb_sync_status(TalaDbHandle *handle);
+int32_t taladb_sync_flush(TalaDbHandle *handle, uint64_t timeout_ms);
+
 /* -------------------------------------------------------------------------
  * Async job API — run heavy queries on a background thread.
  *
@@ -234,11 +241,7 @@ char *taladb_find_nearest(TalaDbHandle *handle,
  *   while (taladb_job_poll(j) == 0) { } // yield to JS event loop
  *   char *json = taladb_job_take_result(j);         // frees the job
  *
- * Lifetime contract
- * -----------------
- * The handle passed to `*_start` MUST remain valid until the job has been
- * taken (via take_result) or cancelled (via cancel). The C++ HostObject
- * enforces this by not calling taladb_close while jobs are outstanding.
+ * Workers clone the Arc-backed database state and do not borrow the handle.
  * ---------------------------------------------------------------------- */
 
 typedef struct TalaDbJob TalaDbJob;

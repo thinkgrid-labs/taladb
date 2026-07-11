@@ -175,6 +175,21 @@ export interface Collection<T extends Document = Document> {
   createIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   dropIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
   /**
+   * Create a compound (multi-field) index over an ordered list of fields.
+   *
+   * The query planner uses it to accelerate an `$and` where **every** field of
+   * the index is constrained by equality — e.g. an index on
+   * `['userId', 'status']` serves `find({ userId, status })` with a single
+   * index scan instead of a full-collection scan. Fields are ascending; a
+   * partial-prefix or trailing-range match is not used yet (planned).
+   *
+   * @example
+   * await orders.createCompoundIndex(['userId', 'status'])
+   */
+  createCompoundIndex(fields: (keyof Omit<T, '_id'> & string)[]): Promise<void>;
+  /** Drop a compound index by its ordered field list. */
+  dropCompoundIndex(fields: (keyof Omit<T, '_id'> & string)[]): Promise<void>;
+  /**
    * Create a full-text search index on a string field.
    *
    * Enables fast `{ field: { $contains: 'token' } }` queries using an

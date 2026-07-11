@@ -15,6 +15,10 @@ export class CollectionWasm {
      */
     count(filter: any): number;
     /**
+     * Create a compound index. `fields_json` is a JSON array of field names.
+     */
+    createCompoundIndex(fields_json: string): void;
+    /**
      * Create a secondary index on a field.
      */
     createIndex(field: string): void;
@@ -36,6 +40,10 @@ export class CollectionWasm {
      * Delete the first matching document. Returns true if deleted.
      */
     deleteOne(filter: any): boolean;
+    /**
+     * Drop a compound index by its ordered field list (`fields_json`).
+     */
+    dropCompoundIndex(fields_json: string): void;
     /**
      * Drop a secondary index.
      */
@@ -174,6 +182,10 @@ export class WorkerDB {
      * Count matching documents.
      */
     count(collection: string, filter_json: string): number;
+    /**
+     * Create a compound index. `fields_json` is a JSON array of field names.
+     */
+    createCompoundIndex(collection: string, fields_json: string): void;
     createFtsIndex(collection: string, field: string): void;
     createIndex(collection: string, field: string): void;
     /**
@@ -193,6 +205,10 @@ export class WorkerDB {
      * Delete the first matching document. Returns `true` / `false`.
      */
     deleteOne(collection: string, filter_json: string): boolean;
+    /**
+     * Drop a compound index by its ordered field list (`fields_json`).
+     */
+    dropCompoundIndex(collection: string, fields_json: string): void;
     dropFtsIndex(collection: string, field: string): void;
     dropIndex(collection: string, field: string): void;
     /**
@@ -387,11 +403,13 @@ export interface InitOutput {
     readonly workerdb_compact: (a: number) => [number, number];
     readonly workerdb_compactTombstones: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly workerdb_count: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly workerdb_createCompoundIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number];
     readonly workerdb_deleteMany: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly workerdb_deleteOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly workerdb_dropCompoundIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -417,10 +435,12 @@ export interface InitOutput {
     readonly __wbg_taladbwasm_free: (a: number, b: number) => void;
     readonly collectionwasm_aggregate: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_count: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_createCompoundIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly collectionwasm_deleteMany: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_deleteOne: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_dropCompoundIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_dropIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_dropVectorIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_find: (a: number, b: any) => [number, number, number];

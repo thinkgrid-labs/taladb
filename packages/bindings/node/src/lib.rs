@@ -528,6 +528,20 @@ impl CollectionNode {
         self.inner.drop_index(&field).map_err(err_to_napi)
     }
 
+    /// Create a compound (multi-field) index over an ordered list of fields.
+    #[napi(js_name = "createCompoundIndex")]
+    pub fn create_compound_index(&self, fields: Vec<String>) -> napi::Result<()> {
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.inner.create_compound_index(&refs).map_err(err_to_napi)
+    }
+
+    /// Drop a compound index by its ordered field list.
+    #[napi(js_name = "dropCompoundIndex")]
+    pub fn drop_compound_index(&self, fields: Vec<String>) -> napi::Result<()> {
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.inner.drop_compound_index(&refs).map_err(err_to_napi)
+    }
+
     /// Create a vector index on `field`.
     ///
     /// - `metric` — optional: `"cosine"` (default), `"dot"`, or `"euclidean"`.

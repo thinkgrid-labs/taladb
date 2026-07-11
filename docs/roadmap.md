@@ -34,13 +34,14 @@ Better DX drives adoption and reduces time-to-production.
 - Group accumulators: `$sum`, `$count`, `$avg`, `$min`, `$max`, `$push`, `$addToSet`, `$first`, `$last`
 - Runs as a single pass over the B-tree / index; `$match` as the first stage uses an index
 
-### Compound indexes
+### ✅ Compound indexes *(shipped: Node.js + browser in v0.9.0)*
 
-Multi-field B-tree indexes so queries filtered or sorted on two or more fields use an index scan instead of a full-collection scan:
+Multi-field B-tree indexes so a query constrained on two or more fields uses one index scan instead of a full-collection scan:
 
-- `collection.createIndex(['userId', 'createdAt'])` — composite key, ascending by default
-- Descending order per field: `createIndex([['userId', 'asc'], ['createdAt', 'desc']])`
-- Query planner selects the compound index automatically when the leading field matches the filter
+- `collection.createCompoundIndex(['userId', 'status'])` — composite key, ascending. `dropCompoundIndex(fields)` to remove.
+- The query planner picks it automatically for an `$and` where **every** field of the index is constrained by equality (e.g. `find({ userId, status })`). Covered by the core test suite and a native e2e.
+- Available on Node.js and the browser (OPFS worker + in-memory). React Native is implemented (FFI + JSI) but pending on-device verification, same as bidirectional sync.
+- ⬜ Still to do: partial-prefix and trailing-range matching (use the index when only the leading field(s) are constrained, or the last is a range); per-field **descending** order (`CompoundIndexDef` has no direction yet); the `createIndex(['a','b'])` array-sugar overload.
 
 ### `taladb generate` — TypeScript type generation
 

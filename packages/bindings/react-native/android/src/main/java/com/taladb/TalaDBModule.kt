@@ -51,7 +51,8 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
      * JSI runtime identified by [jsContextNativePtr].
      * Called once from [initialize].
      */
-    private external fun nativeInstall(jsContextNativePtr: Long, dbPath: String, configJson: String?)
+    private external fun nativeInstall(jsContextNativePtr: Long, dbPath: String, configJson: String?): String?
+    private external fun nativeClose(jsContextNativePtr: Long)
 
     // -----------------------------------------------------------------------
     // TurboModule: initialize(dbName, configJson?) → Promise<void>
@@ -63,12 +64,17 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
 
             // javaScriptContextHolder.get() returns the raw jsi::Runtime* pointer.
             val jsContextPtr = reactContext.javaScriptContextHolder!!.get()
+            if (jsContextPtr == 0L) {
+                promise.reject("TALADB_NO_RUNTIME", "JSI runtime is not available")
+                return
+            }
 
             // Install on the JS thread
             reactContext.runOnJSQueueThread {
                 try {
-                    nativeInstall(jsContextPtr, dbPath, configJson)
-                    promise.resolve(null)
+                    val error = nativeInstall(jsContextPtr, dbPath, configJson)
+                    if (error == null) promise.resolve(null)
+                    else promise.reject("TALADB_INSTALL_ERROR", error)
                 } catch (e: Exception) {
                     promise.reject("TALADB_INSTALL_ERROR", e.message, e)
                 }
@@ -89,11 +95,8 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
         try {
             reactContext.runOnJSQueueThread {
                 try {
-                    reactContext.javaScriptContextHolder?.let { holder ->
-                        // Setting the property to undefined lets the JSI
-                        // HostObject destructor run (Hermes GC permitting).
-                        // For an immediate close, call nativeClose() instead.
-                    }
+                    val ptr = reactContext.javaScriptContextHolder?.get() ?: 0L
+                    if (ptr != 0L) nativeClose(ptr)
                     promise.resolve(null)
                 } catch (e: Exception) {
                     promise.reject("TALADB_CLOSE_ERROR", e.message, e)

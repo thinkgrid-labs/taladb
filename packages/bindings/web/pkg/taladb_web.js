@@ -44,6 +44,18 @@ export class CollectionWasm {
         return ret[0] >>> 0;
     }
     /**
+     * Create a compound index. `fields_json` is a JSON array of field names.
+     * @param {string} fields_json
+     */
+    createCompoundIndex(fields_json) {
+        const ptr0 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_createCompoundIndex(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Create a secondary index on a field.
      * @param {string} field
      */
@@ -105,6 +117,18 @@ export class CollectionWasm {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] !== 0;
+    }
+    /**
+     * Drop a compound index by its ordered field list (`fields_json`).
+     * @param {string} fields_json
+     */
+    dropCompoundIndex(fields_json) {
+        const ptr0 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_dropCompoundIndex(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Drop a secondary index.
@@ -505,6 +529,21 @@ export class WorkerDB {
         return ret[0] >>> 0;
     }
     /**
+     * Create a compound index. `fields_json` is a JSON array of field names.
+     * @param {string} collection
+     * @param {string} fields_json
+     */
+    createCompoundIndex(collection, fields_json) {
+        const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.workerdb_createCompoundIndex(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {string} collection
      * @param {string} field
      */
@@ -594,6 +633,21 @@ export class WorkerDB {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] !== 0;
+    }
+    /**
+     * Drop a compound index by its ordered field list (`fields_json`).
+     * @param {string} collection
+     * @param {string} fields_json
+     */
+    dropCompoundIndex(collection, fields_json) {
+        const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.workerdb_dropCompoundIndex(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * @param {string} collection

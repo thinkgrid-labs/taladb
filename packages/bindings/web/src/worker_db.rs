@@ -586,6 +586,36 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Create a compound index. `fields_json` is a JSON array of field names.
+    #[wasm_bindgen(js_name = createCompoundIndex)]
+    pub fn create_compound_index(
+        &self,
+        collection: &str,
+        fields_json: &str,
+    ) -> Result<(), JsValue> {
+        let fields: Vec<String> =
+            serde_json::from_str(fields_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .create_compound_index(&refs)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Drop a compound index by its ordered field list (`fields_json`).
+    #[wasm_bindgen(js_name = dropCompoundIndex)]
+    pub fn drop_compound_index(&self, collection: &str, fields_json: &str) -> Result<(), JsValue> {
+        let fields: Vec<String> =
+            serde_json::from_str(fields_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .drop_compound_index(&refs)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     #[wasm_bindgen(js_name = createFtsIndex)]
     pub fn create_fts_index(&self, collection: &str, field: &str) -> Result<(), JsValue> {
         self.db

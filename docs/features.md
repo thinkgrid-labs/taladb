@@ -146,6 +146,19 @@ Indexes are created per field with `createIndex('fieldName')`. The underlying st
 
 The query planner examines the filter and picks the most selective available index automatically. No hints or query annotations are needed.
 
+### Compound (multi-field) indexes
+
+Index an ordered list of fields to serve a multi-field equality query with a single index scan:
+
+```ts
+await orders.createCompoundIndex(['userId', 'status'])
+
+// One index scan instead of a full-collection scan:
+await orders.find({ userId: 'u_123', status: 'open' })
+```
+
+The planner uses the compound index when an `$and` constrains **every** field of the index by equality. Fields are ascending; partial-prefix and trailing-range matches, and per-field descending order, are on the [roadmap](/roadmap). Available on Node.js and the browser; React Native support is implemented and pending on-device verification.
+
 ## ACID transactions via redb
 
 Every write is wrapped in an ACID transaction at the storage layer. Document writes and index updates happen atomically — there is no window where a document exists but its index entry is missing, or vice versa. On crash or power loss, redb recovers to the last committed state.

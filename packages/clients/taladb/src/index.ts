@@ -252,6 +252,8 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
         col.aggregate(pipeline as never) as R[],
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createCompoundIndex: async (fields) => col.createCompoundIndex(JSON.stringify(fields)),
+      dropCompoundIndex: async (fields) => col.dropCompoundIndex(JSON.stringify(fields)),
       createFtsIndex: async (field) => col.createFtsIndex(field),
       dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) => {
@@ -384,6 +386,12 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
 
       dropIndex: (field) =>
         proxy.send<void>('dropIndex', { collection: name, field }),
+
+      createCompoundIndex: (fields) =>
+        proxy.send<void>('createCompoundIndex', { collection: name, fieldsJson: JSON.stringify(fields) }),
+
+      dropCompoundIndex: (fields) =>
+        proxy.send<void>('dropCompoundIndex', { collection: name, fieldsJson: JSON.stringify(fields) }),
 
       createFtsIndex: (field) =>
         proxy.send<void>('createFtsIndex', { collection: name, field }),
@@ -537,6 +545,8 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
         col.aggregate(pipeline as never) as R[],
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createCompoundIndex: async (fields) => col.createCompoundIndex(fields as string[]),
+      dropCompoundIndex: async (fields) => col.dropCompoundIndex(fields as string[]),
       createFtsIndex: async (field) => col.createFtsIndex(field),
       dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) =>
@@ -593,6 +603,8 @@ interface NativeDB {
   aggregate(collection: string, pipeline: unknown[]): Record<string, unknown>[];
   createIndex(collection: string, field: string): void;
   dropIndex(collection: string, field: string): void;
+  createCompoundIndex(collection: string, fields: string[]): void;
+  dropCompoundIndex(collection: string, fields: string[]): void;
   createFtsIndex(collection: string, field: string): void;
   dropFtsIndex(collection: string, field: string): void;
   createVectorIndex(collection: string, field: string, dimensions: number, opts?: Record<string, unknown>): void;
@@ -638,6 +650,8 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
         native.aggregate(name, pipeline as unknown[]) as R[],
       createIndex: async (field) => native.createIndex(name, field),
       dropIndex: async (field) => native.dropIndex(name, field),
+      createCompoundIndex: async (fields) => native.createCompoundIndex(name, fields as string[]),
+      dropCompoundIndex: async (fields) => native.dropCompoundIndex(name, fields as string[]),
       createFtsIndex: async (field) => native.createFtsIndex(name, field),
       dropFtsIndex: async (field) => native.dropFtsIndex(name, field),
       createVectorIndex: async (field, options) => {
