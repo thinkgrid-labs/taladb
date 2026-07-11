@@ -131,6 +131,13 @@ impl TalaDBWasm {
         let n = self.inner.import_changes(changeset).map_err(err_to_js)?;
         Ok(n as u32)
     }
+
+    /// User collection names (reserved `_`-prefixed collections excluded).
+    /// Backs the sync orchestration's "sync all collections" default.
+    #[wasm_bindgen(js_name = listCollectionNames)]
+    pub fn list_collection_names(&self) -> Result<Vec<String>, JsValue> {
+        self.inner.list_collection_names().map_err(err_to_js)
+    }
 }
 
 // ---------------------------------------------------------------------------

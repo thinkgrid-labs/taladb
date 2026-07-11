@@ -5,6 +5,27 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] - 2026-07-11
+
+Bidirectional sync lands in the browser — a local-first web app can now
+`db.sync()` against any backend — and five bugs found while wiring it are
+fixed, including two that broke 0.8.4's Node sync and `openDB` entirely.
+Ships rebuilt `.node` and WASM binaries.
+
+### Added
+
+- **`db.sync()` in the browser** — both browser adapters (OPFS worker and the in-memory fallback) now wire the full bidirectional sync loop. All engine work (change export, LWW merge) runs inside the Dedicated Worker, off the main thread, so a sync pass never blocks rendering regardless of changeset size. Verified end-to-end against a real Chrome instance: browser ↔ HTTP sync server ↔ Node.js peer, with changeset format parity in both directions. React Native remains pending (its C FFI does not yet expose the changeset primitives).
+- **`@taladb/web` — `TalaDBWasm.listCollectionNames()`** — user collection names (reserved names excluded), backing the sync orchestration's "sync all" default on the in-memory browser path.
+- **End-to-end sync test suite (`tests/sync.e2e.test.ts`)** — exercises `openDB` → native engine → cursor persistence → `HttpSyncAdapter` against a real HTTP server, with LWW-convergence and incremental-cursor assertions. Skips automatically when the native module isn't built. The existing unit tests mock the engine and could not catch any of the bugs below.
+
+### Fixed
+
+- **`taladb-core` — the sync cursor collection was rejected as a reserved name** — `db.sync()`'s first pass threw `InvalidName`: the cursor store `__taladb_sync` starts with `_`, which collection-name validation reserves, and no exemption existed. The validator now has an explicit addressable-system-collection allowlist (`__taladb_sync` only); `_audit` and all other `_`-prefixed names stay blocked, and the cursor store stays hidden from `listCollectionNames()`. **This broke 0.8.4 bidirectional sync on every runtime.**
+- **`taladb` — `openDB()` was broken on Node.js** — the client destructured `TalaDBNode` from `@taladb/node`, but napi-rs normalizes the Rust struct name to the JS class `TalaDbNode`, so the published 0.8.4 client read `undefined` and crashed on open. A hand-written type alias in the generated `.d.ts` masked the mismatch from the type checker. The client now accepts both names and fails with a clear message if neither exists.
+- **Sync cursors were never found after being written** — the cursor document used a caller-supplied `_id: target`, but the engine assigns ULIDs and ignores caller-supplied ids, and the `_id` fast path treats non-ULID strings as matching nothing. Every pass therefore read `sinceMs = 0` (full re-sync, safe but O(all-data) forever) and inserted a fresh orphan cursor document. Cursors are now keyed by a regular `target` field.
+- **Pull cursor could permanently skip late-arriving remote changes** — a single local-wall-clock watermark filtered remote changes by their author-time `changed_at`: a change authored before your last sync but arriving at the server after it was never fetched again. Cursors are now split — `pushMs` (local clock, for exports) and `pullMs` (the newest remote `changed_at` actually received) — so late arrivals stay fetchable. Clock skew between peers still affects LWW conflict resolution itself; a server-assigned sequence cursor is on the roadmap as the fully robust design.
+- **`HttpSyncAdapter` threw `Illegal invocation` in browsers** — it stored `globalThis.fetch` detached; browsers require `fetch` to be called on its global. The adapter now binds it (Node tolerated the detached call, which is why only browser use broke).
+
 ## [0.8.4] - 2026-07-11
 
 Bidirectional sync arrives: a local TalaDB can now pull remote changes and push

@@ -645,3 +645,30 @@ fn database_import_is_idempotent_under_replay() {
         "replayed changeset must not create a duplicate"
     );
 }
+
+#[test]
+fn sync_cursor_collection_is_addressable() {
+    // Regression: `db.sync()` persists its cursor in `__taladb_sync` through
+    // the ordinary collection API. The reserved-`_` validation must exempt it
+    // (0.8.4 rejected it, breaking the first real sync pass), while other
+    // `_`-prefixed names stay blocked and the cursor store stays hidden.
+    let db = Database::open_in_memory().unwrap();
+
+    let cursors = db.collection("__taladb_sync").unwrap();
+    cursors
+        .insert_with_id(Document::new(vec![
+            ("target".into(), s("default")),
+            ("sinceMs".into(), i(0)),
+        ]))
+        .unwrap();
+    assert_eq!(cursors.count(Filter::All).unwrap(), 1);
+
+    // Still reserved for everything else…
+    assert!(db.collection("_audit").is_err());
+    assert!(db.collection("__other").is_err());
+    // …and still hidden from the public listing.
+    assert!(!db
+        .list_collection_names()
+        .unwrap()
+        .contains(&"__taladb_sync".to_string()));
+}

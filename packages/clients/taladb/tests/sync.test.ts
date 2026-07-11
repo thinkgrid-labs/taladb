@@ -18,7 +18,7 @@ interface Row {
 
 class MemHandle implements SyncHandle {
   private rows = new Map<string, Row & { collection: string }>();
-  private cursors = new Map<string, number>();
+  private cursors = new Map<string, { target: string; pushMs: number; pullMs: number }>();
 
   put(id: string, body: string, changed_at: number, collection = 'notes') {
     this.rows.set(id, { id, changed_at, body, collection });
@@ -71,18 +71,23 @@ class MemHandle implements SyncHandle {
   listCollectionNames = async (): Promise<string[]> =>
     [...new Set([...this.rows.values()].map((r) => r.collection))].filter((c) => !c.startsWith('_'));
 
-  // Minimal cursor collection backed by the cursors map.
+  // Minimal cursor collection backed by the cursors map, keyed by `target`
+  // (mirrors the real engine: `_id` is ULID-assigned, so cursors use a field).
   collection = (_name: string): never => {
     const cursors = this.cursors;
     return {
-      findOne: async (filter: { _id: string }) =>
-        cursors.has(filter._id) ? { _id: filter._id, sinceMs: cursors.get(filter._id)! } : null,
-      insert: async (doc: { _id: string; sinceMs: number }) => {
-        cursors.set(doc._id, doc.sinceMs);
-        return doc._id;
+      findOne: async (filter: { target: string }) => cursors.get(filter.target) ?? null,
+      insert: async (doc: { target: string; pushMs: number; pullMs: number }) => {
+        cursors.set(doc.target, { ...doc });
+        return 'cursor-id';
       },
-      updateOne: async (filter: { _id: string }, update: { $set: { sinceMs: number } }) => {
-        cursors.set(filter._id, update.$set.sinceMs);
+      updateOne: async (
+        filter: { target: string },
+        update: { $set: { pushMs: number; pullMs: number } },
+      ) => {
+        const existing = cursors.get(filter.target);
+        if (!existing) return false;
+        Object.assign(existing, update.$set);
         return true;
       },
     } as never;

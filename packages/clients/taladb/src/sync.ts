@@ -20,10 +20,20 @@ import type {
 const CURSOR_COLLECTION = '__taladb_sync';
 
 interface CursorDoc extends Document {
-  /** Sync target name; the document `_id`. */
-  _id: string;
-  /** Millisecond-epoch watermark: changes at or before this are already synced. */
-  sinceMs: number;
+  /** Sync target name. A plain field, NOT `_id`: the engine assigns ULIDs and
+   * ignores caller-supplied ids, so a custom `_id` would never match again. */
+  target: string;
+  /** LOCAL watermark for exports: local changes stamped at or before this have
+   * already been pushed. Local writes are stamped by the same clock, so a
+   * wall-clock watermark is sound here. */
+  pushMs: number;
+  /** REMOTE watermark for pulls: the highest `changed_at` among changes
+   * received so far. Deliberately NOT the local clock — a remote change is
+   * authored on another device's clock and may arrive at the server after we
+   * last synced; filtering remote changes by our local time would skip it
+   * forever. Advancing only past what we have actually received keeps every
+   * late-arriving change fetchable. */
+  pullMs: number;
 }
 
 /** The low-level surface `runSync` needs from a platform DB handle. */
@@ -69,21 +79,24 @@ export function unsupportedSync(runtime: string): Pick<
   };
 }
 
-async function readCursor(cursorCol: Collection<CursorDoc>, target: string): Promise<number> {
-  const doc = await cursorCol.findOne({ _id: target } as never);
-  return doc?.sinceMs ?? 0;
+interface Cursor {
+  pushMs: number;
+  pullMs: number;
+}
+
+async function readCursor(cursorCol: Collection<CursorDoc>, target: string): Promise<Cursor> {
+  const doc = await cursorCol.findOne({ target } as never);
+  return { pushMs: doc?.pushMs ?? 0, pullMs: doc?.pullMs ?? 0 };
 }
 
 async function writeCursor(
   cursorCol: Collection<CursorDoc>,
   target: string,
-  sinceMs: number,
+  cursor: Cursor,
 ): Promise<void> {
-  const existing = await cursorCol.findOne({ _id: target } as never);
-  if (existing) {
-    await cursorCol.updateOne({ _id: target } as never, { $set: { sinceMs } } as never);
-  } else {
-    await cursorCol.insert({ _id: target, sinceMs } as never);
+  const updated = await cursorCol.updateOne({ target } as never, { $set: { ...cursor } } as never);
+  if (!updated) {
+    await cursorCol.insert({ target, ...cursor } as never);
   }
 }
 
@@ -96,9 +109,11 @@ async function writeCursor(
  * doesn't affect convergence: Last-Write-Wins resolves by `changed_at`, so both
  * sides reach the same state regardless.
  *
- * The cursor is captured before the export scan and advanced to that value, so
- * a write racing the scan is simply re-synced next pass — harmless because
- * `importChanges` is idempotent under LWW.
+ * Two independent watermarks per target: `pushMs` (local clock, captured before
+ * the export scan — a write racing the scan is simply re-synced next pass,
+ * harmless because `importChanges` is idempotent under LWW) and `pullMs` (the
+ * newest remote `changed_at` actually received, so a change that reaches the
+ * server after our pass but was authored earlier is still fetched next time).
  */
 export async function runSync(
   handle: SyncHandle,
@@ -118,18 +133,24 @@ export async function runSync(
 
   const collections = await resolveCollections(handle, options);
   const cursorCol = handle.collection(CURSOR_COLLECTION);
-  const sinceMs = await readCursor(cursorCol, target);
+  const cursor = await readCursor(cursorCol, target);
   const startedAt = Date.now();
 
   // Snapshot local changes before importing anything, so pulled changes aren't
   // pushed back to the peer they came from.
-  const local = doPush ? await handle.exportChanges(collections, sinceMs) : '[]';
+  const local = doPush ? await handle.exportChanges(collections, cursor.pushMs) : '[]';
 
   let pulled = 0;
+  let pullMs = cursor.pullMs;
   if (doPull) {
-    const remote = await adapter.pull!(sinceMs);
+    const remote = await adapter.pull!(cursor.pullMs);
     if (remote && remote !== '[]') {
       pulled = await handle.importChanges(remote);
+      // Advance the pull watermark to the newest change actually received —
+      // never to the local clock (see CursorDoc.pullMs).
+      for (const c of JSON.parse(remote) as { changed_at?: number }[]) {
+        if (typeof c.changed_at === 'number' && c.changed_at > pullMs) pullMs = c.changed_at;
+      }
     }
   }
 
@@ -139,6 +160,9 @@ export async function runSync(
     await adapter.push!(local);
   }
 
-  await writeCursor(cursorCol, target, startedAt);
+  await writeCursor(cursorCol, target, {
+    pushMs: doPush ? startedAt : cursor.pushMs,
+    pullMs,
+  });
   return { pushed, pulled, cursor: startedAt };
 }

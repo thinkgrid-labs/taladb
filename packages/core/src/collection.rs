@@ -252,6 +252,16 @@ impl Collection {
     }
 }
 
+/// System collections that ARE addressable through [`crate::Database::collection`]
+/// despite the reserved `_` prefix. They stay hidden from
+/// [`crate::Database::list_collection_names`] and are never synced (the sync
+/// orchestration skips every `_`-prefixed name).
+///
+/// - `__taladb_sync` — bidirectional-sync cursor store, one document per sync
+///   target. The JS `db.sync()` orchestration reads and advances cursors
+///   through the ordinary collection API, so the name must pass validation.
+const ADDRESSABLE_SYSTEM_COLLECTIONS: &[&str] = &["__taladb_sync"];
+
 /// Validate a collection name.
 ///
 /// Rules:
@@ -260,11 +270,15 @@ impl Collection {
 /// - Must not contain `"::"` (reserved for internal table naming).
 /// - Must not start with `"_"` (reserved for system collections such as
 ///   `_audit`; without this, `db.collection("_audit")` would allow normal
-///   mutations against the append-only audit log).
+///   mutations against the append-only audit log). The explicit
+///   [`ADDRESSABLE_SYSTEM_COLLECTIONS`] allowlist is exempt.
 ///
 /// Called by [`crate::Database::collection`] so callers get an error
 /// immediately rather than at index-creation time.
 pub fn validate_collection_name(name: &str) -> Result<(), TalaDbError> {
+    if ADDRESSABLE_SYSTEM_COLLECTIONS.contains(&name) {
+        return Ok(());
+    }
     if name.is_empty() {
         return Err(TalaDbError::InvalidName(
             "collection name must not be empty".into(),

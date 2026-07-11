@@ -264,7 +264,7 @@ await db.sync(adapter, { exclude: ['logs'] })           // deny-list
 
 Any backend becomes a sync peer by implementing the two-method `SyncAdapter` interface — `push(changeset)` and `pull(sinceMs)`. The reference `HttpSyncAdapter` ships inside the `taladb` package; **[`@taladb/sync-mongodb`](/guide/bidirectional-sync#mongodb-adapter)** syncs straight into a MongoDB collection with no intermediate API (server-side only — it holds a database credential). Under the hood everything is built on `db.exportChanges()` / `db.importChanges()`, which are idempotent under LWW, so replays and at-least-once transports are safe.
 
-`db.sync()` is currently wired on Node.js; the browser and React Native bindings share the same engine primitives and are next. See the [Bidirectional Sync guide](/guide/bidirectional-sync).
+`db.sync()` runs on Node.js and in the browser (since v0.8.5), where all sync engine work happens inside the Dedicated Worker — a pass never blocks the UI. React Native shares the same engine primitives and is next. See the [Bidirectional Sync guide](/guide/bidirectional-sync).
 
 ## HTTP push sync
 

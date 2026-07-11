@@ -48,7 +48,10 @@ export class HttpSyncAdapter implements SyncAdapter {
   constructor(options: HttpSyncAdapterOptions) {
     this.endpoint = options.endpoint.replace(/\/$/, '');
     this.headers = options.headers ?? {};
-    const f = options.fetch ?? globalThis.fetch;
+    // Bind the global fetch: browsers throw "Illegal invocation" when fetch is
+    // called detached from its global (Node tolerates the detached call, so
+    // only browser use would break). A caller-supplied fetch is used as given.
+    const f = options.fetch ?? globalThis.fetch?.bind(globalThis);
     if (!f) {
       throw new Error(
         'HttpSyncAdapter: no fetch available. Pass options.fetch on runtimes without a global fetch.',

@@ -113,6 +113,26 @@ interface CollectionOptions<T extends Document = Document> {
      */
     validateOnRead?: boolean;
 }
+/** A single MongoDB-style aggregation stage. */
+type AggregateStage<T extends Document = Document> = {
+    $match: Filter<T>;
+} | {
+    /** `_id` is a `"$field"` reference or `null` (single group); other keys are
+     * accumulator outputs, e.g. `total: { $sum: '$amount' }`, `n: { $sum: 1 }`. */
+    $group: {
+        _id: string | null;
+    } & Record<string, unknown>;
+} | {
+    $sort: Record<string, 1 | -1>;
+} | {
+    $skip: number;
+} | {
+    $limit: number;
+} | {
+    $project: Record<string, 0 | 1>;
+};
+/** An ordered aggregation pipeline. */
+type AggregatePipeline<T extends Document = Document> = AggregateStage<T>[];
 interface Collection<T extends Document = Document> {
     insert(doc: Omit<T, '_id'>): Promise<string>;
     insertMany(docs: Omit<T, '_id'>[]): Promise<string[]>;
@@ -123,6 +143,18 @@ interface Collection<T extends Document = Document> {
     deleteOne(filter: Filter<T>): Promise<boolean>;
     deleteMany(filter: Filter<T>): Promise<number>;
     count(filter?: Filter<T>): Promise<number>;
+    /**
+     * Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
+     * `$skip`, `$limit`, `$project`) inside the engine. Returns the resulting
+     * documents. Currently available on Node.js and the in-memory browser build.
+     *
+     * @example
+     * const byStatus = await orders.aggregate([
+     *   { $group: { _id: '$status', total: { $sum: '$amount' }, n: { $sum: 1 } } },
+     *   { $sort: { total: -1 } },
+     * ]);
+     */
+    aggregate<R extends Document = Document>(pipeline: AggregatePipeline<T>): Promise<R[]>;
     createIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
     dropIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
     /**
@@ -198,8 +230,82 @@ interface Collection<T extends Document = Document> {
      */
     subscribe(filter: Filter<T>, callback: (docs: T[]) => void): () => void;
 }
+/**
+ * A JSON-encoded changeset — the opaque payload exchanged between peers. Produced
+ * by {@link TalaDB.exportChanges}, transported by a {@link SyncAdapter}, and
+ * consumed by {@link TalaDB.importChanges}. Treat it as an opaque string.
+ */
+type SerializedChangeset = string;
+/** Direction of a sync pass. `'both'` (default) is fully bidirectional. */
+type SyncDirection = 'push' | 'pull' | 'both';
+/**
+ * A transport for {@link TalaDB.sync}. Implement `push` to send local changes to
+ * a remote, `pull` to fetch remote changes — or both for bidirectional sync.
+ * The changeset is an opaque JSON string; move it over any wire you like.
+ */
+interface SyncAdapter {
+    /** Send a local changeset to the remote. Required for `'push'` / `'both'`. */
+    push?(changeset: SerializedChangeset): Promise<void>;
+    /**
+     * Fetch remote changes with `changed_at` after `sinceMs` (ms epoch), as a
+     * serialized changeset. Return `'[]'` when there is nothing new. Required for
+     * `'pull'` / `'both'`.
+     */
+    pull?(sinceMs: number): Promise<SerializedChangeset>;
+}
+interface SyncOptions {
+    /**
+     * Collections to sync. Omit to sync **all** user collections (reserved
+     * `_`-prefixed collections are always skipped). Provide an array to sync only
+     * those.
+     */
+    collections?: string[];
+    /**
+     * Collections to skip. Applied after `collections` (or after the
+     * all-collections default), so `{ exclude: ['logs'] }` means "sync everything
+     * except logs".
+     */
+    exclude?: string[];
+    /** Direction of the pass. Default `'both'` (bidirectional). */
+    direction?: SyncDirection;
+    /**
+     * Names this sync target for cursor persistence, so multiple remotes each
+     * keep their own watermark. Default `'default'`.
+     */
+    target?: string;
+}
+interface SyncResult {
+    /** Number of local changes pushed to the remote. */
+    pushed: number;
+    /** Number of documents changed locally by the pulled remote changeset. */
+    pulled: number;
+    /** New sync cursor (ms epoch) persisted for the next pass. */
+    cursor: number;
+}
 interface TalaDB {
     collection<T extends Document = Document>(name: string, options?: CollectionOptions<T>): Collection<T>;
+    /**
+     * Run one bidirectional sync pass against `adapter`: pull remote changes and
+     * merge them (Last-Write-Wins), then push local changes since the last cursor.
+     * The cursor is persisted per `target`, so successive calls sync incrementally.
+     * Set `direction` to `'push'` or `'pull'` to make it one-way.
+     *
+     * @example
+     * await db.sync(httpAdapter, { collections: ['notes'] });          // bidirectional
+     * await db.sync(httpAdapter, { collections: ['logs'], direction: 'push' });
+     */
+    sync(adapter: SyncAdapter, options: SyncOptions): Promise<SyncResult>;
+    /**
+     * Low-level: export changes to `collections` with `changed_at` after `sinceMs`
+     * (exclusive) as a serialized changeset. Most apps use {@link TalaDB.sync}.
+     */
+    exportChanges(collections: string[], sinceMs: number): Promise<SerializedChangeset>;
+    /**
+     * Low-level: merge a serialized changeset into the local database via
+     * Last-Write-Wins. Returns the number of documents changed. Idempotent —
+     * re-importing the same changeset is a no-op.
+     */
+    importChanges(changeset: SerializedChangeset): Promise<number>;
     /**
      * Compact the underlying storage file, reclaiming space freed by deletes
      * and updates.
@@ -252,6 +358,45 @@ interface TalaDbConfig {
     sync?: SyncConfig;
 }
 
+interface HttpSyncAdapterOptions {
+    /** Base URL, e.g. `https://api.example.com/sync`. `/push` and `/pull` are appended. */
+    endpoint: string;
+    /** Extra headers on every request — typically `Authorization`. */
+    headers?: Record<string, string>;
+    /**
+     * `fetch` implementation. Defaults to the global `fetch` (Node 18+, browsers,
+     * React Native). Inject a custom one for tests or non-standard environments.
+     */
+    fetch?: typeof fetch;
+    /** Paths appended to `endpoint`. Override to match an existing API. */
+    paths?: {
+        push?: string;
+        pull?: string;
+    };
+}
+/**
+ * A ready-to-use {@link SyncAdapter} that syncs over plain HTTP. Pair it with
+ * {@link TalaDB.sync}:
+ *
+ * ```ts
+ * const adapter = new HttpSyncAdapter({
+ *   endpoint: 'https://api.example.com/sync',
+ *   headers: { Authorization: `Bearer ${token}` },
+ * });
+ * await db.sync(adapter, { collections: ['notes'] });
+ * ```
+ */
+declare class HttpSyncAdapter implements SyncAdapter {
+    private readonly endpoint;
+    private readonly headers;
+    private readonly fetchFn;
+    private readonly pushPath;
+    private readonly pullPath;
+    constructor(options: HttpSyncAdapterOptions);
+    push(changeset: SerializedChangeset): Promise<void>;
+    pull(sinceMs: number): Promise<SerializedChangeset>;
+}
+
 /**
  * Thrown when a document fails schema validation on `insert` or `insertMany`.
  * The `cause` property holds the original error thrown by the schema library.
@@ -294,4 +439,4 @@ interface OpenDBOptions {
  */
 declare function openDB(dbName?: string, options?: OpenDBOptions): Promise<TalaDB>;
 
-export { type Collection, type CollectionIndexInfo, type CollectionOptions, type Document, type Filter, type OpenDBOptions, type Schema, type SyncConfig, type TalaDB, type TalaDbConfig, TalaDbValidationError, type Update, type Value, type VectorIndexOptions, type VectorMetric, type VectorSearchResult, openDB };
+export { type AggregatePipeline, type AggregateStage, type Collection, type CollectionIndexInfo, type CollectionOptions, type Document, type Filter, HttpSyncAdapter, type OpenDBOptions, type Schema, type SerializedChangeset, type SyncAdapter, type SyncConfig, type SyncDirection, type SyncOptions, type SyncResult, type TalaDB, type TalaDbConfig, TalaDbValidationError, type Update, type Value, type VectorIndexOptions, type VectorMetric, type VectorSearchResult, openDB };

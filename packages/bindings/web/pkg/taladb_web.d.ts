@@ -6,6 +6,11 @@ export class CollectionWasm {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
+     * `$skip`, `$limit`, `$project`). Returns the resulting documents.
+     */
+    aggregate(pipeline: any): any;
+    /**
      * Count documents matching the filter.
      */
     count(filter: any): number;
@@ -87,6 +92,12 @@ export class TalaDBWasm {
      */
     collection(name: string): CollectionWasm;
     /**
+     * Export changes to `collections` after `sinceMs` (exclusive) as a JSON
+     * changeset string, for bidirectional sync. `sinceMs` is a millisecond
+     * epoch timestamp (the persisted sync cursor).
+     */
+    exportChanges(since_ms: number, collections: string[]): string;
+    /**
      * Serialize the entire in-memory database to bytes.
      *
      * Pass the returned `Uint8Array` to `opfs_flush_snapshot` to persist, or
@@ -94,6 +105,16 @@ export class TalaDBWasm {
      * `openWithSnapshot` to restore all data.
      */
     exportSnapshot(): Uint8Array;
+    /**
+     * Merge a JSON changeset string (from a remote peer) into the local
+     * database via Last-Write-Wins. Returns the number of documents changed.
+     */
+    importChanges(changeset_json: string): number;
+    /**
+     * User collection names (reserved `_`-prefixed collections excluded).
+     * Backs the sync orchestration's "sync all collections" default.
+     */
+    listCollectionNames(): string[];
     /**
      * Open an in-memory database (suitable for tests and environments without OPFS).
      */
@@ -119,6 +140,10 @@ export class WorkerDB {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * Run an aggregation pipeline. Returns a JSON array of result documents.
+     */
+    aggregate(collection: string, pipeline_json: string): string;
     /**
      * Compact the underlying OPFS / redb storage file, reclaiming space freed
      * by deletes and updates.
@@ -358,6 +383,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_workerdb_free: (a: number, b: number) => void;
+    readonly workerdb_aggregate: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_compact: (a: number) => [number, number];
     readonly workerdb_compactTombstones: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly workerdb_count: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
@@ -389,6 +415,7 @@ export interface InitOutput {
     readonly workerdb_upgradeVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly __wbg_collectionwasm_free: (a: number, b: number) => void;
     readonly __wbg_taladbwasm_free: (a: number, b: number) => void;
+    readonly collectionwasm_aggregate: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_count: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
@@ -405,7 +432,10 @@ export interface InitOutput {
     readonly collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
     readonly collectionwasm_upgradeVectorIndex: (a: number, b: number, c: number) => [number, number];
     readonly taladbwasm_collection: (a: number, b: number, c: number) => [number, number, number];
+    readonly taladbwasm_exportChanges: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly taladbwasm_exportSnapshot: (a: number) => [number, number, number, number];
+    readonly taladbwasm_importChanges: (a: number, b: number, c: number) => [number, number, number];
+    readonly taladbwasm_listCollectionNames: (a: number) => [number, number, number, number];
     readonly taladbwasm_openInMemory: () => [number, number, number];
     readonly taladbwasm_openWithSnapshot: (a: number, b: number) => [number, number, number];
     readonly init: () => void;
@@ -413,15 +443,15 @@ export interface InitOutput {
     readonly opfs_delete_snapshot: (a: number, b: number) => any;
     readonly opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly opfs_load_snapshot: (a: number, b: number) => any;
+    readonly opfs_open_backend: (a: number, b: number) => any;
     readonly idb_load_snapshot: (a: number, b: number) => any;
     readonly idb_save_snapshot: (a: number, b: number, c: number, d: number) => any;
-    readonly opfs_open_backend: (a: number, b: number) => any;
     readonly wasm_bindgen__closure__destroy__ha638fe274d54c9e0: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__h5c2c10c592ffa4a1: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__h913d194479ae07d1: (a: number, b: number) => void;
+    readonly wasm_bindgen__closure__destroy__h74c1b24bde26b166: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h7066411a611e40e1: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hb52f4011b6a30878: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hc13af92ea7a85783: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h707ae5550c49813b: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h63d0de3d47dbdce7: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
@@ -430,6 +460,7 @@ export interface InitOutput {
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
+    readonly __externref_drop_slice: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

@@ -19,6 +19,19 @@ export class CollectionWasm {
         wasm.__wbg_collectionwasm_free(ptr, 0);
     }
     /**
+     * Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
+     * `$skip`, `$limit`, `$project`). Returns the resulting documents.
+     * @param {any} pipeline
+     * @returns {any}
+     */
+    aggregate(pipeline) {
+        const ret = wasm.collectionwasm_aggregate(this.__wbg_ptr, pipeline);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Count documents matching the filter.
      * @param {any} filter
      * @returns {number}
@@ -274,6 +287,34 @@ export class TalaDBWasm {
         return CollectionWasm.__wrap(ret[0]);
     }
     /**
+     * Export changes to `collections` after `sinceMs` (exclusive) as a JSON
+     * changeset string, for bidirectional sync. `sinceMs` is a millisecond
+     * epoch timestamp (the persisted sync cursor).
+     * @param {number} since_ms
+     * @param {string[]} collections
+     * @returns {string}
+     */
+    exportChanges(since_ms, collections) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArrayJsValueToWasm0(collections, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.taladbwasm_exportChanges(this.__wbg_ptr, since_ms, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Serialize the entire in-memory database to bytes.
      *
      * Pass the returned `Uint8Array` to `opfs_flush_snapshot` to persist, or
@@ -288,6 +329,35 @@ export class TalaDBWasm {
         }
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Merge a JSON changeset string (from a remote peer) into the local
+     * database via Last-Write-Wins. Returns the number of documents changed.
+     * @param {string} changeset_json
+     * @returns {number}
+     */
+    importChanges(changeset_json) {
+        const ptr0 = passStringToWasm0(changeset_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.taladbwasm_importChanges(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * User collection names (reserved `_`-prefixed collections excluded).
+     * Backs the sync orchestration's "sync all collections" default.
+     * @returns {string[]}
+     */
+    listCollectionNames() {
+        const ret = wasm.taladbwasm_listCollectionNames(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
     }
     /**
@@ -346,6 +416,34 @@ export class WorkerDB {
     free() {
         const ptr = this.__destroy_into_raw();
         wasm.__wbg_workerdb_free(ptr, 0);
+    }
+    /**
+     * Run an aggregation pipeline. Returns a JSON array of result documents.
+     * @param {string} collection
+     * @param {string} pipeline_json
+     * @returns {string}
+     */
+    aggregate(collection, pipeline_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(pipeline_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_aggregate(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
     }
     /**
      * Compact the underlying OPFS / redb storage file, reclaiming space freed
@@ -1636,18 +1734,18 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 197, function: Function { arguments: [], shim_idx: 198, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 201, function: Function { arguments: [], shim_idx: 202, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__ha638fe274d54c9e0, wasm_bindgen__convert__closures_____invoke__h63d0de3d47dbdce7);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 633, function: Function { arguments: [Externref], shim_idx: 634, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 646, function: Function { arguments: [Externref], shim_idx: 647, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h5c2c10c592ffa4a1, wasm_bindgen__convert__closures_____invoke__h7066411a611e40e1);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 88, function: Function { arguments: [Externref], shim_idx: 89, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h913d194479ae07d1, wasm_bindgen__convert__closures_____invoke__hc13af92ea7a85783);
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 93, function: Function { arguments: [Externref], shim_idx: 94, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h74c1b24bde26b166, wasm_bindgen__convert__closures_____invoke__h707ae5550c49813b);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0) {
@@ -1697,8 +1795,8 @@ function wasm_bindgen__convert__closures_____invoke__h63d0de3d47dbdce7(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h63d0de3d47dbdce7(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__hc13af92ea7a85783(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__hc13af92ea7a85783(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h707ae5550c49813b(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h707ae5550c49813b(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h7066411a611e40e1(arg0, arg1, arg2) {
@@ -1805,6 +1903,17 @@ function debugString(val) {
     return className;
 }
 
+function getArrayJsValueFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    const mem = getDataViewMemory0();
+    const result = [];
+    for (let i = ptr; i < ptr + 4 * len; i += 4) {
+        result.push(wasm.__wbindgen_externrefs.get(mem.getUint32(i, true)));
+    }
+    wasm.__externref_drop_slice(ptr, len);
+    return result;
+}
+
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
@@ -1891,6 +2000,16 @@ function passArrayF32ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 4, 4) >>> 0;
     getFloat32ArrayMemory0().set(arg, ptr / 4);
     WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 
