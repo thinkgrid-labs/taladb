@@ -71,5 +71,17 @@ const features = [
     title: 'Full-Text Search',
     desc: 'Built-in inverted token index for string fields. The $contains operator matches documents using normalized term matching — no external search engine required.',
   },
+  {
+    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>`,
+    iconBg: 'rgba(14,165,233,0.1)',
+    title: 'Bidirectional Sync',
+    desc: 'db.sync() pulls remote changes and pushes local ones with Last-Write-Wins merge and incremental cursors. Any backend becomes a peer via the SyncAdapter interface — HTTP ships in the box, MongoDB via @taladb/sync-mongodb.',
+  },
+  {
+    icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
+    iconBg: 'rgba(217,70,239,0.1)',
+    title: 'Aggregation Pipelines',
+    desc: 'MongoDB-style $match, $group, $sort, $skip, $limit, and $project stages with $sum, $avg, $min, $max accumulators — summaries computed inside the Rust engine, not by materialising every document in JavaScript.',
+  },
 ]
 </script>

@@ -66,6 +66,7 @@
 const rows = [
   { capability: 'Document (JSON) storage',         tala: '✓', indexed: '✓',  sqlite: '~', dexie: '✓',  cloud: '✓'  },
   { capability: 'MongoDB-style query DSL',          tala: '✓', indexed: '—',  sqlite: '—', dexie: '~',  cloud: '~'  },
+  { capability: 'Aggregation pipeline ($group)',    tala: '✓', indexed: '—',  sqlite: '✓', dexie: '—',  cloud: '—'  },
   { capability: 'On-device vector search',          tala: '✓', indexed: '—',  sqlite: '~', dexie: '—',  cloud: '✓'  },
   { capability: 'Hybrid filter + vector ranking',   tala: '✓', indexed: '—',  sqlite: '—', dexie: '—',  cloud: '✓'  },
   { capability: 'TypeScript generics on queries',   tala: '✓', indexed: '—',  sqlite: '—', dexie: '✓',  cloud: '—'  },
@@ -73,6 +74,7 @@ const rows = [
   { capability: 'Secondary B-tree indexes',         tala: '✓', indexed: '✓',  sqlite: '✓', dexie: '✓',  cloud: '~'  },
   { capability: 'Full-text search',                 tala: '✓', indexed: '—',  sqlite: '✓', dexie: '~',  cloud: '~'  },
   { capability: 'Live queries / subscriptions',     tala: '✓', indexed: '—',  sqlite: '—', dexie: '~',  cloud: '—'  },
+  { capability: 'Bidirectional sync (LWW / CRDT)',  tala: '✓', indexed: '—',  sqlite: '—', dexie: '~',  cloud: '—'  },
   { capability: 'Encryption at rest',               tala: '✓', indexed: '—',  sqlite: '~', dexie: '—',  cloud: '✓'  },
   { capability: 'Schema migrations',                tala: '✓', indexed: '—',  sqlite: '—', dexie: '✓',  cloud: '—'  },
   { capability: 'React Native (JSI)',               tala: '✓', indexed: '—',  sqlite: '✓', dexie: '—',  cloud: '—'  },

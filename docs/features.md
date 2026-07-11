@@ -1,6 +1,6 @@
 ---
 title: Features
-description: Vector similarity search, ULID document IDs, MongoDB-like queries, secondary B-tree indexes, ACID transactions, full-text search, live queries, AES-GCM-256 encryption, OPFS persistence, and more.
+description: Vector similarity search, ULID document IDs, MongoDB-like queries, aggregation pipelines, bidirectional sync, secondary B-tree indexes, ACID transactions, full-text search, live queries, AES-GCM-256 encryption, OPFS persistence, and more.
 ---
 
 # Features
@@ -53,6 +53,23 @@ const results = await articles.findNearest('embedding', queryVec, 5, {
 
 This is the pattern cloud vector databases (Qdrant, Weaviate, Pinecone) charge for — running entirely on device, with no network latency and no data leaving the user's device.
 
+### Optional HNSW index (Node.js)
+
+The default index is **flat** — an exact scan over every vector, with no approximation and no recall trade-off. On Node.js (since v0.8.3) you can opt into an approximate HNSW graph for larger corpora:
+
+```ts
+await articles.createVectorIndex('embedding', {
+  dimensions: 384,
+  indexType: 'hnsw', // default: 'flat'
+})
+
+// The graph is built at creation time and NOT updated by later writes —
+// rebuild it after bulk ingests (e.g. during an idle period):
+await articles.upgradeVectorIndex('embedding')
+```
+
+Measured on the [benchmarks page](/benchmarks): 14.6 ms vs 188 ms flat at 50k × 384-dim vectors, with 100% recall@10 on clustered (embedding-like) data. Two caveats before reaching for it: graph construction is CPU-intensive (a one-off cost that grows quickly with collection size), and recall depends on your data's structure — measure on your own embeddings. The flat index remains the right default for most on-device corpora, and is what ships on web and React Native.
+
 ### Dropping a vector index
 
 ```ts
@@ -99,6 +116,26 @@ TalaDB exposes a filter and update DSL that mirrors the MongoDB query language:
 
 The full API is fully typed — TypeScript narrows filter and update shapes to the document type passed to `db.collection<T>()`.
 
+## Aggregation pipelines
+
+Compute summaries inside the Rust engine instead of materialising every document in JavaScript. The pipeline mirrors MongoDB's aggregation framework and is available on every runtime:
+
+```ts
+const byStatus = await orders.aggregate([
+  { $match: { createdAt: { $gte: monthStart } } }, // leading $match uses an index
+  { $group: { _id: '$status', total: { $sum: '$amount' }, n: { $sum: 1 } } },
+  { $sort: { total: -1 } },
+  { $limit: 10 },
+])
+```
+
+- **Stages:** `$match`, `$group`, `$sort`, `$skip`, `$limit`, `$project`
+- **Accumulators:** `$sum`, `$count`, `$avg`, `$min`, `$max`, `$push`, `$addToSet`, `$first`, `$last`
+- Runs as a single pass over the collection; a leading `$match` goes through the query planner, so indexed filters skip the full scan
+- Fully typed via `AggregatePipeline<T>`
+
+See the [Aggregation reference](/api/aggregation) for the full API.
+
 ## Secondary indexes with automatic index selection
 
 Indexes are created per field with `createIndex('fieldName')`. The underlying storage is a redb B-tree keyed by `[type_prefix][encoded_value][ulid]`. This layout gives:
@@ -124,7 +161,16 @@ const results = await posts.find({ body: { $contains: 'rust embedded database' }
 
 ## Live queries
 
-`collection.watch(filter)` returns a `WatchHandle`. Calling `next()` blocks until the next write to the collection, then re-runs the filter and returns the current matching documents. Multiple handles can watch the same collection with different filters simultaneously, with no per-watch overhead beyond an MPSC channel.
+Subscribe to a filter and receive a fresh snapshot after every matching write — no polling, no websockets:
+
+```ts
+const unsub = articles.subscribe({ category: 'support' }, (docs) => {
+  render(docs) // fires immediately with the current results, then on every write
+})
+unsub()
+```
+
+In the browser, writes from *other tabs* trigger subscriptions too (via `BroadcastChannel`). At the Rust level the same mechanism is exposed as `collection.watch(filter)` → `WatchHandle`; multiple handles can watch the same collection with different filters, with no per-watch overhead beyond an MPSC channel. See [Live Queries](/api/live-queries).
 
 ## Schema migrations
 
@@ -142,9 +188,9 @@ Nonces are generated per write using the OS random number generator. The 16-byte
 
 ## OPFS-backed browser persistence
 
-In the browser, TalaDB runs inside a SharedWorker and uses `FileSystemSyncAccessHandle` from the Origin Private File System (OPFS) API for durable, origin-isolated storage. Multiple tabs share the same SharedWorker instance, which serialises all writes and prevents corruption.
+In the browser, TalaDB runs inside a Dedicated Worker per tab and persists to the Origin Private File System (OPFS) via `FileSystemSyncAccessHandle` — durable, origin-isolated storage without IndexedDB's overhead. Multi-tab safety comes from the Web Locks API: the first tab's worker holds an exclusive lock on the OPFS file; other tabs coordinate through a `BroadcastChannel`, which also powers instant cross-tab live-query updates and merges secondary-tab writes back into the primary.
 
-On browsers without SharedWorker support (primarily iOS Safari before 16.4), TalaDB falls back to an in-memory WASM instance so the application continues to work, with data lost on reload.
+The engine is memory-resident and snapshots to OPFS on a short debounce (see [benchmarks](/benchmarks) for the durability trade-off this buys). When OPFS is unavailable (cross-origin iframes, older browsers), TalaDB falls back to an in-memory database seeded from an IndexedDB snapshot, so data still survives page reloads.
 
 ## Platform-detecting unified package
 
@@ -197,6 +243,28 @@ await products.find({ price: { $lte: 99.99 }, inStock: true })
 // Update<Product> — $set only accepts fields that exist on Product
 await products.updateOne({ name: 'Widget' }, { $set: { price: 49.99 } })
 ```
+
+## Bidirectional sync
+
+Since v0.8.4, a local TalaDB can pull remote changes and push local ones in one call — with automatic Last-Write-Wins conflict resolution and a persisted incremental cursor, so each sync only transfers what changed:
+
+```ts
+import { HttpSyncAdapter } from 'taladb'
+
+const adapter = new HttpSyncAdapter({
+  endpoint: 'https://api.example.com/sync', // POST {endpoint}/push · GET {endpoint}/pull?since=
+  headers: { Authorization: 'Bearer my-token' },
+})
+
+await db.sync(adapter, {})                              // push + pull, all collections
+await db.sync(adapter, { direction: 'pull' })           // one direction only
+await db.sync(adapter, { collections: ['notes'] })      // allow-list
+await db.sync(adapter, { exclude: ['logs'] })           // deny-list
+```
+
+Any backend becomes a sync peer by implementing the two-method `SyncAdapter` interface — `push(changeset)` and `pull(sinceMs)`. The reference `HttpSyncAdapter` ships inside the `taladb` package; **[`@taladb/sync-mongodb`](/guide/bidirectional-sync#mongodb-adapter)** syncs straight into a MongoDB collection with no intermediate API (server-side only — it holds a database credential). Under the hood everything is built on `db.exportChanges()` / `db.importChanges()`, which are idempotent under LWW, so replays and at-least-once transports are safe.
+
+`db.sync()` is currently wired on Node.js; the browser and React Native bindings share the same engine primitives and are next. See the [Bidirectional Sync guide](/guide/bidirectional-sync).
 
 ## HTTP push sync
 
