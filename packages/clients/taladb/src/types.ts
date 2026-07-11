@@ -300,8 +300,9 @@ export interface SyncOptions {
   /** Direction of the pass. Default `'both'` (bidirectional). */
   direction?: SyncDirection;
   /**
-   * Names this sync target for cursor persistence, so multiple remotes each
-   * keep their own watermark. Default `'default'`.
+   * Names this sync target. Reserved cursor state remains isolated per target
+   * for forward compatibility with monotonic server cursors. Default
+   * `'default'`.
    */
   target?: string;
 }
@@ -311,7 +312,7 @@ export interface SyncResult {
   pushed: number;
   /** Number of documents changed locally by the pulled remote changeset. */
   pulled: number;
-  /** New sync cursor (ms epoch) persisted for the next pass. */
+  /** Active sync cursor. Currently `0` because timestamp adapters replay safely. */
   cursor: number;
 }
 

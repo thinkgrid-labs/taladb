@@ -300,6 +300,45 @@ fn import_delete_removes_existing_doc() {
 }
 
 #[test]
+fn imported_delete_preserves_original_timestamp_when_reexported() {
+    let db = Database::open_in_memory().unwrap();
+    let adapter = LastWriteWins::new();
+    let doc_id = Ulid::new();
+    let doc = Document::with_id(
+        doc_id,
+        vec![("_changed_at".into(), i(1000)), ("name".into(), s("old"))],
+    );
+
+    adapter
+        .import_changes(
+            &db,
+            vec![Change {
+                collection: "items".into(),
+                id: doc_id,
+                op: ChangeOp::Upsert(doc),
+                changed_at: 1000,
+            }],
+        )
+        .unwrap();
+    adapter
+        .import_changes(
+            &db,
+            vec![Change {
+                collection: "items".into(),
+                id: doc_id,
+                op: ChangeOp::Delete,
+                changed_at: 2000,
+            }],
+        )
+        .unwrap();
+
+    let exported = adapter.export_changes(&db, &["items"], 0).unwrap();
+    assert_eq!(exported.len(), 1);
+    assert!(matches!(exported[0].op, ChangeOp::Delete));
+    assert_eq!(exported[0].changed_at, 2000);
+}
+
+#[test]
 fn import_delete_nonexistent_returns_zero() {
     let db = Database::open_in_memory().unwrap();
     let adapter = LastWriteWins::new();

@@ -99,7 +99,7 @@ The brute-force `findNearest` scoring loop was rewritten and is now **~2× faste
 
 The flat path still `scan_all`s the entire vector table from redb on **every** query (150 MB of reads for 100k × 384-dim). A persistent in-memory decoded-vector cache — invalidated on writes, mirroring the existing HNSW-graph cache — would make repeated queries memory-bound instead of storage-bound. Likely the single largest remaining flat-search win.
 
-### SIMD dot products — WASM (validated) + native
+### SIMD dot products (WASM validated, native next)
 
 The scoring reductions are scalar today. The WASM lever is **measured and confirmed**, and productizing it is the top browser-perf task:
 

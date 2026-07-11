@@ -370,7 +370,7 @@ impl SyncAdapter for LastWriteWins {
                         }
                     };
                     let existed = if should_delete {
-                        col.delete_by_id(change.id)?
+                        col.delete_by_id_at(change.id, change.changed_at)?
                     } else {
                         false
                     };

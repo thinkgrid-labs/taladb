@@ -67,6 +67,7 @@ pub extern "C" fn taladb_last_error() -> *const c_char {
 // Opaque database handle
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct TalaDbHandle {
     db: Database,
     sync_hook: Option<Arc<dyn SyncHook>>,
@@ -1083,9 +1084,8 @@ pub unsafe extern "C" fn taladb_find_nearest(
 // (non-blocking) via `setImmediate` until the job reports done. It then
 // takes the result with `taladb_job_take_result`, which also frees the job.
 //
-// Lifetime contract: the `TalaDbHandle` passed to `*_start` **must outlive**
-// any in-flight job that references it. The C++ HostObject enforces this by
-// not calling `taladb_close` while any job is pending.
+// Each worker clones the Arc-backed database state before returning, so the
+// caller may close the original `TalaDbHandle` while a job is in flight.
 // ---------------------------------------------------------------------------
 
 /// A background job handle. Opaque to the caller.
@@ -1100,19 +1100,20 @@ fn spawn_job<F>(handle: *mut TalaDbHandle, work: F) -> *mut TalaDbJob
 where
     F: FnOnce(&TalaDbHandle) -> Result<String, String> + Send + 'static,
 {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Give the worker owned, Arc-backed database state. The opaque FFI handle
+    // may then be closed as soon as the job starts without invalidating the
+    // worker's database or sync hook.
+    let owned_handle = unsafe { &*handle }.clone();
     let done = Arc::new(AtomicBool::new(false));
     let result = Arc::new(Mutex::new(None));
 
     let done_thread = Arc::clone(&done);
     let result_thread = Arc::clone(&result);
-    // Pass the pointer as an integer — `usize` is Send, raw pointers are not.
-    // The C++ HostObject guarantees the handle outlives the worker thread.
-    let handle_addr = handle as usize;
-
     let t = thread::spawn(move || {
-        // Safety: the C++ caller guarantees the handle outlives the job.
-        let h = unsafe { &*(handle_addr as *mut TalaDbHandle) };
-        let r = work(h);
+        let r = work(&owned_handle);
         if let Ok(mut slot) = result_thread.lock() {
             *slot = Some(r);
         }
@@ -1185,17 +1186,15 @@ pub unsafe extern "C" fn taladb_job_take_result(job: *mut TalaDbJob) -> *mut c_c
     }
 }
 
-/// Cancel (detach) the job and free the handle without waiting for the result.
-/// The worker thread continues to completion in the background; its result is
-/// dropped. Safe to call at any time.
+/// Cancel (detach) the job and free its handle. The worker owns a clone of all
+/// database state it needs, so it can safely finish after the caller closes the
+/// original database handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_job_cancel(job: *mut TalaDbJob) {
     if job.is_null() {
         return;
     }
     let job = unsafe { Box::from_raw(job) };
-    // Detach — don't join. The thread will exit on its own; AtomicBool + Arc
-    // keep its writes safe even after the job struct drops.
     let detached = {
         let mut g = match job.thread.lock() {
             Ok(g) => g,

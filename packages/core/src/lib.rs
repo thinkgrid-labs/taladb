@@ -53,6 +53,7 @@ const SNAPSHOT_VERSION: u32 = 1;
 const MAX_SNAPSHOT_ENTRY_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// The main TalaDB database handle.
+#[derive(Clone)]
 pub struct Database {
     backend: Arc<dyn StorageBackend>,
     /// Index-definition cache shared by every Collection handle from this

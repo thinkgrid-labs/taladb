@@ -1355,6 +1355,13 @@ impl Collection {
     }
 
     pub fn delete_by_id(&self, id: Ulid) -> Result<bool, TalaDbError> {
+        self.delete_by_id_at(id, now_ms())
+    }
+
+    /// Delete a document while preserving the timestamp of the deletion.
+    /// Used by sync import so forwarding a remote tombstone does not make an
+    /// old deletion appear to have happened at local receipt time.
+    pub(crate) fn delete_by_id_at(&self, id: Ulid, deleted_at: u64) -> Result<bool, TalaDbError> {
         let cache = self.load_indexes_cached()?;
         let docs_table = docs_table_name(&self.name);
         let rtxn = self.backend.begin_read()?;
@@ -1367,7 +1374,12 @@ impl Collection {
             None => Ok(false),
             Some(doc) => {
                 let mut wtxn = self.backend.begin_write()?;
-                self.delete_doc_and_indexes_with_compound(&doc, &cache, wtxn.as_mut())?;
+                self.delete_doc_and_indexes_with_compound_at(
+                    &doc,
+                    &cache,
+                    wtxn.as_mut(),
+                    deleted_at,
+                )?;
                 wtxn.commit()?;
                 crate::watch::notify(&self.watch_registry);
                 if let Some(hook) = &self.sync_hook {
@@ -1717,6 +1729,16 @@ impl Collection {
         cache: &CachedIndexes,
         wtxn: &mut dyn crate::engine::WriteTxn,
     ) -> Result<(), TalaDbError> {
+        self.delete_doc_and_indexes_with_compound_at(doc, cache, wtxn, now_ms())
+    }
+
+    fn delete_doc_and_indexes_with_compound_at(
+        &self,
+        doc: &Document,
+        cache: &CachedIndexes,
+        wtxn: &mut dyn crate::engine::WriteTxn,
+        deleted_at: u64,
+    ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
         wtxn.delete(&docs_table, &doc.id.to_bytes())?;
 
@@ -1724,7 +1746,10 @@ impl Collection {
         // and propagated to remote replicas that may not have received the
         // HTTP push event.
         let tomb_table = tomb_table_name(&self.name);
-        let ts_bytes = postcard::to_allocvec(&(now_ms() as i64))?;
+        let deleted_at = i64::try_from(deleted_at).map_err(|_| {
+            TalaDbError::InvalidOperation("deletion timestamp exceeds i64::MAX".into())
+        })?;
+        let ts_bytes = postcard::to_allocvec(&deleted_at)?;
         wtxn.put(&tomb_table, &doc.id.to_bytes(), &ts_bytes)?;
 
         for idx in cache.indexes.iter() {

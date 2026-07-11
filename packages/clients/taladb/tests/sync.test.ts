@@ -138,7 +138,7 @@ describe('runSync orchestration', () => {
     expect(local.get('b')).toBe('y'); // now pulled
   });
 
-  it('advances the cursor so the next pass is incremental', async () => {
+  it('replays changes because wall-clock timestamps are not safe cursors', async () => {
     const local = new MemHandle();
     const server = new MemHandle();
     const spy = vi.spyOn(server, 'importChanges');
@@ -149,9 +149,24 @@ describe('runSync orchestration', () => {
     const firstCallCount = (JSON.parse(spy.mock.calls[0][0]) as unknown[]).length;
     expect(firstCallCount).toBe(1);
 
-    // Second pass with no new local writes must push an empty changeset.
+    // LWW import is idempotent, so replay is safe and prevents a racing write
+    // with an older timestamp from being skipped forever.
     const res2 = await runSync(local, adapter, { collections: ['notes'] });
-    expect(res2.pushed).toBe(0);
+    expect(res2.pushed).toBe(1);
+  });
+
+  it('pulls late-arriving remote changes with timestamps older than prior changes', async () => {
+    const local = new MemHandle();
+    const server = new MemHandle();
+    const adapter = memAdapter(server);
+
+    server.put('newer', 'arrived-first', 2000);
+    await runSync(local, adapter, { collections: ['notes'], direction: 'pull' });
+
+    server.put('late', 'arrived-late', 1000);
+    await runSync(local, adapter, { collections: ['notes'], direction: 'pull' });
+
+    expect(local.get('late')).toBe('arrived-late');
   });
 
   it('rejects a direction whose required adapter method is missing', async () => {
