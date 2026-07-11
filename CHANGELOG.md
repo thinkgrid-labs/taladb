@@ -5,6 +5,13 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-07-12
+
+### Added
+
+- **`@taladb/react` — scoped replication hooks (`useQuery`, `useQueries`, `useMutation`)** — a react-query-shaped surface that binds a component to a *slice* of a remote origin, on demand, instead of the global-and-imperative `db.sync()`. The local store is a durable **replica, not a cache**: a pull writes into the real local collection and the existing live query re-renders off it (one-way data flow — no `queryKey`, no `invalidateQueries`, because writing to the collection *is* the invalidation). Built on the existing sync-contract transport (`db.sync()` / `HttpSyncAdapter`), so it inherits tombstones, cursors, and Last-Write-Wins. `useQuery` supports `source` modes (`local-first` / `remote-first` / `local-only`) and a `pollMs` refresh interval; `useQueries` runs several slices in parallel; `useMutation` writes local-first then replicates out through a bounded-retry drain (write-behind — the local write is never rolled back). Writes are origin-authoritative by default. Authorization is a provider-level async resolver (`getAuth`) resolved at **send time**, so an offline write flushed later carries a current token. Strictly typed end to end — remote data is validated against the collection schema, never cast. Configured via a new `<ReplicationProvider>` composed inside `<TalaDBProvider>`. Verified by 28 unit tests plus a real end-to-end run (two Node databases + a live sync server proving the pull → local → live-query loop). Sync is Node-wired today; the browser and React Native bindings ride the same code as they land. See [Scoped Replication](https://taladb.dev/guide/scoped-replication).
+- **`@taladb/react` — `prefetch` (background first-run warming)** — a `<ReplicationProvider prefetch={['products', …]}>` option that warms slices into the local replica in the background, so a later `useQuery` reads local instead of waiting on the network. Off the critical path: deferred to browser idle (`requestIdleCallback`), run in the sync Worker on web, bounded by `prefetchConcurrency` (default 2), and coalesced with any concurrent `useQuery` for the same collection via in-flight dedup. First-run only by default (`prefetchMode: 'once'`, gated on the sync cursor so returning users don't re-warm); best-effort and silent on failure. See [Scoped Replication → Warming the replica on first run](https://taladb.dev/guide/scoped-replication).
+
 ## [0.9.0] - 2026-07-11
 
 Bidirectional sync lands in the browser — a local-first web app can now
