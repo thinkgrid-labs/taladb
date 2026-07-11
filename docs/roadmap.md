@@ -45,6 +45,24 @@ Multi-field B-tree indexes so queries filtered or sorted on two or more fields u
 
 Inspect a live database and emit TypeScript interfaces for each collection, inferred from the stored documents. Useful for projects that don't start with a schema.
 
+### `@taladb/react` — drop-in Next.js client support
+
+The hooks already work in Next.js client components (SSR renders `loading: true` via `getServerSnapshot`, then hydrates live). Two small additions remove the remaining ceremony:
+
+- Ship the `'use client'` directive in the build output (the SWR / react-query convention), so importing the hooks never trips the RSC boundary
+- `<TalaDBProvider name="myapp.db">` — a name-based provider that owns the lazy, client-only `openDB()`, replacing today's hand-rolled async-open-then-provide dance. The existing `db`-prop form stays for React Native and plain React
+
+One package, zero forks: the same `@taladb/react` serves React, React Native, and Next.js client components.
+
+### `@taladb/next` — first-party Next.js integration
+
+Next.js can never render a user's on-device data in server components — the honest server story is that **your Next API routes are the sync backend**. This package makes that one line on each side:
+
+- **`@taladb/next/server`** — `createSyncHandlers({ store, authorize })` returns `{ POST, GET }` route handlers implementing the [two-endpoint sync contract](/guide/bidirectional-sync#your-server-two-endpoints). `store` is pluggable: in-memory (dev), a server-side TalaDB via `@taladb/node` (the batteries-included default — TalaDB syncing to TalaDB), or MongoDB via `@taladb/sync-mongodb`. `authorize(req)` returns a scope key, giving per-user change partitioning — the security boundary — for free.
+- **`@taladb/next/client`** — `<SyncProvider endpoint="/api/sync" interval={30_000}>`, packaging the guide's start/interval/online/visibility cadence.
+
+Subpath exports (`/server`, `/client`) follow the next-auth convention and keep the RSC boundary explicit in the import path. Ships with an example app and e2e tests against a real Next.js build.
+
 ### Framework adapters — Svelte and Vue
 
 - **`@taladb/svelte`** — `readable` stores backed by `Collection.subscribe`, plus a `TalaDBContext` Svelte context helper. `$findResult` is a readable store that re-derives on every write matching the filter.
