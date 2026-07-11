@@ -11,6 +11,8 @@ core used on every other platform. Data is persisted to the
 (OPFS) — a fast, private storage area built into modern browsers. No server, no
 cloud, no extra infrastructure.
 
+> Building with **Next.js**? There's a dedicated [Next.js guide](/guide/nextjs) covering providers, the RSC boundary, and using your API routes as the sync backend.
+
 ## Browser support
 
 | Feature | Chrome | Firefox | Safari |
