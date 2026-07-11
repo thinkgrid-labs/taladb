@@ -24,7 +24,7 @@ use crate::doc_to_json;
 use crate::storage::opfs_backend::OpfsBackend;
 
 #[cfg(target_arch = "wasm32")]
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{Map, Value as JsonValue, json};
 #[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
 #[cfg(target_arch = "wasm32")]

@@ -3,7 +3,7 @@ use std::ops::Bound;
 use crate::document::Value;
 use crate::fts::FtsDef;
 use crate::index::{
-    compound_range_eq, index_range_cmp, index_range_eq, CompoundIndexDef, IndexDef,
+    CompoundIndexDef, IndexDef, compound_range_eq, index_range_cmp, index_range_eq,
 };
 use crate::query::filter::Filter;
 
@@ -146,12 +146,11 @@ fn plan_inner(
                     ranges.push(range);
                 }
                 // 0.0 and -0.0 compare equal but encode to different keys.
-                if let Value::Float(f) = v {
-                    if *f == 0.0 {
-                        if let Some(range) = index_range_eq(&Value::Float(-*f)) {
-                            ranges.push(range);
-                        }
-                    }
+                if let Value::Float(f) = v
+                    && *f == 0.0
+                    && let Some(range) = index_range_eq(&Value::Float(-*f))
+                {
+                    ranges.push(range);
                 }
             }
             if !ranges.is_empty() {
@@ -269,25 +268,25 @@ fn lower_bound_plan(field: &str, value: &Value, inclusive: bool) -> Option<Query
         start,
         end,
     };
-    if let Value::Float(f) = value {
-        if !f.is_nan() {
-            // Every Int ≥ floor(f) may satisfy the filter. `as` saturates at
-            // the i64 limits, which stays conservative; the post-filter trims
-            // the at-most-one extra integer below the bound.
-            let twin_lo = Value::Int(f.floor() as i64);
-            let twin_hi = Value::Int(i64::MAX);
-            if let Some((s, e)) = index_range_cmp(Some((&twin_lo, true)), Some((&twin_hi, true))) {
-                return Some(QueryPlan::IndexOr {
-                    plans: vec![
-                        primary,
-                        QueryPlan::IndexRange {
-                            field: field.to_string(),
-                            start: s,
-                            end: e,
-                        },
-                    ],
-                });
-            }
+    if let Value::Float(f) = value
+        && !f.is_nan()
+    {
+        // Every Int ≥ floor(f) may satisfy the filter. `as` saturates at
+        // the i64 limits, which stays conservative; the post-filter trims
+        // the at-most-one extra integer below the bound.
+        let twin_lo = Value::Int(f.floor() as i64);
+        let twin_hi = Value::Int(i64::MAX);
+        if let Some((s, e)) = index_range_cmp(Some((&twin_lo, true)), Some((&twin_hi, true))) {
+            return Some(QueryPlan::IndexOr {
+                plans: vec![
+                    primary,
+                    QueryPlan::IndexRange {
+                        field: field.to_string(),
+                        start: s,
+                        end: e,
+                    },
+                ],
+            });
         }
     }
     Some(primary)
@@ -327,14 +326,14 @@ fn upper_bound_plan(field: &str, value: &Value, inclusive: bool) -> Option<Query
 /// encode to different index keys, so both ranges are scanned.
 fn eq_plan(field: &str, value: &Value) -> Option<QueryPlan> {
     let (start, end) = index_range_eq(value)?;
-    if let Value::Float(f) = value {
-        if *f == 0.0 {
-            let (s2, e2) = index_range_eq(&Value::Float(-*f))?;
-            return Some(QueryPlan::IndexIn {
-                field: field.to_string(),
-                ranges: vec![(start, end), (s2, e2)],
-            });
-        }
+    if let Value::Float(f) = value
+        && *f == 0.0
+    {
+        let (s2, e2) = index_range_eq(&Value::Float(-*f))?;
+        return Some(QueryPlan::IndexIn {
+            field: field.to_string(),
+            ranges: vec![(start, end), (s2, e2)],
+        });
     }
     Some(QueryPlan::IndexEq {
         field: field.to_string(),
@@ -397,9 +396,11 @@ mod tests {
         match plan {
             QueryPlan::IndexOr { plans } => {
                 assert_eq!(plans.len(), 2);
-                assert!(plans
-                    .iter()
-                    .all(|p| matches!(p, QueryPlan::IndexRange { .. })));
+                assert!(
+                    plans
+                        .iter()
+                        .all(|p| matches!(p, QueryPlan::IndexRange { .. }))
+                );
             }
             other => panic!("expected IndexOr of two ranges, got {other:?}"),
         }

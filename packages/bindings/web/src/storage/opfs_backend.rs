@@ -14,8 +14,8 @@
 use std::io;
 
 use js_sys::Uint8Array;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
 // ---------------------------------------------------------------------------

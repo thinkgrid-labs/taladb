@@ -3,7 +3,7 @@
 //! Covers: with_audit_log(), read_audit_log(), collection/op filters,
 //! caller identity, no-op mutations, and snapshot round-trip.
 
-use taladb_core::{read_audit_log, AuditOp, Database, Filter, Update, Value};
+use taladb_core::{AuditOp, Database, Filter, Update, Value, read_audit_log};
 
 fn s(v: &str) -> Value {
     Value::Str(v.to_string())

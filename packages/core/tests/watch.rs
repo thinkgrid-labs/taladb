@@ -2,10 +2,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use taladb_core::Database;
 use taladb_core::document::Value;
 use taladb_core::query::filter::Filter;
 use taladb_core::watch::{create_watch, new_registry, notify};
-use taladb_core::Database;
 
 fn s(v: &str) -> Value {
     Value::Str(v.to_string())
@@ -261,8 +261,8 @@ fn watch_closed_after_registry_dropped() {
 
 #[test]
 fn collection_watch_receives_snapshots_after_writes() {
-    use taladb_core::collection::Update;
     use taladb_core::Value;
+    use taladb_core::collection::Update;
 
     let db = taladb_core::Database::open_in_memory().unwrap();
     let col = db.collection("tasks").unwrap();

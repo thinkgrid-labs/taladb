@@ -53,7 +53,7 @@ fn set_last_error(msg: String) {
 /// Return the last error message as a null-terminated C string, or NULL if no error.
 /// The returned pointer is valid until the next taladb_* call on this thread.
 /// Do NOT free the returned string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn taladb_last_error() -> *const c_char {
     LAST_ERROR.with(|e| {
         e.borrow()
@@ -92,7 +92,7 @@ impl TalaDbHandle {
 ///
 /// Returns an opaque handle, or NULL on failure.
 /// The handle must be freed with `taladb_close`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(s) => s,
@@ -113,7 +113,7 @@ pub unsafe extern "C" fn taladb_open(path: *const c_char) -> *mut TalaDbHandle {
 ///
 /// Returns an opaque handle, or NULL on failure.
 /// The handle must be freed with `taladb_close`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_open_with_config(
     path: *const c_char,
     config_json: *const c_char,
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn taladb_open_with_config(
 
 /// Compact the underlying storage file for this database handle.
 /// No-op on in-memory databases. Returns 1 on success, -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_compact(handle: *mut TalaDbHandle) -> i32 {
     match ptr_to_ref(handle) {
         Some(h) => match h.db.compact() {
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn taladb_compact(handle: *mut TalaDbHandle) -> i32 {
 }
 
 /// Close the database and free the handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_close(handle: *mut TalaDbHandle) {
     if !handle.is_null() {
         drop(unsafe { Box::from_raw(handle) });
@@ -175,7 +175,7 @@ pub unsafe extern "C" fn taladb_close(handle: *mut TalaDbHandle) {
 }
 
 /// Free a string returned by any taladb_* function.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_free_string(s: *mut c_char) {
     if !s.is_null() {
         drop(unsafe { CString::from_raw(s) });
@@ -189,7 +189,7 @@ pub unsafe extern "C" fn taladb_free_string(s: *mut c_char) {
 /// Insert a document (JSON object string).
 /// Returns the new document's ULID as a C string, or NULL on error.
 /// Caller must free the returned string with `taladb_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_insert(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn taladb_insert(
 /// Insert multiple documents (JSON array of objects).
 /// Returns a JSON array of ULID strings, or NULL on error.
 /// Caller must free with `taladb_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_insert_many(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -267,7 +267,7 @@ pub unsafe extern "C" fn taladb_insert_many(
 /// Pass `"{}"` or `"null"` to match all.
 /// Returns a JSON array string, or NULL on error.
 /// Caller must free with `taladb_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_find(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -305,7 +305,7 @@ pub unsafe extern "C" fn taladb_find(
 
 /// Find one document matching `filter_json`, or JSON `null` if none.
 /// Caller must free with `taladb_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_find_one(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -345,7 +345,7 @@ pub unsafe extern "C" fn taladb_find_one(
 
 /// Update the first matching document.
 /// Returns 1 if updated, 0 if not found, -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_update_one(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -390,7 +390,7 @@ pub unsafe extern "C" fn taladb_update_one(
 
 /// Update all matching documents.
 /// Returns count updated, or -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_update_many(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -438,7 +438,7 @@ pub unsafe extern "C" fn taladb_update_many(
 
 /// Delete the first matching document.
 /// Returns 1 if deleted, 0 if not found, -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_delete_one(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -474,7 +474,7 @@ pub unsafe extern "C" fn taladb_delete_one(
 
 /// Delete all matching documents.
 /// Returns count deleted, or -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_delete_many(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -513,7 +513,7 @@ pub unsafe extern "C" fn taladb_delete_many(
 
 /// Count documents matching `filter_json`.
 /// Returns count, or -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_count(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -549,7 +549,7 @@ pub unsafe extern "C" fn taladb_count(
 /// Run an aggregation pipeline (`pipeline_json` is a JSON array of stages).
 /// Returns a JSON array of result documents, or NULL on error.
 /// Caller must free with `taladb_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_aggregate(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -599,7 +599,7 @@ pub unsafe extern "C" fn taladb_aggregate(
 // ---------------------------------------------------------------------------
 
 /// Create a secondary index on `field`. No-op if already exists.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_create_index(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -609,15 +609,14 @@ pub unsafe extern "C" fn taladb_create_index(
         ptr_to_ref(handle),
         cstr_to_string(collection),
         cstr_to_string(field),
-    ) {
-        if let Ok(c) = h.db.collection(&col) {
-            let _ = c.create_index(&f);
-        }
+    ) && let Ok(c) = h.db.collection(&col)
+    {
+        let _ = c.create_index(&f);
     }
 }
 
 /// Drop a secondary index on `field`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_drop_index(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -627,15 +626,14 @@ pub unsafe extern "C" fn taladb_drop_index(
         ptr_to_ref(handle),
         cstr_to_string(collection),
         cstr_to_string(field),
-    ) {
-        if let Ok(c) = h.db.collection(&col) {
-            let _ = c.drop_index(&f);
-        }
+    ) && let Ok(c) = h.db.collection(&col)
+    {
+        let _ = c.drop_index(&f);
     }
 }
 
 /// Create a full-text search index on `field`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_create_fts_index(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -645,15 +643,14 @@ pub unsafe extern "C" fn taladb_create_fts_index(
         ptr_to_ref(handle),
         cstr_to_string(collection),
         cstr_to_string(field),
-    ) {
-        if let Ok(c) = h.db.collection(&col) {
-            let _ = c.create_fts_index(&f);
-        }
+    ) && let Ok(c) = h.db.collection(&col)
+    {
+        let _ = c.create_fts_index(&f);
     }
 }
 
 /// Drop a full-text search index on `field`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_drop_fts_index(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -663,10 +660,9 @@ pub unsafe extern "C" fn taladb_drop_fts_index(
         ptr_to_ref(handle),
         cstr_to_string(collection),
         cstr_to_string(field),
-    ) {
-        if let Ok(c) = h.db.collection(&col) {
-            let _ = c.drop_fts_index(&f);
-        }
+    ) && let Ok(c) = h.db.collection(&col)
+    {
+        let _ = c.drop_fts_index(&f);
     }
 }
 
@@ -893,7 +889,7 @@ fn parse_hnsw_opts(json: *const c_char) -> Option<HnswOptions> {
 
 /// Create a vector index. `metric` and `hnsw_json` may be NULL.
 /// Returns 1 on success, -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_create_vector_index(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -929,7 +925,7 @@ pub unsafe extern "C" fn taladb_create_vector_index(
 }
 
 /// Drop a vector index. Returns 1 on success, -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_drop_vector_index(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -958,7 +954,7 @@ pub unsafe extern "C" fn taladb_drop_vector_index(
 
 /// Rebuild the HNSW graph for a vector index. No-op when HNSW is disabled or
 /// the index is flat-only. Returns 1 on success, -1 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_upgrade_vector_index(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -1032,7 +1028,7 @@ fn run_find_nearest(
 ///
 /// Returns a JSON array string `[{document, score}, ...]`, or NULL on error.
 /// Caller must free with `taladb_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_find_nearest(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -1131,7 +1127,7 @@ where
 }
 
 /// Non-blocking poll. Returns 1 if the job has finished, 0 if still running.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_job_poll(job: *mut TalaDbJob) -> i32 {
     if job.is_null() {
         return -1;
@@ -1148,7 +1144,7 @@ pub unsafe extern "C" fn taladb_job_poll(job: *mut TalaDbJob) -> i32 {
 /// Returns the result JSON string on success, or NULL on error (see
 /// `taladb_last_error`). Always consumes and frees the job.
 /// Caller must free the returned string with `taladb_free_string`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_job_take_result(job: *mut TalaDbJob) -> *mut c_char {
     if job.is_null() {
         return std::ptr::null_mut();
@@ -1192,7 +1188,7 @@ pub unsafe extern "C" fn taladb_job_take_result(job: *mut TalaDbJob) -> *mut c_c
 /// Cancel (detach) the job and free the handle without waiting for the result.
 /// The worker thread continues to completion in the background; its result is
 /// dropped. Safe to call at any time.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_job_cancel(job: *mut TalaDbJob) {
     if job.is_null() {
         return;
@@ -1214,7 +1210,7 @@ pub unsafe extern "C" fn taladb_job_cancel(job: *mut TalaDbJob) {
 /// NULL on immediate error (bad args). The Float32 query vector is copied
 /// into the thread before the call returns, so `query_ptr` may be freed
 /// immediately after this function returns.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_find_nearest_start(
     handle: *mut TalaDbHandle,
     collection: *const c_char,
@@ -1265,7 +1261,7 @@ pub unsafe extern "C" fn taladb_find_nearest_start(
 
 /// Start a `find` in a background thread. Returns a job handle, or NULL on
 /// immediate error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn taladb_find_start(
     handle: *mut TalaDbHandle,
     collection: *const c_char,

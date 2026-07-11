@@ -1,7 +1,7 @@
+use taladb_core::Database;
 use taladb_core::document::{Document, Value};
 use taladb_core::query::filter::Filter;
-use taladb_core::sync::{stamp, Change, ChangeOp, Changeset, LastWriteWins, SyncAdapter};
-use taladb_core::Database;
+use taladb_core::sync::{Change, ChangeOp, Changeset, LastWriteWins, SyncAdapter, stamp};
 use ulid::Ulid;
 
 fn s(v: &str) -> Value {
@@ -608,7 +608,13 @@ fn database_export_import_round_trip_between_two_dbs() {
     assert_eq!(cs.len(), 2);
     let applied = db_b.import_changes(cs).unwrap();
     assert_eq!(applied, 2);
-    assert_eq!(db_b.collection("notes").unwrap().count(Filter::All).unwrap(), 2);
+    assert_eq!(
+        db_b.collection("notes")
+            .unwrap()
+            .count(Filter::All)
+            .unwrap(),
+        2
+    );
 
     // Incremental: only a change after the advanced cursor is exported.
     a.insert_with_id(Document::new(vec![
@@ -619,7 +625,13 @@ fn database_export_import_round_trip_between_two_dbs() {
     let delta = db_a.export_changes(&["notes"], 2000).unwrap();
     assert_eq!(delta.len(), 1, "only the post-cursor change is exported");
     assert_eq!(db_b.import_changes(delta).unwrap(), 1);
-    assert_eq!(db_b.collection("notes").unwrap().count(Filter::All).unwrap(), 3);
+    assert_eq!(
+        db_b.collection("notes")
+            .unwrap()
+            .count(Filter::All)
+            .unwrap(),
+        3
+    );
 }
 
 #[test]
@@ -667,8 +679,9 @@ fn sync_cursor_collection_is_addressable() {
     assert!(db.collection("_audit").is_err());
     assert!(db.collection("__other").is_err());
     // …and still hidden from the public listing.
-    assert!(!db
-        .list_collection_names()
-        .unwrap()
-        .contains(&"__taladb_sync".to_string()));
+    assert!(
+        !db.list_collection_names()
+            .unwrap()
+            .contains(&"__taladb_sync".to_string())
+    );
 }

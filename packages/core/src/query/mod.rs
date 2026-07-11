@@ -5,4 +5,4 @@ pub mod planner;
 
 pub use filter::Filter;
 pub use options::{FindOptions, SortDirection, SortSpec};
-pub use planner::{plan, QueryPlan};
+pub use planner::{QueryPlan, plan};

@@ -18,23 +18,23 @@ pub mod vector;
 pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
-pub use audit::{read_audit_log, read_audit_log_since, AuditEntry, AuditOp};
+pub use audit::{AuditEntry, AuditOp, read_audit_log, read_audit_log_since};
 pub use collection::{Collection, CollectionIndexInfo, Update};
-pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
+pub use config::{SyncConfig, TalaDbConfig, load_auto, load_from_path};
 pub use crdt::{
-    CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock, FieldMutation,
-    CRDT_CLOCKS_FIELD,
+    CRDT_CLOCKS_FIELD, CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock,
+    FieldMutation,
 };
 #[cfg(feature = "encryption")]
-pub use crypto::{migrate_encrypted_v0_to_v1, rekey, EncryptionKey};
+pub use crypto::{EncryptionKey, migrate_encrypted_v0_to_v1, rekey};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
 #[cfg(feature = "sync-http")]
 pub use http_sync::HttpSyncHook;
-pub use migration::{run_migrations, Migration, BUILTIN_MIGRATIONS, CURRENT_SCHEMA_VERSION};
-pub use query::options::{FindOptions, SortDirection, SortSpec};
+pub use migration::{BUILTIN_MIGRATIONS, CURRENT_SCHEMA_VERSION, Migration, run_migrations};
 pub use query::Filter;
+pub use query::options::{FindOptions, SortDirection, SortSpec};
 pub use sync::{Changeset, LastWriteWins, NoopSyncHook, SyncAdapter, SyncEvent, SyncHook};
 pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 

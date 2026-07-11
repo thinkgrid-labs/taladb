@@ -125,7 +125,7 @@ mod hnsw_impl {
     use instant_distance::{Builder, HnswMap, Point as HnswTrait, Search};
     use ulid::Ulid;
 
-    use super::{cosine_similarity, dot_similarity, VectorMetric};
+    use super::{VectorMetric, cosine_similarity, dot_similarity};
     use crate::error::TalaDbError;
 
     // ------------------------------------------------------------------
@@ -275,7 +275,7 @@ mod hnsw_impl {
 
 #[cfg(feature = "vector-hnsw")]
 pub use hnsw_impl::{
-    build_hnsw, new_shared_cache, search_hnsw, HnswGraph, HnswPoint, SharedHnswCache,
+    HnswGraph, HnswPoint, SharedHnswCache, build_hnsw, new_shared_cache, search_hnsw,
 };
 
 // ---------------------------------------------------------------------------

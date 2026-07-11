@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use taladb_core::crypto::{decrypt, derive_key, encrypt, EncryptedBackend, MIN_PBKDF2_ITERATIONS};
+use taladb_core::crypto::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, decrypt, derive_key, encrypt};
 use taladb_core::document::Value;
 use taladb_core::engine::RedbBackend;
 use taladb_core::{Database, Filter};

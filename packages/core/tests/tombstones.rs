@@ -1,6 +1,6 @@
 //! Integration tests for Collection::compact_tombstones().
 
-use taladb_core::sync::{now_ms, ChangeOp, LastWriteWins, SyncAdapter};
+use taladb_core::sync::{ChangeOp, LastWriteWins, SyncAdapter, now_ms};
 use taladb_core::{Database, Filter, Value};
 
 fn i(n: i64) -> Value {

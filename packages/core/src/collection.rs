@@ -3,31 +3,31 @@ use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
-use crate::aggregate::{execute_pipeline, Stage};
-use crate::audit::{write_audit_entry, AuditOp};
+use crate::aggregate::{Stage, execute_pipeline};
+use crate::audit::{AuditOp, write_audit_entry};
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
-use crate::fts::{encode_fts_key, fts_table_name, tokenize, FtsDef};
+use crate::fts::{FtsDef, encode_fts_key, fts_table_name, tokenize};
 use crate::index::{
-    compound_meta_key, compound_table_name, docs_table_name, encode_compound_key, encode_index_key,
-    index_table_name, meta_key, tomb_table_name, CompoundIndexDef, IndexDef, META_COMPOUND_TABLE,
-    META_INDEXES_TABLE,
+    CompoundIndexDef, IndexDef, META_COMPOUND_TABLE, META_INDEXES_TABLE, compound_meta_key,
+    compound_table_name, docs_table_name, encode_compound_key, encode_index_key, index_table_name,
+    meta_key, tomb_table_name,
 };
 use crate::query::executor::execute;
 use crate::query::filter::Filter;
 use crate::query::options::{
-    partial_sort_documents, project_document, sort_documents, FindOptions,
+    FindOptions, partial_sort_documents, project_document, sort_documents,
 };
 use crate::query::planner::plan_full;
-use crate::sync::{now_ms, SyncEvent, SyncHook};
-#[cfg(feature = "vector-hnsw")]
-use crate::vector::{build_hnsw, search_hnsw, SharedHnswCache};
+use crate::sync::{SyncEvent, SyncHook, now_ms};
 use crate::vector::{
+    HnswOptions, META_HNSW_TABLE, META_VECTOR_TABLE, VectorDef, VectorMetric, VectorSearchResult,
     compute_similarity, decode_f32_vec, encode_f32_vec, value_to_f32_vec, vec_meta_key,
-    vec_table_name, HnswOptions, VectorDef, VectorMetric, VectorSearchResult, META_HNSW_TABLE,
-    META_VECTOR_TABLE,
+    vec_table_name,
 };
+#[cfg(feature = "vector-hnsw")]
+use crate::vector::{SharedHnswCache, build_hnsw, search_hnsw};
 
 const META_FTS_TABLE: &str = "meta::fts_indexes";
 
@@ -378,10 +378,10 @@ impl Collection {
         let idx_table = index_table_name(&self.name, field);
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            if let Some(val) = doc.get(field) {
-                if let Some(idx_key) = encode_index_key(val, doc.id) {
-                    wtxn.put(&idx_table, &idx_key, &[])?;
-                }
+            if let Some(val) = doc.get(field)
+                && let Some(idx_key) = encode_index_key(val, doc.id)
+            {
+                wtxn.put(&idx_table, &idx_key, &[])?;
             }
         }
 
@@ -541,10 +541,10 @@ impl Collection {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             let vals: Option<Vec<&crate::document::Value>> =
                 fields.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = vals {
-                if let Some(key) = encode_compound_key(&v, doc.id) {
-                    wtxn.put(&ctable, &key, &[])?;
-                }
+            if let Some(v) = vals
+                && let Some(key) = encode_compound_key(&v, doc.id)
+            {
+                wtxn.put(&ctable, &key, &[])?;
             }
         }
 
@@ -646,13 +646,12 @@ impl Collection {
         let mut backfill: Vec<(ulid::Ulid, Vec<f32>)> = Vec::new();
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            if let Some(val) = doc.get(field) {
-                if let Some(vec) = value_to_f32_vec(val) {
-                    if vec.len() == dimensions {
-                        wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
-                        backfill.push((doc.id, vec));
-                    }
-                }
+            if let Some(val) = doc.get(field)
+                && let Some(vec) = value_to_f32_vec(val)
+                && vec.len() == dimensions
+            {
+                wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
+                backfill.push((doc.id, vec));
             }
         }
 
@@ -993,17 +992,16 @@ impl Collection {
         // Secondary indexes
         for idx in cache.indexes.iter() {
             let idx_table = index_table_name(&self.name, &idx.field);
-            if let Some(old) = old_doc {
-                if let Some(old_val) = old.get(&idx.field) {
-                    if let Some(old_key) = encode_index_key(old_val, old.id) {
-                        wtxn.delete(&idx_table, &old_key)?;
-                    }
-                }
+            if let Some(old) = old_doc
+                && let Some(old_val) = old.get(&idx.field)
+                && let Some(old_key) = encode_index_key(old_val, old.id)
+            {
+                wtxn.delete(&idx_table, &old_key)?;
             }
-            if let Some(new_val) = doc.get(&idx.field) {
-                if let Some(idx_key) = encode_index_key(new_val, doc.id) {
-                    wtxn.put(&idx_table, &idx_key, &[])?;
-                }
+            if let Some(new_val) = doc.get(&idx.field)
+                && let Some(idx_key) = encode_index_key(new_val, doc.id)
+            {
+                wtxn.put(&idx_table, &idx_key, &[])?;
             }
         }
 
@@ -1011,12 +1009,12 @@ impl Collection {
         for fts in cache.fts_indexes.iter() {
             let fts_table = fts_table_name(&self.name, &fts.field);
             // Remove old tokens
-            if let Some(old) = old_doc {
-                if let Some(crate::document::Value::Str(old_text)) = old.get(&fts.field) {
-                    for token in tokenize(old_text) {
-                        let key = encode_fts_key(&token, &old.id);
-                        wtxn.delete(&fts_table, &key)?;
-                    }
+            if let Some(old) = old_doc
+                && let Some(crate::document::Value::Str(old_text)) = old.get(&fts.field)
+            {
+                for token in tokenize(old_text) {
+                    let key = encode_fts_key(&token, &old.id);
+                    wtxn.delete(&fts_table, &key)?;
                 }
             }
             // Write new tokens
@@ -1036,12 +1034,11 @@ impl Collection {
                 wtxn.delete(&vtable, &doc.id.to_bytes())?;
             }
             // Write new vector if field is present and is a valid numeric array
-            if let Some(val) = doc.get(&vdef.field) {
-                if let Some(vec) = value_to_f32_vec(val) {
-                    if vec.len() == vdef.dimensions {
-                        wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
-                    }
-                }
+            if let Some(val) = doc.get(&vdef.field)
+                && let Some(vec) = value_to_f32_vec(val)
+                && vec.len() == vdef.dimensions
+            {
+                wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
             }
         }
 
@@ -1052,18 +1049,18 @@ impl Collection {
             // Remove old compound entry
             if let Some(old) = old_doc {
                 let old_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| old.get(f)).collect();
-                if let Some(v) = old_vals {
-                    if let Some(old_key) = encode_compound_key(&v, old.id) {
-                        wtxn.delete(&ctable, &old_key)?;
-                    }
+                if let Some(v) = old_vals
+                    && let Some(old_key) = encode_compound_key(&v, old.id)
+                {
+                    wtxn.delete(&ctable, &old_key)?;
                 }
             }
             // Write new compound entry
             let new_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = new_vals {
-                if let Some(new_key) = encode_compound_key(&v, doc.id) {
-                    wtxn.put(&ctable, &new_key, &[])?;
-                }
+            if let Some(v) = new_vals
+                && let Some(new_key) = encode_compound_key(&v, doc.id)
+            {
+                wtxn.put(&ctable, &new_key, &[])?;
             }
         }
 
@@ -1721,10 +1718,10 @@ impl Collection {
 
         for idx in cache.indexes.iter() {
             let idx_table = index_table_name(&self.name, &idx.field);
-            if let Some(val) = doc.get(&idx.field) {
-                if let Some(idx_key) = encode_index_key(val, doc.id) {
-                    wtxn.delete(&idx_table, &idx_key)?;
-                }
+            if let Some(val) = doc.get(&idx.field)
+                && let Some(idx_key) = encode_index_key(val, doc.id)
+            {
+                wtxn.delete(&idx_table, &idx_key)?;
             }
         }
 
@@ -1747,10 +1744,10 @@ impl Collection {
             let field_refs: Vec<&str> = cidx.fields.iter().map(|s| s.as_str()).collect();
             let ctable = compound_table_name(&self.name, &field_refs);
             let vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = vals {
-                if let Some(key) = encode_compound_key(&v, doc.id) {
-                    wtxn.delete(&ctable, &key)?;
-                }
+            if let Some(v) = vals
+                && let Some(key) = encode_compound_key(&v, doc.id)
+            {
+                wtxn.delete(&ctable, &key)?;
             }
         }
 
@@ -1794,7 +1791,7 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
                         return Err(TalaDbError::TypeError {
                             expected: "numeric".into(),
                             got: existing.type_name().into(),
-                        })
+                        });
                     }
                 };
                 doc.set(k, new_val);
@@ -1812,7 +1809,7 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
                 return Err(TalaDbError::TypeError {
                     expected: "array".into(),
                     got: existing.type_name().into(),
-                })
+                });
             }
         },
         Update::Pull(key, val) => {
@@ -1869,8 +1866,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::sync::RecordingSyncHook;
     use crate::Database;
+    use crate::sync::RecordingSyncHook;
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()

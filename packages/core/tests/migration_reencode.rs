@@ -7,7 +7,7 @@ use ulid::Ulid;
 use taladb_core::document::Document;
 use taladb_core::engine::{RedbBackend, StorageBackend};
 use taladb_core::index::{
-    docs_table_name, index_table_name, meta_key, IndexDef, META_INDEXES_TABLE,
+    IndexDef, META_INDEXES_TABLE, docs_table_name, index_table_name, meta_key,
 };
 use taladb_core::{Database, Filter, Value};
 

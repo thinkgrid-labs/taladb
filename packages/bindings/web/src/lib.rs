@@ -113,7 +113,11 @@ impl TalaDBWasm {
     /// changeset string, for bidirectional sync. `sinceMs` is a millisecond
     /// epoch timestamp (the persisted sync cursor).
     #[wasm_bindgen(js_name = exportChanges)]
-    pub fn export_changes(&self, since_ms: f64, collections: Vec<String>) -> Result<String, JsValue> {
+    pub fn export_changes(
+        &self,
+        since_ms: f64,
+        collections: Vec<String>,
+    ) -> Result<String, JsValue> {
         let refs: Vec<&str> = collections.iter().map(String::as_str).collect();
         let changeset = self
             .inner

@@ -39,7 +39,7 @@ use std::collections::HashMap;
 
 use crate::document::{Document, Value};
 use crate::error::TalaDbError;
-use crate::query::options::{sort_documents, SortSpec};
+use crate::query::options::{SortSpec, sort_documents};
 
 // ---------------------------------------------------------------------------
 // Pipeline types
@@ -347,11 +347,11 @@ fn update_state(state: &mut AccState, acc: &Accumulator, doc: &Document) {
             }
         }
         (AccState::AvgState { sum, count }, Accumulator::Avg(f)) => {
-            if let Some(v) = doc.get(f) {
-                if let Some(n) = numeric_to_f64(v) {
-                    *sum += n;
-                    *count += 1;
-                }
+            if let Some(v) = doc.get(f)
+                && let Some(n) = numeric_to_f64(v)
+            {
+                *sum += n;
+                *count += 1;
             }
         }
         (AccState::Min(cur), Accumulator::Min(f)) => {
@@ -389,10 +389,10 @@ fn update_state(state: &mut AccState, acc: &Accumulator, doc: &Document) {
             }
         }
         (AccState::AddToSet(arr), Accumulator::AddToSet(f)) => {
-            if let Some(v) = doc.get(f) {
-                if !arr.contains(v) {
-                    arr.push(v.clone());
-                }
+            if let Some(v) = doc.get(f)
+                && !arr.contains(v)
+            {
+                arr.push(v.clone());
             }
         }
         (AccState::First(cur), Accumulator::First(f)) if cur.is_none() => {
@@ -556,8 +556,17 @@ mod parse_tests {
 
     #[test]
     fn group_by_null_and_count_and_project() {
-        let pl = parse(r#"[{"$group": {"_id": null, "total": {"$count": {}}}}, {"$project": {"total": 1}}]"#).unwrap();
-        assert!(matches!(&pl[0], Stage::Group { key: GroupKey::Null, .. }));
+        let pl = parse(
+            r#"[{"$group": {"_id": null, "total": {"$count": {}}}}, {"$project": {"total": 1}}]"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &pl[0],
+            Stage::Group {
+                key: GroupKey::Null,
+                ..
+            }
+        ));
         assert!(matches!(&pl[1], Stage::Project(f) if f == &vec!["total".to_string()]));
     }
 

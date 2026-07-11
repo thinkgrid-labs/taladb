@@ -76,12 +76,14 @@ fn fts_single_token_matches() {
         .find(Filter::Contains("content".into(), "taladb".into()))
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert!(results[0]
-        .get("content")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .contains("TalaDB"));
+    assert!(
+        results[0]
+            .get("content")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("TalaDB")
+    );
 }
 
 #[test]
@@ -121,12 +123,14 @@ fn fts_multi_token_and_semantics() {
         .find(Filter::Contains("text".into(), "rust wasm".into()))
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert!(results[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .contains("rust"));
+    assert!(
+        results[0]
+            .get("text")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("rust")
+    );
 }
 
 #[test]

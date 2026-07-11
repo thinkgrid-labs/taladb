@@ -23,8 +23,8 @@
 //! acceptable given the narrow, well-tested surface here.
 
 use js_sys::{Promise, Uint8Array};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 const IDB_DB_NAME: &str = "taladb";

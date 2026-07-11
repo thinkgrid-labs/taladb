@@ -144,10 +144,10 @@ pub fn execute(
         let query_tokens = tokenize(query);
         let mut results = Vec::with_capacity(candidates.len());
         for d in candidates {
-            if let Some(dl) = deadline {
-                if Instant::now() >= dl {
-                    return Err(TalaDbError::QueryTimeout);
-                }
+            if let Some(dl) = deadline
+                && Instant::now() >= dl
+            {
+                return Err(TalaDbError::QueryTimeout);
             }
             let matches = if query_tokens.is_empty() {
                 true
@@ -174,10 +174,10 @@ pub fn execute(
 
     let mut results = Vec::with_capacity(candidates.len());
     for d in candidates {
-        if let Some(dl) = deadline {
-            if Instant::now() >= dl {
-                return Err(TalaDbError::QueryTimeout);
-            }
+        if let Some(dl) = deadline
+            && Instant::now() >= dl
+        {
+            return Err(TalaDbError::QueryTimeout);
         }
         if filter.matches_with_cache(&d, &regex_cache) {
             results.push(d);
@@ -248,10 +248,10 @@ fn collect_ulids(
 
 #[inline]
 fn check_deadline(deadline: Option<Instant>) -> Result<(), TalaDbError> {
-    if let Some(dl) = deadline {
-        if Instant::now() >= dl {
-            return Err(TalaDbError::QueryTimeout);
-        }
+    if let Some(dl) = deadline
+        && Instant::now() >= dl
+    {
+        return Err(TalaDbError::QueryTimeout);
     }
     Ok(())
 }

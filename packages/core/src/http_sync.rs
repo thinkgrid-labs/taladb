@@ -41,15 +41,15 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{Map, Value as JsonValue, json};
 
 use crate::config::SyncConfig;
 use crate::document::{Document, Value};
-use crate::sync::{now_ms, SyncEvent, SyncHook};
+use crate::sync::{SyncEvent, SyncHook, now_ms};
 
 // ---------------------------------------------------------------------------
 // Public hook
@@ -393,10 +393,10 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use crate::Database;
     use crate::config::SyncConfig;
     use crate::document::Value;
     use crate::sync::SyncHook;
-    use crate::Database;
 
     fn enabled_config(uri: &str) -> SyncConfig {
         SyncConfig {

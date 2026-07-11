@@ -1,9 +1,9 @@
+use taladb_core::Database;
 use taladb_core::aggregate::{Accumulator, GroupKey, Stage};
 use taladb_core::collection::Update;
 use taladb_core::document::Value;
-use taladb_core::query::options::{FindOptions, SortDirection, SortSpec};
 use taladb_core::query::Filter;
-use taladb_core::Database;
+use taladb_core::query::options::{FindOptions, SortDirection, SortSpec};
 
 fn db() -> Database {
     Database::open_in_memory().unwrap()

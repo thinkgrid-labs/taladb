@@ -157,7 +157,7 @@ pub fn load_from_path(path: &Path) -> Result<TalaDbConfig, TalaDbError> {
         other => {
             return Err(TalaDbError::Config(format!(
                 "unsupported config extension \".{other}\" — use .yml, .yaml, or .json"
-            )))
+            )));
         }
     };
 

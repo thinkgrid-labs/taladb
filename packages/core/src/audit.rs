@@ -167,15 +167,15 @@ pub fn read_audit_log_since(
             _ => String::new(),
         };
 
-        if let Some(cf) = collection_filter {
-            if collection != cf {
-                continue;
-            }
+        if let Some(cf) = collection_filter
+            && collection != cf
+        {
+            continue;
         }
-        if let Some(ref of_) = op_filter {
-            if &op != of_ {
-                continue;
-            }
+        if let Some(ref of_) = op_filter
+            && &op != of_
+        {
+            continue;
         }
 
         entries.push(AuditEntry {

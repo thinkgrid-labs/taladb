@@ -4,9 +4,9 @@ use crate::document::{Document, Value};
 use crate::engine::{StorageBackend, WriteTxn};
 use crate::error::TalaDbError;
 use crate::index::{
-    compound_table_name, docs_table_name, encode_compound_key, encode_index_key, index_table_name,
     CompoundIndexDef, IndexDef, META_COMPOUND_TABLE, META_INDEXES_TABLE, META_VERSION_KEY,
-    META_VERSION_TABLE,
+    META_VERSION_TABLE, compound_table_name, docs_table_name, encode_compound_key,
+    encode_index_key, index_table_name,
 };
 
 /// A single schema migration step.
@@ -122,10 +122,10 @@ pub fn rebuild_secondary_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbErr
         let docs = txn.range(&docs_table, Bound::Unbounded, Bound::Unbounded)?;
         for (_, doc_bytes) in docs {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            if let Some(val) = doc.get(&def.field) {
-                if let Some(idx_key) = encode_index_key(val, doc.id) {
-                    txn.put(&idx_table, &idx_key, &[])?;
-                }
+            if let Some(val) = doc.get(&def.field)
+                && let Some(idx_key) = encode_index_key(val, doc.id)
+            {
+                txn.put(&idx_table, &idx_key, &[])?;
             }
         }
     }
@@ -155,10 +155,10 @@ pub fn rebuild_compound_indexes(txn: &mut dyn WriteTxn) -> Result<(), TalaDbErro
         for (_, doc_bytes) in docs {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             let vals: Option<Vec<&Value>> = def.fields.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = vals {
-                if let Some(key) = encode_compound_key(&v, doc.id) {
-                    txn.put(&ctable, &key, &[])?;
-                }
+            if let Some(v) = vals
+                && let Some(key) = encode_compound_key(&v, doc.id)
+            {
+                txn.put(&ctable, &key, &[])?;
             }
         }
     }
