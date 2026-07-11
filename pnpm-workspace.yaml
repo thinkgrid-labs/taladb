@@ -5,6 +5,7 @@ packages:
   - "packages/adapters/*"
   - "packages/integrations/*"
   - "packages/tools/*"
+  - "examples/*"
 
 onlyBuiltDependencies:
   - esbuild

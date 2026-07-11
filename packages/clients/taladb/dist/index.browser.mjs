@@ -397,7 +397,7 @@ async function createBrowserDB(dbName, config) {
   return handle;
 }
 async function createNodeDB(dbName, config) {
-  const native = await import("@taladb/node");
+  const native = await import("./node-A4LKRSW5.mjs");
   const TalaDBNode = native.TalaDbNode ?? native.TalaDBNode;
   if (!TalaDBNode) throw new Error("@taladb/node loaded but exports no TalaDbNode class \u2014 rebuild the native module");
   const configJson = config !== void 0 ? JSON.stringify(config) : null;

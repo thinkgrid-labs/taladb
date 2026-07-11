@@ -8,7 +8,7 @@ description: Sync a local-first app (React, Next.js, React Native) to your backe
 [HTTP Push Sync](/guide/http-sync) is fire-and-forget: it POSTs every local write outward and never hears back. **Bidirectional sync** is the full loop — pull remote changes into the local database *and* push local changes out, tracked by cursors so each pass is incremental, with automatic Last-Write-Wins conflict resolution.
 
 ::: info Runtime support
-Available on **Node.js** and the **browser** (since v0.8.5 — both the OPFS worker and the in-memory fallback). In the browser, all sync engine work runs inside the Dedicated Worker, off the main thread, so a pass never blocks rendering. React Native shares the same engine; its binding wiring lands in a future release — calling `db.sync()` there throws a clear error until then. Track it on the [roadmap](/roadmap).
+Available on **Node.js** and the **browser** (since v0.9.0 — both the OPFS worker and the in-memory fallback). In the browser, all sync engine work runs inside the Dedicated Worker, off the main thread, so a pass never blocks rendering. React Native shares the same engine; its binding wiring lands in a future release — calling `db.sync()` there throws a clear error until then. Track it on the [roadmap](/roadmap).
 :::
 
 ## Client → server: sync your app to your backend
@@ -95,7 +95,7 @@ The whole pass — change export, LWW merge — executes inside TalaDB's worker,
 
 ### Next.js
 
-Same packages as React, plus the first-party integration (v0.8.5) that reduces both sides to a few lines:
+Same packages as React, plus the first-party integration (v0.9.0) that reduces both sides to a few lines:
 
 ```bash
 pnpm add taladb @taladb/web @taladb/react @taladb/next

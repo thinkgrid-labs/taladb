@@ -31,7 +31,10 @@ export default defineConfig([
     entry: { 'index.browser': 'src/index.ts' },
     format: ['esm'],
     outDir: 'dist',
-    external: ['@taladb/web', '@taladb/node', '@taladb/react-native'],
+    external: ['@taladb/web', '@taladb/react-native'],
+    // @taladb/node is stubbed inline (see plugin below) so webpack never sees
+    // the specifier. noExternal overrides tsup's automatic externalization.
+    noExternal: ['@taladb/node'],
     esbuildPlugins: [
       {
         name: 'browser-config-stub',
@@ -43,6 +46,16 @@ export default defineConfig([
               return { path: stub }
             }
           })
+
+          // Stub @taladb/node so web bundlers never see the specifier.
+          // createNodeDB (which uses it) is dead code in the browser —
+          // detectPlatform() → 'browser' — but webpack resolves every
+          // import() specifier statically, even unreachable ones, and would
+          // otherwise chase the native .node binary (or fail to resolve the
+          // package in apps that rightly don't install it). Same treatment as
+          // the React Native build below.
+          const nodeStub = path.resolve(__dirname, 'src/stubs/node.ts')
+          build.onResolve({ filter: /^@taladb\/node$/ }, () => ({ path: nodeStub }))
         },
       },
     ],
