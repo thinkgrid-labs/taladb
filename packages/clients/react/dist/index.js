@@ -1,7 +1,10 @@
+'use client';
 "use strict";
+var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => {
   for (var name in all)
@@ -15,6 +18,14 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // src/index.ts
@@ -32,13 +43,47 @@ module.exports = __toCommonJS(index_exports);
 var import_react = require("react");
 var import_jsx_runtime = require("react/jsx-runtime");
 var TalaDBContext = (0, import_react.createContext)(null);
-function TalaDBProvider({ db, children }) {
+function TalaDBProvider(props) {
+  if ("db" in props && props.db) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TalaDBContext.Provider, { value: props.db, children: props.children });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(NamedProvider, { ...props });
+}
+function NamedProvider({
+  name,
+  options,
+  fallback = null,
+  children
+}) {
+  const [db, setDb] = (0, import_react.useState)(null);
+  const [error, setError] = (0, import_react.useState)(null);
+  (0, import_react.useEffect)(() => {
+    let cancelled = false;
+    let opened = null;
+    import("taladb").then(({ openDB }) => openDB(name, options)).then((instance) => {
+      if (cancelled) {
+        void instance.close();
+        return;
+      }
+      opened = instance;
+      setDb(instance);
+    }).catch((e) => {
+      if (!cancelled) setError(e);
+    });
+    return () => {
+      cancelled = true;
+      if (opened) void opened.close();
+      setDb(null);
+    };
+  }, [name]);
+  if (error !== null) throw error;
+  if (db === null) return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_jsx_runtime.Fragment, { children: fallback });
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TalaDBContext.Provider, { value: db, children });
 }
 function useTalaDB() {
   const db = (0, import_react.useContext)(TalaDBContext);
   if (db === null) {
-    throw new Error("useTalaDB must be used inside <TalaDBProvider db={...}>");
+    throw new Error('useTalaDB must be used inside <TalaDBProvider db={...}> or <TalaDBProvider name="...">');
   }
   return db;
 }

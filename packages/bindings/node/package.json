@@ -1,6 +1,6 @@
 {
   "name": "@taladb/node",
-  "version": "0.8.5",
+  "version": "0.9.0",
   "description": "TalaDB Node.js native module — document queries and vector search via napi-rs",
   "main": "index.js",
   "types": "index.d.ts",
@@ -25,7 +25,7 @@
   "scripts": {
     "build": "napi build --platform --release --js index.js --dts index.d.ts",
     "build:debug": "napi build --platform --js index.js --dts index.d.ts",
-    "test": "jest"
+    "test": "jest --passWithNoTests"
   },
   "repository": {
     "type": "git",

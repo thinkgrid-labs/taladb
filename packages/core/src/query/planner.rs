@@ -3,7 +3,7 @@ use std::ops::Bound;
 use crate::document::Value;
 use crate::fts::FtsDef;
 use crate::index::{
-    compound_range_eq, index_range_cmp, index_range_eq, CompoundIndexDef, IndexDef,
+    CompoundIndexDef, IndexDef, compound_range_eq, index_range_cmp, index_range_eq,
 };
 use crate::query::filter::Filter;
 
@@ -146,12 +146,11 @@ fn plan_inner(
                     ranges.push(range);
                 }
                 // 0.0 and -0.0 compare equal but encode to different keys.
-                if let Value::Float(f) = v {
-                    if *f == 0.0 {
-                        if let Some(range) = index_range_eq(&Value::Float(-*f)) {
-                            ranges.push(range);
-                        }
-                    }
+                if let Value::Float(f) = v
+                    && *f == 0.0
+                    && let Some(range) = index_range_eq(&Value::Float(-*f))
+                {
+                    ranges.push(range);
                 }
             }
             if !ranges.is_empty() {
@@ -203,15 +202,51 @@ fn plan_inner(
                     })
                     .collect();
                 if let Some(vals) = values {
-                    let val_refs: Vec<&crate::document::Value> = vals;
-                    if let Some((start, end)) = compound_range_eq(&val_refs) {
-                        return QueryPlan::CompoundIndexEq {
-                            fields: cidx.fields.clone(),
-                            start,
-                            end,
-                        };
+                    let mut variants: Vec<Vec<crate::document::Value>> =
+                        vec![vals.iter().map(|v| (*v).clone()).collect()];
+                    for i in 0..vals.len() {
+                        if matches!(vals[i], crate::document::Value::Float(f) if *f == 0.0) {
+                            let alternate = crate::document::Value::Float(
+                                if matches!(vals[i], crate::document::Value::Float(f) if f.is_sign_negative())
+                                {
+                                    0.0
+                                } else {
+                                    -0.0
+                                },
+                            );
+                            let mut additional = variants.clone();
+                            for variant in &mut additional {
+                                variant[i] = alternate.clone();
+                            }
+                            variants.extend(additional);
+                        }
+                    }
+                    let plans: Vec<_> = variants
+                        .into_iter()
+                        .filter_map(|values| {
+                            let refs: Vec<_> = values.iter().collect();
+                            compound_range_eq(&refs).map(|(start, end)| {
+                                QueryPlan::CompoundIndexEq {
+                                    fields: cidx.fields.clone(),
+                                    start,
+                                    end,
+                                }
+                            })
+                        })
+                        .collect();
+                    if plans.len() == 1 {
+                        return plans.into_iter().next().unwrap();
+                    } else if !plans.is_empty() {
+                        return QueryPlan::IndexOr { plans };
                     }
                 }
+            }
+
+            // Two-sided range on one indexed field → a single bounded scan,
+            // instead of the half-open scan the single-field fallback would
+            // pick (which post-filters the far bound over the whole tail).
+            if let Some(plan) = bounded_range_from_and(filters, indexed_fields) {
+                return plan;
             }
 
             // Fall back to single-field index on any sub-filter
@@ -269,25 +304,25 @@ fn lower_bound_plan(field: &str, value: &Value, inclusive: bool) -> Option<Query
         start,
         end,
     };
-    if let Value::Float(f) = value {
-        if !f.is_nan() {
-            // Every Int ≥ floor(f) may satisfy the filter. `as` saturates at
-            // the i64 limits, which stays conservative; the post-filter trims
-            // the at-most-one extra integer below the bound.
-            let twin_lo = Value::Int(f.floor() as i64);
-            let twin_hi = Value::Int(i64::MAX);
-            if let Some((s, e)) = index_range_cmp(Some((&twin_lo, true)), Some((&twin_hi, true))) {
-                return Some(QueryPlan::IndexOr {
-                    plans: vec![
-                        primary,
-                        QueryPlan::IndexRange {
-                            field: field.to_string(),
-                            start: s,
-                            end: e,
-                        },
-                    ],
-                });
-            }
+    if let Value::Float(f) = value
+        && !f.is_nan()
+    {
+        // Every Int ≥ floor(f) may satisfy the filter. `as` saturates at
+        // the i64 limits, which stays conservative; the post-filter trims
+        // the at-most-one extra integer below the bound.
+        let twin_lo = Value::Int(f.floor() as i64);
+        let twin_hi = Value::Int(i64::MAX);
+        if let Some((s, e)) = index_range_cmp(Some((&twin_lo, true)), Some((&twin_hi, true))) {
+            return Some(QueryPlan::IndexOr {
+                plans: vec![
+                    primary,
+                    QueryPlan::IndexRange {
+                        field: field.to_string(),
+                        start: s,
+                        end: e,
+                    },
+                ],
+            });
         }
     }
     Some(primary)
@@ -327,14 +362,14 @@ fn upper_bound_plan(field: &str, value: &Value, inclusive: bool) -> Option<Query
 /// encode to different index keys, so both ranges are scanned.
 fn eq_plan(field: &str, value: &Value) -> Option<QueryPlan> {
     let (start, end) = index_range_eq(value)?;
-    if let Value::Float(f) = value {
-        if *f == 0.0 {
-            let (s2, e2) = index_range_eq(&Value::Float(-*f))?;
-            return Some(QueryPlan::IndexIn {
-                field: field.to_string(),
-                ranges: vec![(start, end), (s2, e2)],
-            });
-        }
+    if let Value::Float(f) = value
+        && *f == 0.0
+    {
+        let (s2, e2) = index_range_eq(&Value::Float(-*f))?;
+        return Some(QueryPlan::IndexIn {
+            field: field.to_string(),
+            ranges: vec![(start, end), (s2, e2)],
+        });
     }
     Some(QueryPlan::IndexEq {
         field: field.to_string(),
@@ -357,6 +392,122 @@ fn f64_next_up(f: f64) -> f64 {
         f.to_bits() - 1
     };
     f64::from_bits(bits)
+}
+
+/// One-ULP decrement. NaN and -∞ are returned unchanged.
+fn f64_next_down(f: f64) -> f64 {
+    -f64_next_up(-f)
+}
+
+/// Plan a two-sided range (`lower ≤ field {<,≤} upper`) on a single indexed
+/// field as one bounded index scan, instead of a half-open scan that
+/// post-filters the far bound. The executor always re-applies the full filter
+/// (see `executor::execute`), so a conservatively *wide* range is safe — it
+/// only affects how much of the index is scanned, never the result.
+///
+/// For numeric bounds this emits an `IndexOr` of an Int-typed and a Float-typed
+/// bounded sub-range, each converted outward, so values stored as either
+/// numeric type are covered (index keys are type-prefixed — the cross-type
+/// correctness the single-bound planners handle for one side). Same-typed
+/// string/bool bounds emit a single exact range; mismatched types return
+/// `None` so the caller falls back to single-bound planning.
+fn bounded_range_plan(
+    field: &str,
+    lower: (&Value, bool),
+    upper: (&Value, bool),
+) -> Option<QueryPlan> {
+    let (lv, li) = lower;
+    let (uv, ui) = upper;
+    let both_numeric = matches!(lv, Value::Int(_) | Value::Float(_))
+        && matches!(uv, Value::Int(_) | Value::Float(_));
+
+    if both_numeric {
+        // Int-typed sub-range: convert each float bound outward to a whole
+        // number so no integer in the true range is excluded.
+        let int_lo = match lv {
+            Value::Int(n) => (Value::Int(*n), li),
+            Value::Float(f) => (Value::Int(f.floor() as i64), true),
+            _ => return None,
+        };
+        let int_hi = match uv {
+            Value::Int(n) => (Value::Int(*n), ui),
+            Value::Float(f) => (Value::Int(f.ceil() as i64), true),
+            _ => return None,
+        };
+        // Float-typed sub-range: nudge integer bounds one ULP outward so
+        // rounding on the i64→f64 conversion can never drop a boundary value.
+        let flt_lo = match lv {
+            Value::Float(f) => (Value::Float(*f), li),
+            Value::Int(n) => (Value::Float(f64_next_down(*n as f64)), true),
+            _ => return None,
+        };
+        let flt_hi = match uv {
+            Value::Float(f) => (Value::Float(*f), ui),
+            Value::Int(n) => (Value::Float(f64_next_up(*n as f64)), true),
+            _ => return None,
+        };
+
+        let mut plans = Vec::with_capacity(2);
+        if let Some((start, end)) =
+            index_range_cmp(Some((&int_lo.0, int_lo.1)), Some((&int_hi.0, int_hi.1)))
+        {
+            plans.push(QueryPlan::IndexRange {
+                field: field.to_string(),
+                start,
+                end,
+            });
+        }
+        if let Some((start, end)) =
+            index_range_cmp(Some((&flt_lo.0, flt_lo.1)), Some((&flt_hi.0, flt_hi.1)))
+        {
+            plans.push(QueryPlan::IndexRange {
+                field: field.to_string(),
+                start,
+                end,
+            });
+        }
+        return match plans.len() {
+            0 => None,
+            1 => plans.pop(),
+            _ => Some(QueryPlan::IndexOr { plans }),
+        };
+    }
+
+    // Same non-numeric type — one exact bounded range.
+    if std::mem::discriminant(lv) == std::mem::discriminant(uv) {
+        let (start, end) = index_range_cmp(Some((lv, li)), Some((uv, ui)))?;
+        return Some(QueryPlan::IndexRange {
+            field: field.to_string(),
+            start,
+            end,
+        });
+    }
+
+    None
+}
+
+/// Scan an `And`'s direct sub-filters for a lower **and** upper bound on the
+/// same indexed field and, if found, plan it as one bounded range.
+fn bounded_range_from_and(filters: &[Filter], indexed_fields: &[&str]) -> Option<QueryPlan> {
+    for field in indexed_fields {
+        let mut lower: Option<(&Value, bool)> = None;
+        let mut upper: Option<(&Value, bool)> = None;
+        for f in filters {
+            match f {
+                Filter::Gt(fl, v) if fl == field => lower = Some((v, false)),
+                Filter::Gte(fl, v) if fl == field => lower = Some((v, true)),
+                Filter::Lt(fl, v) if fl == field => upper = Some((v, false)),
+                Filter::Lte(fl, v) if fl == field => upper = Some((v, true)),
+                _ => {}
+            }
+        }
+        if let (Some(lo), Some(hi)) = (lower, upper)
+            && let Some(plan) = bounded_range_plan(field, lo, hi)
+        {
+            return Some(plan);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -397,9 +548,11 @@ mod tests {
         match plan {
             QueryPlan::IndexOr { plans } => {
                 assert_eq!(plans.len(), 2);
-                assert!(plans
-                    .iter()
-                    .all(|p| matches!(p, QueryPlan::IndexRange { .. })));
+                assert!(
+                    plans
+                        .iter()
+                        .all(|p| matches!(p, QueryPlan::IndexRange { .. }))
+                );
             }
             other => panic!("expected IndexOr of two ranges, got {other:?}"),
         }

@@ -23,16 +23,9 @@ interface CursorDoc extends Document {
   /** Sync target name. A plain field, NOT `_id`: the engine assigns ULIDs and
    * ignores caller-supplied ids, so a custom `_id` would never match again. */
   target: string;
-  /** LOCAL watermark for exports: local changes stamped at or before this have
-   * already been pushed. Local writes are stamped by the same clock, so a
-   * wall-clock watermark is sound here. */
+  /** Reserved for a future storage-level monotonic export cursor. */
   pushMs: number;
-  /** REMOTE watermark for pulls: the highest `changed_at` among changes
-   * received so far. Deliberately NOT the local clock — a remote change is
-   * authored on another device's clock and may arrive at the server after we
-   * last synced; filtering remote changes by our local time would skip it
-   * forever. Advancing only past what we have actually received keeps every
-   * late-arriving change fetchable. */
+  /** Reserved for a future server-issued opaque cursor. */
   pullMs: number;
 }
 
@@ -109,11 +102,11 @@ async function writeCursor(
  * doesn't affect convergence: Last-Write-Wins resolves by `changed_at`, so both
  * sides reach the same state regardless.
  *
- * Two independent watermarks per target: `pushMs` (local clock, captured before
- * the export scan — a write racing the scan is simply re-synced next pass,
- * harmless because `importChanges` is idempotent under LWW) and `pullMs` (the
- * newest remote `changed_at` actually received, so a change that reaches the
- * server after our pass but was authored earlier is still fetched next time).
+ * The current adapter contract only exposes author wall-clock timestamps. Such
+ * timestamps are not safe cursors: a write can commit after an export with an
+ * earlier timestamp, and a remote event can arrive late. Until adapters expose
+ * storage/server-issued monotonic cursors, each pass therefore replays from
+ * zero. Import is idempotent under LWW, trading bandwidth for no skipped data.
  */
 export async function runSync(
   handle: SyncHandle,
@@ -134,23 +127,15 @@ export async function runSync(
   const collections = await resolveCollections(handle, options);
   const cursorCol = handle.collection(CURSOR_COLLECTION);
   const cursor = await readCursor(cursorCol, target);
-  const startedAt = Date.now();
-
   // Snapshot local changes before importing anything, so pulled changes aren't
   // pushed back to the peer they came from.
-  const local = doPush ? await handle.exportChanges(collections, cursor.pushMs) : '[]';
+  const local = doPush ? await handle.exportChanges(collections, 0) : '[]';
 
   let pulled = 0;
-  let pullMs = cursor.pullMs;
   if (doPull) {
-    const remote = await adapter.pull!(cursor.pullMs);
+    const remote = await adapter.pull!(0);
     if (remote && remote !== '[]') {
       pulled = await handle.importChanges(remote);
-      // Advance the pull watermark to the newest change actually received —
-      // never to the local clock (see CursorDoc.pullMs).
-      for (const c of JSON.parse(remote) as { changed_at?: number }[]) {
-        if (typeof c.changed_at === 'number' && c.changed_at > pullMs) pullMs = c.changed_at;
-      }
     }
   }
 
@@ -161,8 +146,8 @@ export async function runSync(
   }
 
   await writeCursor(cursorCol, target, {
-    pushMs: doPush ? startedAt : cursor.pushMs,
-    pullMs,
+    pushMs: cursor.pushMs,
+    pullMs: cursor.pullMs,
   });
-  return { pushed, pulled, cursor: startedAt };
+  return { pushed, pulled, cursor: 0 };
 }

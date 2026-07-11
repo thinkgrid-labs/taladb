@@ -11,6 +11,8 @@ core used on every other platform. Data is persisted to the
 (OPFS) — a fast, private storage area built into modern browsers. No server, no
 cloud, no extra infrastructure.
 
+> Building with **Next.js**? There's a dedicated [Next.js guide](/guide/nextjs) covering providers, the RSC boundary, and using your API routes as the sync backend.
+
 ## Browser support
 
 | Feature | Chrome | Firefox | Safari |
@@ -322,6 +324,14 @@ never blocked.
 In-flight sync requests are subject to normal browser fetch constraints. If the
 user closes the tab during a retry sequence, any remaining attempts are lost.
 HTTP push sync is best-effort by design.
+
+The worker bounds its HTTP queue and times each attempt out after 10 seconds.
+You can inspect delivery health and drain accepted events before closing:
+
+```ts
+const health = await db.syncStatus?.() // { pending, dropped, failed }
+const drained = await db.flushSync?.(5_000)
+```
 :::
 
 Per-event endpoint overrides are supported:

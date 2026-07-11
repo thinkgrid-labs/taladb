@@ -42,14 +42,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{Map, Value as JsonValue, json};
 
 use crate::config::SyncConfig;
 use crate::document::{Document, Value};
-use crate::sync::{now_ms, SyncEvent, SyncHook};
+use crate::sync::{SyncEvent, SyncHook, now_ms};
 
 // ---------------------------------------------------------------------------
 // Public hook
@@ -68,10 +68,13 @@ const WORKER_THREADS: usize = 4;
 /// block the writer.
 const TASK_CHANNEL_CAPACITY: usize = 256;
 
-struct SyncTask {
-    endpoint: String,
-    headers: HashMap<String, String>,
-    payload: JsonValue,
+enum SyncTask {
+    Deliver {
+        endpoint: String,
+        headers: HashMap<String, String>,
+        payload: JsonValue,
+    },
+    Flush(mpsc::Sender<()>),
 }
 
 /// Fires an HTTP POST for every mutation event.
@@ -100,6 +103,7 @@ pub struct HttpSyncHook {
     senders: Vec<std::sync::mpsc::SyncSender<SyncTask>>,
     /// Cumulative count of events dropped due to channel backpressure.
     dropped_events: Arc<AtomicU64>,
+    failed_events: Arc<AtomicU64>,
 }
 
 impl HttpSyncHook {
@@ -117,13 +121,16 @@ impl HttpSyncHook {
                 exclude,
                 senders: Vec::new(),
                 dropped_events: Arc::new(AtomicU64::new(0)),
+                failed_events: Arc::new(AtomicU64::new(0)),
             };
         }
 
         let mut senders = Vec::with_capacity(WORKER_THREADS);
+        let failed_events = Arc::new(AtomicU64::new(0));
         for _ in 0..WORKER_THREADS {
             let (tx, rx) = std::sync::mpsc::sync_channel::<SyncTask>(TASK_CHANNEL_CAPACITY);
             senders.push(tx);
+            let failures = Arc::clone(&failed_events);
             std::thread::spawn(move || {
                 // Build the reqwest client inside the worker thread.
                 // This avoids the "cannot drop runtime in async context" panic
@@ -140,7 +147,20 @@ impl HttpSyncHook {
                     }
                 };
                 while let Ok(t) = rx.recv() {
-                    fire_with_retry(&client, &t.endpoint, &t.headers, &t.payload);
+                    match t {
+                        SyncTask::Deliver {
+                            endpoint,
+                            headers,
+                            payload,
+                        } => {
+                            if !fire_with_retry(&client, &endpoint, &headers, &payload) {
+                                failures.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        SyncTask::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
                 }
             });
         }
@@ -150,6 +170,7 @@ impl HttpSyncHook {
             exclude,
             senders,
             dropped_events: Arc::new(AtomicU64::new(0)),
+            failed_events,
         }
     }
 
@@ -159,6 +180,29 @@ impl HttpSyncHook {
     /// events were permanently lost. Monitor this in production to detect sync lag.
     pub fn dropped_event_count(&self) -> u64 {
         self.dropped_events.load(Ordering::Relaxed)
+    }
+
+    pub fn failed_event_count(&self) -> u64 {
+        self.failed_events.load(Ordering::Relaxed)
+    }
+
+    /// Wait until every event accepted before this call has finished delivery.
+    pub fn flush(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut receivers = Vec::with_capacity(self.senders.len());
+        for sender in &self.senders {
+            let (tx, rx) = mpsc::channel();
+            // Never block the caller while trying to enqueue the barrier. A
+            // full queue cannot be flushed within a predictable timeout.
+            if sender.try_send(SyncTask::Flush(tx)).is_err() {
+                return false;
+            }
+            receivers.push(rx);
+        }
+        receivers.into_iter().all(|rx| {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            rx.recv_timeout(remaining).is_ok()
+        })
     }
 
     fn endpoint_for(&self, event: &SyncEvent) -> Option<String> {
@@ -188,7 +232,7 @@ impl SyncHook for HttpSyncHook {
         let shard = shard_for(&event, self.senders.len());
         let payload = event_to_payload(event, &self.exclude);
         let headers = self.config.headers.clone();
-        let task = SyncTask {
+        let task = SyncTask::Deliver {
             endpoint,
             headers,
             payload,
@@ -336,7 +380,7 @@ fn fire_with_retry(
     endpoint: &str,
     headers: &HashMap<String, String>,
     payload: &JsonValue,
-) {
+) -> bool {
     use reqwest::header::{HeaderName, HeaderValue};
 
     let max_attempts = BACKOFFS_MS.len() + 1; // 4 total (1 + 3 retries)
@@ -363,11 +407,11 @@ fn fire_with_retry(
         }
 
         match req.send() {
-            Ok(resp) if resp.status().is_success() => return,
+            Ok(resp) if resp.status().is_success() => return true,
             // 5xx — transient server error, retry
             Ok(resp) if resp.status().is_server_error() => continue,
             // 4xx or other — permanent error, don't retry
-            Ok(_) => return,
+            Ok(_) => return false,
             // Network / timeout error — retry
             Err(_) => continue,
         }
@@ -378,6 +422,7 @@ fn fire_with_retry(
         endpoint,
         "sync: event permanently failed after all retry attempts"
     );
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -393,10 +438,10 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use crate::Database;
     use crate::config::SyncConfig;
     use crate::document::Value;
     use crate::sync::SyncHook;
-    use crate::Database;
 
     fn enabled_config(uri: &str) -> SyncConfig {
         SyncConfig {
@@ -839,6 +884,15 @@ mod tests {
             .with_sync_hook(Arc::clone(&hook) as Arc<dyn SyncHook>);
 
         col.insert(vec![("w".into(), Value::Int(1))]).unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(hook.flush(Duration::from_secs(2)));
+        assert_eq!(hook.failed_event_count(), 1);
+    }
+
+    #[test]
+    fn disabled_hook_flushes_and_reports_zero_counters() {
+        let hook = HttpSyncHook::new(SyncConfig::default());
+        assert!(hook.flush(Duration::from_millis(10)));
+        assert_eq!(hook.dropped_event_count(), 0);
+        assert_eq!(hook.failed_event_count(), 0);
     }
 }

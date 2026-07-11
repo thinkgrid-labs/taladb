@@ -3,31 +3,31 @@ use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
-use crate::aggregate::{execute_pipeline, Stage};
-use crate::audit::{write_audit_entry, AuditOp};
+use crate::aggregate::{Stage, execute_pipeline};
+use crate::audit::{AuditOp, write_audit_entry};
 use crate::document::{Document, Value};
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
-use crate::fts::{encode_fts_key, fts_table_name, tokenize, FtsDef};
+use crate::fts::{FtsDef, encode_fts_key, fts_table_name, tokenize};
 use crate::index::{
-    compound_meta_key, compound_table_name, docs_table_name, encode_compound_key, encode_index_key,
-    index_table_name, meta_key, tomb_table_name, CompoundIndexDef, IndexDef, META_COMPOUND_TABLE,
-    META_INDEXES_TABLE,
+    CompoundIndexDef, IndexDef, META_COMPOUND_TABLE, META_INDEXES_TABLE, compound_meta_key,
+    compound_table_name, docs_table_name, encode_compound_key, encode_index_key, index_table_name,
+    meta_key, tomb_table_name,
 };
 use crate::query::executor::execute;
 use crate::query::filter::Filter;
 use crate::query::options::{
-    partial_sort_documents, project_document, sort_documents, FindOptions,
+    FindOptions, partial_sort_documents, project_document, sort_documents,
 };
 use crate::query::planner::plan_full;
-use crate::sync::{now_ms, SyncEvent, SyncHook};
-#[cfg(feature = "vector-hnsw")]
-use crate::vector::{build_hnsw, search_hnsw, SharedHnswCache};
+use crate::sync::{SyncEvent, SyncHook, now_ms};
 use crate::vector::{
-    compute_similarity, decode_f32_vec, encode_f32_vec, value_to_f32_vec, vec_meta_key,
-    vec_table_name, HnswOptions, VectorDef, VectorMetric, VectorSearchResult, META_HNSW_TABLE,
-    META_VECTOR_TABLE,
+    HnswOptions, META_HNSW_TABLE, META_VECTOR_TABLE, VectorDef, VectorMetric, VectorSearchResult,
+    decode_f32_vec, encode_f32_vec, l2_norm, score_from_bytes, value_to_f32_vec, vec_meta_key,
+    vec_table_name,
 };
+#[cfg(feature = "vector-hnsw")]
+use crate::vector::{SharedHnswCache, build_hnsw, search_hnsw};
 
 const META_FTS_TABLE: &str = "meta::fts_indexes";
 
@@ -63,6 +63,8 @@ pub struct CollectionIndexInfo {
 
 #[derive(Clone)]
 pub enum Update {
+    /// Apply multiple update operators atomically, in document order.
+    Many(Vec<Update>),
     /// $set — set or replace field values
     Set(Vec<(String, Value)>),
     /// $unset — remove fields
@@ -378,10 +380,10 @@ impl Collection {
         let idx_table = index_table_name(&self.name, field);
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            if let Some(val) = doc.get(field) {
-                if let Some(idx_key) = encode_index_key(val, doc.id) {
-                    wtxn.put(&idx_table, &idx_key, &[])?;
-                }
+            if let Some(val) = doc.get(field)
+                && let Some(idx_key) = encode_index_key(val, doc.id)
+            {
+                wtxn.put(&idx_table, &idx_key, &[])?;
             }
         }
 
@@ -511,6 +513,20 @@ impl Collection {
                 "compound index requires at least 2 fields".into(),
             ));
         }
+        if fields
+            .iter()
+            .any(|field| field.is_empty() || field.contains("::"))
+        {
+            return Err(TalaDbError::InvalidOperation(
+                "compound index fields must be non-empty and must not contain '::'".into(),
+            ));
+        }
+        let unique: std::collections::HashSet<&str> = fields.iter().copied().collect();
+        if unique.len() != fields.len() {
+            return Err(TalaDbError::InvalidOperation(
+                "compound index fields must be unique".into(),
+            ));
+        }
         let meta_key = compound_meta_key(&self.name, fields);
         let mut wtxn = self.backend.begin_write()?;
 
@@ -541,10 +557,10 @@ impl Collection {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
             let vals: Option<Vec<&crate::document::Value>> =
                 fields.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = vals {
-                if let Some(key) = encode_compound_key(&v, doc.id) {
-                    wtxn.put(&ctable, &key, &[])?;
-                }
+            if let Some(v) = vals
+                && let Some(key) = encode_compound_key(&v, doc.id)
+            {
+                wtxn.put(&ctable, &key, &[])?;
             }
         }
 
@@ -646,13 +662,12 @@ impl Collection {
         let mut backfill: Vec<(ulid::Ulid, Vec<f32>)> = Vec::new();
         for (_, doc_bytes) in existing {
             let doc: Document = postcard::from_bytes(&doc_bytes)?;
-            if let Some(val) = doc.get(field) {
-                if let Some(vec) = value_to_f32_vec(val) {
-                    if vec.len() == dimensions {
-                        wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
-                        backfill.push((doc.id, vec));
-                    }
-                }
+            if let Some(val) = doc.get(field)
+                && let Some(vec) = value_to_f32_vec(val)
+                && vec.len() == dimensions
+            {
+                wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
+                backfill.push((doc.id, vec));
             }
         }
 
@@ -791,43 +806,54 @@ impl Collection {
         let all_entries = rtxn.scan_all(&vtable)?;
         drop(rtxn);
 
-        let mut vec_map: Vec<(ulid::Ulid, Vec<f32>)> = Vec::with_capacity(all_entries.len());
+        // 4. Resolve the pre-filter to a set of matching ids up front, so the
+        //    scan below scores only candidates that can appear in the result
+        //    (a 10%-selective filter skips scoring the other 90%).
+        let id_filter: Option<std::collections::HashSet<ulid::Ulid>> = match pre_filter {
+            Some(filter) => Some(self.find(filter)?.iter().map(|d| d.id).collect()),
+            None => None,
+        };
+
+        // 5. Score directly from the stored bytes — no intermediate
+        //    `Vec<f32>` per vector. The query's cosine norm is constant across
+        //    every candidate, so hoist it out of the loop once.
+        let metric = &def.metric;
+        let query_norm = if matches!(metric, VectorMetric::Cosine) {
+            l2_norm(query)
+        } else {
+            0.0
+        };
+        let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(all_entries.len());
         for (key_bytes, val_bytes) in &all_entries {
-            if key_bytes.len() == 16 {
-                let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
-                    Ok(a) => a,
-                    Err(_) => continue,
-                };
-                let id = ulid::Ulid::from_bytes(arr);
-                if let Some(v) = decode_f32_vec(val_bytes) {
-                    vec_map.push((id, v));
-                }
+            if key_bytes.len() != 16 {
+                continue;
+            }
+            let arr: [u8; 16] = match key_bytes.as_slice().try_into() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let id = ulid::Ulid::from_bytes(arr);
+            if let Some(ids) = &id_filter
+                && !ids.contains(&id)
+            {
+                continue;
+            }
+            if let Some(s) = score_from_bytes(metric, query, query_norm, val_bytes) {
+                scored.push((id, s));
             }
         }
 
-        // 4. Apply pre-filter if provided (restrict to matching doc IDs)
-        let candidates: Vec<(ulid::Ulid, Vec<f32>)> = if let Some(filter) = pre_filter {
-            let filtered_docs = self.find(filter)?;
-            let id_set: std::collections::HashSet<ulid::Ulid> =
-                filtered_docs.iter().map(|d| d.id).collect();
-            vec_map
-                .into_iter()
-                .filter(|(id, _)| id_set.contains(id))
-                .collect()
-        } else {
-            vec_map
-        };
-
-        // 5. Score all candidates
-        let metric = &def.metric;
-        let mut scored: Vec<(ulid::Ulid, f32)> = Vec::with_capacity(candidates.len());
-        for (id, v) in &candidates {
-            scored.push((*id, compute_similarity(metric, query, v)));
+        // 6. Select the top_k by score. `select_nth_unstable` partitions in
+        //    O(n) average instead of the O(n log n) of a full sort, then only
+        //    the k retained results are sorted.
+        let k = top_k.min(scored.len());
+        if k > 0 && k < scored.len() {
+            scored.select_nth_unstable_by(k - 1, |a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(k);
         }
-
-        // 6. Sort descending, keep top_k
         scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
 
         self.load_results(scored)
     }
@@ -993,17 +1019,16 @@ impl Collection {
         // Secondary indexes
         for idx in cache.indexes.iter() {
             let idx_table = index_table_name(&self.name, &idx.field);
-            if let Some(old) = old_doc {
-                if let Some(old_val) = old.get(&idx.field) {
-                    if let Some(old_key) = encode_index_key(old_val, old.id) {
-                        wtxn.delete(&idx_table, &old_key)?;
-                    }
-                }
+            if let Some(old) = old_doc
+                && let Some(old_val) = old.get(&idx.field)
+                && let Some(old_key) = encode_index_key(old_val, old.id)
+            {
+                wtxn.delete(&idx_table, &old_key)?;
             }
-            if let Some(new_val) = doc.get(&idx.field) {
-                if let Some(idx_key) = encode_index_key(new_val, doc.id) {
-                    wtxn.put(&idx_table, &idx_key, &[])?;
-                }
+            if let Some(new_val) = doc.get(&idx.field)
+                && let Some(idx_key) = encode_index_key(new_val, doc.id)
+            {
+                wtxn.put(&idx_table, &idx_key, &[])?;
             }
         }
 
@@ -1011,12 +1036,12 @@ impl Collection {
         for fts in cache.fts_indexes.iter() {
             let fts_table = fts_table_name(&self.name, &fts.field);
             // Remove old tokens
-            if let Some(old) = old_doc {
-                if let Some(crate::document::Value::Str(old_text)) = old.get(&fts.field) {
-                    for token in tokenize(old_text) {
-                        let key = encode_fts_key(&token, &old.id);
-                        wtxn.delete(&fts_table, &key)?;
-                    }
+            if let Some(old) = old_doc
+                && let Some(crate::document::Value::Str(old_text)) = old.get(&fts.field)
+            {
+                for token in tokenize(old_text) {
+                    let key = encode_fts_key(&token, &old.id);
+                    wtxn.delete(&fts_table, &key)?;
                 }
             }
             // Write new tokens
@@ -1036,12 +1061,11 @@ impl Collection {
                 wtxn.delete(&vtable, &doc.id.to_bytes())?;
             }
             // Write new vector if field is present and is a valid numeric array
-            if let Some(val) = doc.get(&vdef.field) {
-                if let Some(vec) = value_to_f32_vec(val) {
-                    if vec.len() == vdef.dimensions {
-                        wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
-                    }
-                }
+            if let Some(val) = doc.get(&vdef.field)
+                && let Some(vec) = value_to_f32_vec(val)
+                && vec.len() == vdef.dimensions
+            {
+                wtxn.put(&vtable, &doc.id.to_bytes(), &encode_f32_vec(&vec))?;
             }
         }
 
@@ -1052,18 +1076,18 @@ impl Collection {
             // Remove old compound entry
             if let Some(old) = old_doc {
                 let old_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| old.get(f)).collect();
-                if let Some(v) = old_vals {
-                    if let Some(old_key) = encode_compound_key(&v, old.id) {
-                        wtxn.delete(&ctable, &old_key)?;
-                    }
+                if let Some(v) = old_vals
+                    && let Some(old_key) = encode_compound_key(&v, old.id)
+                {
+                    wtxn.delete(&ctable, &old_key)?;
                 }
             }
             // Write new compound entry
             let new_vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = new_vals {
-                if let Some(new_key) = encode_compound_key(&v, doc.id) {
-                    wtxn.put(&ctable, &new_key, &[])?;
-                }
+            if let Some(v) = new_vals
+                && let Some(new_key) = encode_compound_key(&v, doc.id)
+            {
+                wtxn.put(&ctable, &new_key, &[])?;
             }
         }
 
@@ -1347,6 +1371,13 @@ impl Collection {
     }
 
     pub fn delete_by_id(&self, id: Ulid) -> Result<bool, TalaDbError> {
+        self.delete_by_id_at(id, now_ms())
+    }
+
+    /// Delete a document while preserving the timestamp of the deletion.
+    /// Used by sync import so forwarding a remote tombstone does not make an
+    /// old deletion appear to have happened at local receipt time.
+    pub(crate) fn delete_by_id_at(&self, id: Ulid, deleted_at: u64) -> Result<bool, TalaDbError> {
         let cache = self.load_indexes_cached()?;
         let docs_table = docs_table_name(&self.name);
         let rtxn = self.backend.begin_read()?;
@@ -1359,7 +1390,12 @@ impl Collection {
             None => Ok(false),
             Some(doc) => {
                 let mut wtxn = self.backend.begin_write()?;
-                self.delete_doc_and_indexes_with_compound(&doc, &cache, wtxn.as_mut())?;
+                self.delete_doc_and_indexes_with_compound_at(
+                    &doc,
+                    &cache,
+                    wtxn.as_mut(),
+                    deleted_at,
+                )?;
                 wtxn.commit()?;
                 crate::watch::notify(&self.watch_registry);
                 if let Some(hook) = &self.sync_hook {
@@ -1709,6 +1745,16 @@ impl Collection {
         cache: &CachedIndexes,
         wtxn: &mut dyn crate::engine::WriteTxn,
     ) -> Result<(), TalaDbError> {
+        self.delete_doc_and_indexes_with_compound_at(doc, cache, wtxn, now_ms())
+    }
+
+    fn delete_doc_and_indexes_with_compound_at(
+        &self,
+        doc: &Document,
+        cache: &CachedIndexes,
+        wtxn: &mut dyn crate::engine::WriteTxn,
+        deleted_at: u64,
+    ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
         wtxn.delete(&docs_table, &doc.id.to_bytes())?;
 
@@ -1716,15 +1762,18 @@ impl Collection {
         // and propagated to remote replicas that may not have received the
         // HTTP push event.
         let tomb_table = tomb_table_name(&self.name);
-        let ts_bytes = postcard::to_allocvec(&(now_ms() as i64))?;
+        let deleted_at = i64::try_from(deleted_at).map_err(|_| {
+            TalaDbError::InvalidOperation("deletion timestamp exceeds i64::MAX".into())
+        })?;
+        let ts_bytes = postcard::to_allocvec(&deleted_at)?;
         wtxn.put(&tomb_table, &doc.id.to_bytes(), &ts_bytes)?;
 
         for idx in cache.indexes.iter() {
             let idx_table = index_table_name(&self.name, &idx.field);
-            if let Some(val) = doc.get(&idx.field) {
-                if let Some(idx_key) = encode_index_key(val, doc.id) {
-                    wtxn.delete(&idx_table, &idx_key)?;
-                }
+            if let Some(val) = doc.get(&idx.field)
+                && let Some(idx_key) = encode_index_key(val, doc.id)
+            {
+                wtxn.delete(&idx_table, &idx_key)?;
             }
         }
 
@@ -1747,10 +1796,10 @@ impl Collection {
             let field_refs: Vec<&str> = cidx.fields.iter().map(|s| s.as_str()).collect();
             let ctable = compound_table_name(&self.name, &field_refs);
             let vals: Option<Vec<&Value>> = field_refs.iter().map(|f| doc.get(f)).collect();
-            if let Some(v) = vals {
-                if let Some(key) = encode_compound_key(&v, doc.id) {
-                    wtxn.delete(&ctable, &key)?;
-                }
+            if let Some(v) = vals
+                && let Some(key) = encode_compound_key(&v, doc.id)
+            {
+                wtxn.delete(&ctable, &key)?;
             }
         }
 
@@ -1760,6 +1809,11 @@ impl Collection {
 
 fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
     match update {
+        Update::Many(updates) => {
+            for update in updates {
+                apply_update(doc, update)?;
+            }
+        }
         Update::Set(pairs) => {
             for (k, v) in pairs {
                 doc.set(k, v);
@@ -1794,7 +1848,7 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
                         return Err(TalaDbError::TypeError {
                             expected: "numeric".into(),
                             got: existing.type_name().into(),
-                        })
+                        });
                     }
                 };
                 doc.set(k, new_val);
@@ -1812,7 +1866,7 @@ fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
                 return Err(TalaDbError::TypeError {
                     expected: "array".into(),
                     got: existing.type_name().into(),
-                })
+                });
             }
         },
         Update::Pull(key, val) => {
@@ -1869,8 +1923,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::sync::RecordingSyncHook;
     use crate::Database;
+    use crate::sync::RecordingSyncHook;
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()

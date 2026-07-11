@@ -13,5 +13,5 @@ name = "taladb_ffi"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-taladb-core = { path = "../../../core", features = ["sync-http"] }
+taladb-core = { path = "../../../core", features = ["sync-http", "encryption"] }
 serde_json   = "1.0"

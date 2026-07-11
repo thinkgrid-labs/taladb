@@ -155,6 +155,32 @@ char *taladb_aggregate(TalaDbHandle *handle,
                        const char   *pipeline_json);
 
 /* -------------------------------------------------------------------------
+ * Bidirectional sync — changeset export / import (backs JS db.sync())
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Export a changeset for the collections in collections_json (a JSON array of
+ * names) with changed_at > since_ms. Returns a JSON string, or NULL on error.
+ * Caller must free with taladb_free_string().
+ */
+char *taladb_export_changes(TalaDbHandle *handle,
+                            const char   *collections_json,
+                            double        since_ms);
+
+/**
+ * Merge a JSON changeset (from a remote peer) via Last-Write-Wins.
+ * Returns the number of documents changed, or -1 on error.
+ */
+int32_t taladb_import_changes(TalaDbHandle *handle,
+                              const char   *changeset_json);
+
+/**
+ * User collection names (reserved names excluded) as a JSON array string.
+ * Returns NULL on error. Caller must free with taladb_free_string().
+ */
+char *taladb_list_collection_names(TalaDbHandle *handle);
+
+/* -------------------------------------------------------------------------
  * Index management
  * ---------------------------------------------------------------------- */
 
@@ -162,6 +188,10 @@ void taladb_create_index    (TalaDbHandle *handle, const char *collection, const
 void taladb_drop_index      (TalaDbHandle *handle, const char *collection, const char *field);
 void taladb_create_fts_index(TalaDbHandle *handle, const char *collection, const char *field);
 void taladb_drop_fts_index  (TalaDbHandle *handle, const char *collection, const char *field);
+
+/* Compound (multi-field) indexes. fields_json is a JSON array of field names. */
+void taladb_create_compound_index(TalaDbHandle *handle, const char *collection, const char *fields_json);
+void taladb_drop_compound_index  (TalaDbHandle *handle, const char *collection, const char *fields_json);
 
 /* -------------------------------------------------------------------------
  * Vector index management
@@ -199,6 +229,9 @@ char *taladb_find_nearest(TalaDbHandle *handle,
                           size_t        top_k,
                           const char   *filter_json);
 
+char *taladb_sync_status(TalaDbHandle *handle);
+int32_t taladb_sync_flush(TalaDbHandle *handle, uint64_t timeout_ms);
+
 /* -------------------------------------------------------------------------
  * Async job API — run heavy queries on a background thread.
  *
@@ -208,11 +241,7 @@ char *taladb_find_nearest(TalaDbHandle *handle,
  *   while (taladb_job_poll(j) == 0) { } // yield to JS event loop
  *   char *json = taladb_job_take_result(j);         // frees the job
  *
- * Lifetime contract
- * -----------------
- * The handle passed to `*_start` MUST remain valid until the job has been
- * taken (via take_result) or cancelled (via cancel). The C++ HostObject
- * enforces this by not calling taladb_close while jobs are outstanding.
+ * Workers clone the Arc-backed database state and do not borrow the handle.
  * ---------------------------------------------------------------------- */
 
 typedef struct TalaDbJob TalaDbJob;

@@ -29,10 +29,21 @@ pnpm add taladb @taladb/react-native @taladb/react
 
 ## Setup
 
-Open the database once at app startup and wrap your component tree with `TalaDBProvider`:
+Two ways to provide the database. **Name form** (since v0.9.0) — the provider owns the `openDB` lifecycle: it opens lazily on the client, renders `fallback` until ready (so hooks never see a missing db), and closes on unmount. The right default for browser apps and required for Next.js, where `openDB` cannot run during server rendering:
 
 ```tsx
-// main.tsx (or app/_layout.tsx in Expo)
+import { TalaDBProvider } from '@taladb/react'
+
+root.render(
+  <TalaDBProvider name="myapp.db" fallback={<Splash />}>
+    <App />
+  </TalaDBProvider>
+)
+```
+
+**Instance form** — you open the database yourself and hand it in (plain React with top-level await, React Native):
+
+```tsx
 import { openDB } from 'taladb'
 import { TalaDBProvider } from '@taladb/react'
 
@@ -46,6 +57,8 @@ root.render(
 ```
 
 > **React Native**: call `TalaDBModule.initialize('myapp.db')` before `openDB`. See the [React Native guide](/guide/react-native) for setup details.
+>
+> **Next.js**: the package ships the `'use client'` directive, so importing hooks never trips the RSC boundary — use the name form and see the dedicated [Next.js guide](/guide/nextjs).
 
 ---
 

@@ -15,6 +15,10 @@ export class CollectionWasm {
      */
     count(filter: any): number;
     /**
+     * Create a compound index. `fields_json` is a JSON array of field names.
+     */
+    createCompoundIndex(fields_json: string): void;
+    /**
      * Create a secondary index on a field.
      */
     createIndex(field: string): void;
@@ -36,6 +40,10 @@ export class CollectionWasm {
      * Delete the first matching document. Returns true if deleted.
      */
     deleteOne(filter: any): boolean;
+    /**
+     * Drop a compound index by its ordered field list (`fields_json`).
+     */
+    dropCompoundIndex(fields_json: string): void;
     /**
      * Drop a secondary index.
      */
@@ -174,6 +182,10 @@ export class WorkerDB {
      * Count matching documents.
      */
     count(collection: string, filter_json: string): number;
+    /**
+     * Create a compound index. `fields_json` is a JSON array of field names.
+     */
+    createCompoundIndex(collection: string, fields_json: string): void;
     createFtsIndex(collection: string, field: string): void;
     createIndex(collection: string, field: string): void;
     /**
@@ -193,6 +205,10 @@ export class WorkerDB {
      * Delete the first matching document. Returns `true` / `false`.
      */
     deleteOne(collection: string, filter_json: string): boolean;
+    /**
+     * Drop a compound index by its ordered field list (`fields_json`).
+     */
+    dropCompoundIndex(collection: string, fields_json: string): void;
     dropFtsIndex(collection: string, field: string): void;
     dropIndex(collection: string, field: string): void;
     /**
@@ -277,7 +293,7 @@ export class WorkerDB {
      * const db = WorkerDB.openWithConfigAndOpfs(handle, JSON.stringify(config));
      * ```
      */
-    static openWithConfigAndOpfs(sync_handle: FileSystemSyncAccessHandle, config_json?: string | null): WorkerDB;
+    static openWithConfigAndOpfs(sync_handle: FileSystemSyncAccessHandle, config_json?: string | null, passphrase?: string | null, salt?: Uint8Array | null): WorkerDB;
     /**
      * Open a database from an optional snapshot with HTTP push sync config.
      *
@@ -312,6 +328,8 @@ export class WorkerDB {
      * ```
      */
     static openWithSnapshot(data?: Uint8Array | null): WorkerDB;
+    syncPending(): bigint;
+    syncStatus(): string;
     /**
      * Update all matching documents. Returns the count updated.
      */
@@ -387,11 +405,13 @@ export interface InitOutput {
     readonly workerdb_compact: (a: number) => [number, number];
     readonly workerdb_compactTombstones: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly workerdb_count: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly workerdb_createCompoundIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number];
     readonly workerdb_deleteMany: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly workerdb_deleteOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly workerdb_dropCompoundIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -406,10 +426,12 @@ export interface InitOutput {
     readonly workerdb_listCollections: (a: number) => [number, number, number, number];
     readonly workerdb_listIndexes: (a: number, b: number, c: number) => [number, number, number, number];
     readonly workerdb_openInMemory: () => [number, number, number];
-    readonly workerdb_openWithConfigAndOpfs: (a: any, b: number, c: number) => [number, number, number];
+    readonly workerdb_openWithConfigAndOpfs: (a: any, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_openWithConfigAndSnapshot: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly workerdb_openWithOpfs: (a: any) => [number, number, number];
     readonly workerdb_openWithSnapshot: (a: number, b: number) => [number, number, number];
+    readonly workerdb_syncPending: (a: number) => bigint;
+    readonly workerdb_syncStatus: (a: number) => [number, number];
     readonly workerdb_updateMany: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_updateOne: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_upgradeVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -417,10 +439,12 @@ export interface InitOutput {
     readonly __wbg_taladbwasm_free: (a: number, b: number) => void;
     readonly collectionwasm_aggregate: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_count: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_createCompoundIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly collectionwasm_deleteMany: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_deleteOne: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_dropCompoundIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_dropIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_dropVectorIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_find: (a: number, b: any) => [number, number, number];
@@ -439,20 +463,20 @@ export interface InitOutput {
     readonly taladbwasm_openInMemory: () => [number, number, number];
     readonly taladbwasm_openWithSnapshot: (a: number, b: number) => [number, number, number];
     readonly init: () => void;
+    readonly opfs_open_backend: (a: number, b: number) => any;
+    readonly idb_load_snapshot: (a: number, b: number) => any;
+    readonly idb_save_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly is_opfs_available: () => any;
     readonly opfs_delete_snapshot: (a: number, b: number) => any;
     readonly opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly opfs_load_snapshot: (a: number, b: number) => any;
-    readonly opfs_open_backend: (a: number, b: number) => any;
-    readonly idb_load_snapshot: (a: number, b: number) => any;
-    readonly idb_save_snapshot: (a: number, b: number, c: number, d: number) => any;
-    readonly wasm_bindgen__closure__destroy__ha638fe274d54c9e0: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__h5c2c10c592ffa4a1: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__h74c1b24bde26b166: (a: number, b: number) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h7066411a611e40e1: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__closure__destroy__he22c2c171c027d5f: (a: number, b: number) => void;
+    readonly wasm_bindgen__closure__destroy__hcc9749e9df054fa1: (a: number, b: number) => void;
+    readonly wasm_bindgen__closure__destroy__h0b9d610530342eed: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hb52f4011b6a30878: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h707ae5550c49813b: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h63d0de3d47dbdce7: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h04047ee6b7bd7952: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

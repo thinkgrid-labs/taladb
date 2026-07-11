@@ -33,12 +33,6 @@
 using namespace facebook::jsi;
 
 // ---------------------------------------------------------------------------
-// Global handle — one database per process
-// ---------------------------------------------------------------------------
-
-static TalaDbHandle *gHandle = nullptr;
-
-// ---------------------------------------------------------------------------
 // TalaDB — Obj-C TurboModule
 // ---------------------------------------------------------------------------
 
@@ -51,27 +45,26 @@ RCT_EXPORT_MODULE(TalaDB)
 
 // ---- Class method: open DB and install the JSI HostObject ----------------
 
-+ (void)installInRuntime:(facebook::jsi::Runtime &)rt
++ (NSString * _Nullable)installInRuntime:(facebook::jsi::Runtime &)rt
                   dbPath:(NSString *)path
               configJson:(NSString * _Nullable)configJson {
-    if (gHandle) {
-        taladb_close(gHandle);
-        gHandle = nullptr;
-    }
-
+    // Release any previous HostObject before reopening the same redb file.
+    rt.global().setProperty(rt, "__TalaDB__", Value::undefined());
+    TalaDbHandle *handle = nullptr;
     if (configJson != nil) {
-        gHandle = taladb_open_with_config(path.UTF8String, configJson.UTF8String);
+        handle = taladb_open_with_config(path.UTF8String, configJson.UTF8String);
     } else {
-        gHandle = taladb_open(path.UTF8String);
+        handle = taladb_open(path.UTF8String);
     }
 
-    if (!gHandle) {
-        NSLog(@"[TalaDB] Failed to open database at %@", path);
-        return;
+    if (!handle) {
+        const char *raw = taladb_last_error();
+        return raw ? [NSString stringWithUTF8String:raw] : @"failed to open TalaDB";
     }
 
-    taladb::TalaDBHostObject::install(rt, gHandle);
+    taladb::TalaDBHostObject::install(rt, handle);
     NSLog(@"[TalaDB] Installed JSI HostObject — db: %@", path);
+    return nil;
 }
 
 // ---- initialize(dbName) → Promise<void>  ---------------------------------
@@ -81,9 +74,29 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
                   resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
     @try {
-        NSString *docs = [NSSearchPathForDirectoriesInDomains(
+        NSString *support = [NSSearchPathForDirectoriesInDomains(
+            NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
+        [[NSFileManager defaultManager] createDirectoryAtPath:support
+                                  withIntermediateDirectories:YES
+                                                   attributes:@{NSFileProtectionKey: NSFileProtectionCompleteUntilFirstUserAuthentication}
+                                                        error:nil];
+        NSString *dbPath = [support stringByAppendingPathComponent:dbName];
+        NSString *documents = [NSSearchPathForDirectoriesInDomains(
             NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        NSString *dbPath = [docs stringByAppendingPathComponent:dbName];
+        NSString *legacyPath = [documents stringByAppendingPathComponent:dbName];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:dbPath] &&
+            [[NSFileManager defaultManager] fileExistsAtPath:legacyPath]) {
+            NSError *migrationError = nil;
+            if (![[NSFileManager defaultManager] moveItemAtPath:legacyPath toPath:dbPath error:&migrationError]) {
+                reject(@"TALADB_MIGRATION_ERROR", migrationError.localizedDescription, migrationError);
+                return;
+            }
+            NSString *legacySalt = [legacyPath stringByAppendingString:@".taladb-salt"];
+            NSString *newSalt = [dbPath stringByAppendingString:@".taladb-salt"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:legacySalt]) {
+                [[NSFileManager defaultManager] moveItemAtPath:legacySalt toPath:newSalt error:nil];
+            }
+        }
 
         RCTCxxBridge *bridge = (RCTCxxBridge *)[RCTBridge currentBridge];
         if (!bridge || !bridge.runtime) {
@@ -92,12 +105,22 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
         }
 
         // Install the HostObject on the JS thread
-        bridge.jsCallInvoker->invokeAsync([bridge, dbPath, configJson]() {
+        bridge.jsCallInvoker->invokeAsync([bridge, dbPath, configJson, resolve, reject]() {
             auto &rt = *(Runtime *)bridge.runtime;
-            [TalaDB installInRuntime:rt dbPath:dbPath configJson:configJson];
+            NSString *error = [TalaDB installInRuntime:rt dbPath:dbPath configJson:configJson];
+            if (error) reject(@"TALADB_INSTALL_ERROR", error, nil);
+            else {
+                NSDictionary *protection = @{NSFileProtectionKey: NSFileProtectionCompleteUntilFirstUserAuthentication};
+                [[NSFileManager defaultManager] setAttributes:protection ofItemAtPath:dbPath error:nil];
+                NSString *saltPath = [dbPath stringByAppendingString:@".taladb-salt"];
+                [[NSFileManager defaultManager] setAttributes:protection ofItemAtPath:saltPath error:nil];
+                NSURL *dbURL = [NSURL fileURLWithPath:dbPath];
+                [dbURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+                NSURL *saltURL = [NSURL fileURLWithPath:saltPath];
+                [saltURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+                resolve(nil);
+            }
         });
-
-        resolve(nil);
     } @catch (NSException *ex) {
         reject(@"TALADB_INIT_ERROR", ex.reason, nil);
     }
@@ -107,11 +130,16 @@ RCT_EXPORT_METHOD(initialize:(NSString *)dbName
 
 RCT_EXPORT_METHOD(close:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
-    if (gHandle) {
-        taladb_close(gHandle);
-        gHandle = nullptr;
+    RCTCxxBridge *bridge = (RCTCxxBridge *)[RCTBridge currentBridge];
+    if (!bridge || !bridge.runtime) {
+        reject(@"TALADB_NO_BRIDGE", @"JSI bridge not available", nil);
+        return;
     }
-    resolve(nil);
+    bridge.jsCallInvoker->invokeAsync([bridge, resolve]() {
+        auto &rt = *(Runtime *)bridge.runtime;
+        rt.global().setProperty(rt, "__TalaDB__", Value::undefined());
+        resolve(nil);
+    });
 }
 
 // ---- Synchronous stubs — all real work goes through the JSI HostObject ---

@@ -67,6 +67,16 @@ describe('useFind — initial state', () => {
 // ---------------------------------------------------------------------------
 
 describe('useFind — live updates', () => {
+  it('surfaces subscription errors and stops loading', async () => {
+    const { collection, fail } = createMockCollection<Note>()
+    const { result } = renderHook(() => useFind(collection))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    const error = new Error('worker crashed')
+    act(() => fail(error))
+    await waitFor(() => expect(result.current.error).toBe(error))
+    expect(result.current.loading).toBe(false)
+  })
+
   it('re-renders when subscription fires new documents', async () => {
     const { collection, push } = createMockCollection<Note>()
     const { result } = renderHook(() => useFind(collection))

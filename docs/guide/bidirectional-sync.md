@@ -8,7 +8,7 @@ description: Sync a local-first app (React, Next.js, React Native) to your backe
 [HTTP Push Sync](/guide/http-sync) is fire-and-forget: it POSTs every local write outward and never hears back. **Bidirectional sync** is the full loop — pull remote changes into the local database *and* push local changes out, tracked by cursors so each pass is incremental, with automatic Last-Write-Wins conflict resolution.
 
 ::: info Runtime support
-Available on **Node.js** and the **browser** (since v0.8.5 — both the OPFS worker and the in-memory fallback). In the browser, all sync engine work runs inside the Dedicated Worker, off the main thread, so a pass never blocks rendering. React Native shares the same engine; its binding wiring lands in a future release — calling `db.sync()` there throws a clear error until then. Track it on the [roadmap](/roadmap).
+Available on **Node.js** and the **browser** (since v0.9.0 — both the OPFS worker and the in-memory fallback). In the browser, all sync engine work runs inside the Dedicated Worker, off the main thread, so a pass never blocks rendering. **React Native** support is implemented across the stack and pending on-device verification (see [below](#react-native)); until a verified native build ships, `db.sync()` on RN throws a clear error via feature detection. Track it on the [roadmap](/roadmap).
 :::
 
 ## Client → server: sync your app to your backend
@@ -95,7 +95,44 @@ The whole pass — change export, LWW merge — executes inside TalaDB's worker,
 
 ### Next.js
 
-Same packages as React. The one rule: **TalaDB is browser-only — keep it out of the server render.** Open the database lazily from client components:
+Same packages as React, plus the first-party integration (v0.9.0) that reduces both sides to a few lines:
+
+```bash
+pnpm add taladb @taladb/web @taladb/react @taladb/next
+```
+
+```ts
+// app/api/sync/[[...action]]/route.ts — your complete sync backend
+import { openDB } from 'taladb'
+import { createSyncHandlers, taladbSyncStore } from '@taladb/next/server'
+
+const hub = await openDB('sync-hub.db') // server-side TalaDB as the change store
+export const { POST, GET } = createSyncHandlers({
+  store: taladbSyncStore(hub),          // or memorySyncStore() for dev, or your own SyncStore
+  authorize: async (req) => verifySession(req.headers.get('authorization')), // → per-user scope, 401 on null
+})
+```
+
+```tsx
+// app/providers.tsx — and the client side
+'use client'
+import { TalaDBProvider } from '@taladb/react'
+import { SyncProvider } from '@taladb/next/client'
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <TalaDBProvider name="myapp.db" fallback={<Splash />}>
+      <SyncProvider endpoint="/api/sync" headers={() => ({ Authorization: `Bearer ${getToken()}` })}>
+        {children}
+      </SyncProvider>
+    </TalaDBProvider>
+  )
+}
+```
+
+`<TalaDBProvider name>` owns the client-only `openDB()` (SSR renders the fallback; hooks never see a missing db — `@taladb/react` ships `'use client'` so imports never trip the RSC boundary). `<SyncProvider>` drives `db.sync()` on start, every 30 s, on reconnect, and on tab focus. `authorize` is your security boundary: it returns a scope key (user id) and the store never mixes scopes.
+
+Prefer to wire it manually — or on an older version? The one rule: **TalaDB is browser-only — keep it out of the server render.** Open the database lazily from client components:
 
 ```ts
 // lib/db.ts — client-only singleton, safe to import anywhere
@@ -143,9 +180,9 @@ Pointing the adapter at a **Next.js route handler** (`app/api/sync/push/route.ts
 
 ### React Native
 
-`taladb` + `@taladb/react-native` give you the same local-first database on iOS and Android today. **`db.sync()` on React Native lands in a future release** — the core engine already supports it; the changeset primitives are being exposed through the JSI binding. Until then `db.sync()` throws a clear error on RN.
+`taladb` + `@taladb/react-native` give you the same local-first database on iOS and Android today. **`db.sync()` on React Native is implemented but pending on-device verification** — the changeset primitives are wired through the full stack (Rust FFI → JSI HostObject → the TS adapter), and the API is identical to Node/web. The client feature-detects the native methods, so on a native module that predates them `db.sync()` still throws a clear error rather than crashing. Once a native build with these methods is verified on iOS and Android it graduates to fully supported — track it on the [roadmap](/roadmap).
 
-Plan for these mobile realities when it arrives (the API will be identical):
+Plan for these mobile realities (the API is identical to the React examples above):
 
 - **Foreground sync is the baseline** — the same pattern as React, driven by `AppState` instead of `visibilitychange`: sync on launch, on `active`, and on an interval while the app is foregrounded. This alone covers most apps.
 - **True background sync is OS-scheduled, not guaranteed.** iOS (BGTaskScheduler / background fetch, via e.g. `react-native-background-fetch`) requires the *Background Modes → Background fetch* capability and decides itself when your task runs; Android schedules through WorkManager with Doze/App-Standby restrictions and OEM battery managers on top. Design as "opportunistic catch-up in the background, guaranteed reconciliation on next launch" — never assume a background pass happened.

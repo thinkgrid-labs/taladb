@@ -146,6 +146,19 @@ Indexes are created per field with `createIndex('fieldName')`. The underlying st
 
 The query planner examines the filter and picks the most selective available index automatically. No hints or query annotations are needed.
 
+### Compound (multi-field) indexes
+
+Index an ordered list of fields to serve a multi-field equality query with a single index scan:
+
+```ts
+await orders.createCompoundIndex(['userId', 'status'])
+
+// One index scan instead of a full-collection scan:
+await orders.find({ userId: 'u_123', status: 'open' })
+```
+
+The planner uses the compound index when an `$and` constrains **every** field of the index by equality. Fields are ascending; partial-prefix and trailing-range matches, and per-field descending order, are on the [roadmap](/roadmap). Available on Node.js and the browser; React Native support is implemented and pending on-device verification.
+
 ## ACID transactions via redb
 
 Every write is wrapped in an ACID transaction at the storage layer. Document writes and index updates happen atomically — there is no window where a document exists but its index entry is missing, or vice versa. On crash or power loss, redb recovers to the last committed state.
@@ -178,13 +191,17 @@ In the browser, writes from *other tabs* trigger subscriptions too (via `Broadca
 
 ## Encryption at rest
 
-The `encryption` Cargo feature adds:
+Pass a `passphrase` to `openDB` (Node.js and the browser) — or to `TalaDBModule.initialize` on React Native — and every value is transparently encrypted with **AES-GCM-256** before it touches disk, on all three runtimes:
 
-- `EncryptedBackend` — a `StorageBackend` wrapper that encrypts every value with AES-GCM-256 before writing and decrypts on read
-- `encrypt` / `decrypt` — low-level primitives for manual use
-- `derive_key` — PBKDF2-HMAC-SHA256 key derivation from a passphrase and salt
+```ts
+const db = await openDB('myapp.db', { passphrase: userSuppliedPassphrase })
+```
 
-Nonces are generated per write using the OS random number generator. The 16-byte GCM authentication tag prevents silent data corruption and detects tampering.
+- `EncryptedBackend` — a `StorageBackend` wrapper that encrypts every value with AES-GCM-256 before writing and decrypts on read; it wraps the file backend (Node/RN) or the OPFS backend (browser) identically
+- Keys are derived with **PBKDF2-HMAC-SHA256** (600,000 iterations) from the passphrase and a random 16-byte salt stored beside the database
+- Per-write random nonces; the 16-byte GCM tag detects tampering and rejects a wrong passphrase before returning a handle
+
+Document IDs and index keys are not encrypted (they must remain comparable for lookups) — so don't index a field whose confidentiality you rely on encryption for. See the [Encryption reference](/api/encryption) for the full model, including the browser's OPFS/single-tab requirement.
 
 ## OPFS-backed browser persistence
 
@@ -264,7 +281,7 @@ await db.sync(adapter, { exclude: ['logs'] })           // deny-list
 
 Any backend becomes a sync peer by implementing the two-method `SyncAdapter` interface — `push(changeset)` and `pull(sinceMs)`. The reference `HttpSyncAdapter` ships inside the `taladb` package; **[`@taladb/sync-mongodb`](/guide/bidirectional-sync#mongodb-adapter)** syncs straight into a MongoDB collection with no intermediate API (server-side only — it holds a database credential). Under the hood everything is built on `db.exportChanges()` / `db.importChanges()`, which are idempotent under LWW, so replays and at-least-once transports are safe.
 
-`db.sync()` runs on Node.js and in the browser (since v0.8.5), where all sync engine work happens inside the Dedicated Worker — a pass never blocks the UI. React Native shares the same engine primitives and is next. See the [Bidirectional Sync guide](/guide/bidirectional-sync).
+`db.sync()` runs on Node.js and in the browser (since v0.9.0), where all sync engine work happens inside the Dedicated Worker — a pass never blocks the UI. React Native support is implemented across the stack and pending on-device verification. See the [Bidirectional Sync guide](/guide/bidirectional-sync).
 
 ## HTTP push sync
 

@@ -51,7 +51,8 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
      * JSI runtime identified by [jsContextNativePtr].
      * Called once from [initialize].
      */
-    private external fun nativeInstall(jsContextNativePtr: Long, dbPath: String, configJson: String?)
+    private external fun nativeInstall(jsContextNativePtr: Long, dbPath: String, configJson: String?): String?
+    private external fun nativeClose(jsContextNativePtr: Long)
 
     // -----------------------------------------------------------------------
     // TurboModule: initialize(dbName, configJson?) → Promise<void>
@@ -59,16 +60,33 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
 
     override fun initialize(dbName: String, configJson: String?, promise: Promise) {
         try {
-            val dbPath = reactContext.filesDir.absolutePath + "/$dbName"
+            // Private app storage excluded from Android Auto Backup. The OS
+            // file-based-encryption layer protects it while the device is locked.
+            val dbFile = java.io.File(reactContext.noBackupFilesDir, dbName)
+            val legacyFile = java.io.File(reactContext.filesDir, dbName)
+            if (!dbFile.exists() && legacyFile.exists() && !legacyFile.renameTo(dbFile)) {
+                throw java.io.IOException("failed to migrate TalaDB into no-backup storage")
+            }
+            val legacySalt = java.io.File(legacyFile.absolutePath + ".taladb-salt")
+            val saltFile = java.io.File(dbFile.absolutePath + ".taladb-salt")
+            if (!saltFile.exists() && legacySalt.exists() && !legacySalt.renameTo(saltFile)) {
+                throw java.io.IOException("failed to migrate TalaDB encryption salt")
+            }
+            val dbPath = dbFile.absolutePath
 
             // javaScriptContextHolder.get() returns the raw jsi::Runtime* pointer.
             val jsContextPtr = reactContext.javaScriptContextHolder!!.get()
+            if (jsContextPtr == 0L) {
+                promise.reject("TALADB_NO_RUNTIME", "JSI runtime is not available")
+                return
+            }
 
             // Install on the JS thread
             reactContext.runOnJSQueueThread {
                 try {
-                    nativeInstall(jsContextPtr, dbPath, configJson)
-                    promise.resolve(null)
+                    val error = nativeInstall(jsContextPtr, dbPath, configJson)
+                    if (error == null) promise.resolve(null)
+                    else promise.reject("TALADB_INSTALL_ERROR", error)
                 } catch (e: Exception) {
                     promise.reject("TALADB_INSTALL_ERROR", e.message, e)
                 }
@@ -89,11 +107,8 @@ class TalaDBModule(private val reactContext: ReactApplicationContext) :
         try {
             reactContext.runOnJSQueueThread {
                 try {
-                    reactContext.javaScriptContextHolder?.let { holder ->
-                        // Setting the property to undefined lets the JSI
-                        // HostObject destructor run (Hermes GC permitting).
-                        // For an immediate close, call nativeClose() instead.
-                    }
+                    val ptr = reactContext.javaScriptContextHolder?.get() ?: 0L
+                    if (ptr != 0L) nativeClose(ptr)
                     promise.resolve(null)
                 } catch (e: Exception) {
                     promise.reject("TALADB_CLOSE_ERROR", e.message, e)

@@ -95,9 +95,11 @@ describe.skipIf(!nativeAvailable)('bidirectional sync e2e (native engine + HTTP)
     expect(docs).toHaveLength(1);
     expect(docs[0].title).toBe('from A');
 
-    // Second pass is incremental: nothing new on either side.
+    // Timestamp-only adapters replay from zero to avoid skipping racing or
+    // late-arriving writes. The outbound change is counted, while LWW makes
+    // the replay a no-op when imported.
     const again = await dbA.sync(adapter, {});
-    expect(again.pushed).toBe(0);
+    expect(again.pushed).toBe(1);
     expect(again.pulled).toBe(0);
 
     await dbA.close();

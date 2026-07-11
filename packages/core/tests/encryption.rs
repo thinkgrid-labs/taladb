@@ -6,11 +6,41 @@
 
 use std::sync::Arc;
 
-use taladb_core::crypto::{decrypt, derive_key, encrypt, EncryptedBackend, MIN_PBKDF2_ITERATIONS};
+use taladb_core::crypto::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, decrypt, derive_key, encrypt};
 use taladb_core::document::Value;
 use taladb_core::engine::RedbBackend;
 use taladb_core::{Database, Filter};
 use zeroize::Zeroizing;
+
+#[test]
+fn public_encrypted_open_round_trips_and_rejects_wrong_passphrase() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secure.redb");
+    {
+        let db = Database::open_encrypted(&path, "correct horse battery staple").unwrap();
+        db.collection("secrets")
+            .unwrap()
+            .insert(vec![("token".into(), Value::Str("top-secret".into()))])
+            .unwrap();
+    }
+    assert!(path.with_extension("redb.taladb-salt").exists());
+    assert!(
+        !std::fs::read(&path)
+            .unwrap()
+            .windows(b"top-secret".len())
+            .any(|w| w == b"top-secret")
+    );
+    assert!(Database::open_encrypted(&path, "wrong passphrase").is_err());
+    let db = Database::open_encrypted(&path, "correct horse battery staple").unwrap();
+    assert_eq!(
+        db.collection("secrets")
+            .unwrap()
+            .find(Filter::All)
+            .unwrap()
+            .len(),
+        1
+    );
+}
 
 fn s(v: &str) -> Value {
     Value::Str(v.to_string())

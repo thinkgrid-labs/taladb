@@ -567,19 +567,16 @@ pub fn decrypt_fields(
 ) -> Result<(), crate::error::TalaDbError> {
     let doc_id = doc.id;
     for (name, val) in &mut doc.fields {
-        if config.fields.iter().any(|f| f == name) {
-            if let crate::document::Value::Bytes(ciphertext) = val {
-                let plain =
-                    match decrypt(&config.key, "field", &field_aad(doc_id, name), ciphertext) {
-                        Ok(p) => p,
-                        Err(_) => {
-                            decrypt(&config.key, "field", &legacy_field_aad(name), ciphertext)?
-                        }
-                    };
-                let original: crate::document::Value = postcard::from_bytes(&plain)
-                    .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
-                *val = original;
-            }
+        if config.fields.iter().any(|f| f == name)
+            && let crate::document::Value::Bytes(ciphertext) = val
+        {
+            let plain = match decrypt(&config.key, "field", &field_aad(doc_id, name), ciphertext) {
+                Ok(p) => p,
+                Err(_) => decrypt(&config.key, "field", &legacy_field_aad(name), ciphertext)?,
+            };
+            let original: crate::document::Value = postcard::from_bytes(&plain)
+                .map_err(|e| crate::error::TalaDbError::Serialization(e.to_string()))?;
+            *val = original;
         }
     }
     Ok(())
@@ -714,9 +711,10 @@ mod tests {
         let mut ct = encrypt(&key, "t", b"k", b"data").unwrap();
         ct[0] = 0xFF; // corrupt version byte
         let err = decrypt(&key, "t", b"k", &ct).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("unsupported encrypted-value format version"));
+        assert!(
+            err.to_string()
+                .contains("unsupported encrypted-value format version")
+        );
     }
 
     #[test]

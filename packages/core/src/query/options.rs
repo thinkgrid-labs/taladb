@@ -86,7 +86,7 @@ pub struct FindOptions {
 ///   Null < Bool < Int/Float (numeric) < Str < Bytes < Array < Object
 ///
 /// Mixed numeric types (Int vs Float) are compared numerically.
-fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+pub(crate) fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a, b) {
         (Value::Null, Value::Null) => Ordering::Equal,

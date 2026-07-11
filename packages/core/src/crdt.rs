@@ -385,10 +385,10 @@ impl CrdtAdapter for CrdtSyncAdapter {
 
         for change in changeset {
             // Skip collections not in the allowlist (if one is configured).
-            if let Some(ref allowed) = self.allowed_collections {
-                if !allowed.contains(&change.collection) {
-                    continue;
-                }
+            if let Some(ref allowed) = self.allowed_collections
+                && !allowed.contains(&change.collection)
+            {
+                continue;
             }
 
             let col = db.collection(&change.collection)?;

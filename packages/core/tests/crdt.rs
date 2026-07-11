@@ -1,10 +1,10 @@
+use taladb_core::Database;
 use taladb_core::crdt::{
-    CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock, FieldMutation,
-    CRDT_CLOCKS_FIELD,
+    CRDT_CLOCKS_FIELD, CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock,
+    FieldMutation,
 };
 use taladb_core::document::{Document, Value};
 use taladb_core::query::filter::Filter;
-use taladb_core::Database;
 use ulid::Ulid;
 
 fn s(v: &str) -> Value {

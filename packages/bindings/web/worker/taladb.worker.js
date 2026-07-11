@@ -162,14 +162,26 @@ let broadcastChannel = null;
  */
 let idbFallback = false;
 
+/** Whether this worker is allowed to publish the authoritative IDB snapshot. */
+let snapshotWriter = false;
+
+/**
+ * True when the database is opened with a passphrase (encrypted at rest in the
+ * OPFS file). Encrypted databases NEVER write a snapshot to IndexedDB — an
+ * exported snapshot is decrypted plaintext, so persisting it would defeat
+ * encryption. Encrypted mode therefore requires exclusive OPFS and is
+ * single-tab: the multi-tab IDB-snapshot fallback is refused, not silently
+ * downgraded to plaintext.
+ * @type {boolean}
+ */
+let encrypted = false;
+
 /**
  * Timestamp (ms) of the last changeset we exported and broadcast to the
  * primary tab.  Used as `sinceMs` for the next export so we only send the
  * delta, not the entire database on every write.
  * @type {number}
  */
-let lastSecondaryPushMs = 0;
-
 // ---------------------------------------------------------------------------
 // IndexedDB helpers (used only when OPFS is unavailable)
 // ---------------------------------------------------------------------------
@@ -260,10 +272,11 @@ async function flushSnapshot() {
   clearTimeout(snapshotTimer);
   snapshotTimer = null;
   lastSnapshotMs = Date.now();
-  if (db && activeDbName) {
+  if (db && activeDbName && snapshotWriter) {
     try {
       const bytes = db.exportSnapshot();
       await idbSaveSnapshot(activeDbName, bytes);
+      broadcastChannel?.postMessage('taladb:snapshot-ready');
     } catch { /* best-effort — ignore failures */ }
   }
 }
@@ -300,11 +313,13 @@ function pushChangesetToPrimary() {
     // Collect all collection names from the current in-memory state.
     // exportChangeset accepts a JSON array of collection names.
     const collections = db.listCollections();
-    const changeset = db.exportChangeset(collections, lastSecondaryPushMs);
+    // Wall-clock timestamps are not safe incremental cursors: a write can be
+    // stamped before an export but commit after its snapshot. Replay is
+    // idempotent under LWW and cannot skip such a write.
+    const changeset = db.exportChangeset(collections, 0);
     // Only broadcast if there is actually something to send.
     const parsed = JSON.parse(changeset);
     if (parsed.length === 0) return;
-    lastSecondaryPushMs = Date.now();
     broadcastChannel.postMessage({ type: 'taladb:secondary-write', token: SESSION_TOKEN, changeset });
     log(`Broadcast ${parsed.length} change(s) to primary tab`);
   } catch (err) {
@@ -323,7 +338,7 @@ function onWriteCommitted() {
   pushChangesetToPrimary();
   // Debounced IDB flush — keeps other tabs' fallback instances in sync via
   // BroadcastChannel + snapshotDirty reload without writing to IDB on every op.
-  scheduleSnapshot();
+  if (snapshotWriter) scheduleSnapshot();
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +381,7 @@ async function dispatch(op, args) {
   }
 
   if (op === 'init') {
-    const { dbName, configJson } = args;
+    const { dbName, configJson, passphrase } = args;
 
     if (activeDbName !== null && activeDbName !== dbName) {
       throw new Error(
@@ -378,7 +393,7 @@ async function dispatch(op, args) {
     if (!initPromises.has(dbName)) {
       activeDbName = dbName;
       activeConfigJson = configJson ?? null;
-      initPromises.set(dbName, doInit(dbName, configJson ?? null));
+      initPromises.set(dbName, doInit(dbName, configJson ?? null, passphrase ?? null));
     }
     await initPromises.get(dbName);
     return null;
@@ -443,6 +458,14 @@ async function dispatch(op, args) {
       db.dropIndex(args.collection, args.field);
       return null;
 
+    case 'createCompoundIndex':
+      db.createCompoundIndex(args.collection, args.fieldsJson);
+      return null;
+
+    case 'dropCompoundIndex':
+      db.dropCompoundIndex(args.collection, args.fieldsJson);
+      return null;
+
     case 'createFtsIndex':
       db.createFtsIndex(args.collection, args.field);
       return null;
@@ -491,6 +514,17 @@ async function dispatch(op, args) {
       db.compact();
       return null;
 
+    case 'syncStatus':
+      return db.syncStatus();
+
+    case 'flushSync': {
+      const deadline = Date.now() + (args.timeoutMs ?? 5000);
+      while (db.syncPending() > 0 && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      return db.syncPending() === 0;
+    }
+
     case 'compactTombstones':
       // Prune tombstones older than beforeMs from a collection.
       // Returns the count of tombstones removed.
@@ -510,6 +544,13 @@ async function dispatch(op, args) {
     }
 
     case 'close':
+      // Give accepted HTTP push events a bounded opportunity to finish.
+      {
+        const deadline = Date.now() + 5000;
+        while (db.syncPending() > 0 && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      }
       // Flush any pending debounced snapshot before releasing the lock so
       // no writes are lost when the tab closes or navigates away.
       await flushSnapshot();
@@ -518,6 +559,7 @@ async function dispatch(op, args) {
       broadcastChannel?.close();
       broadcastChannel = null;
       idbFallback = false;
+      snapshotWriter = false;
       db = null;
       return null;
 
@@ -526,26 +568,58 @@ async function dispatch(op, args) {
   }
 }
 
+/**
+ * Load the 16-byte key-derivation salt from an OPFS sidecar file, or create it
+ * on first open. The salt is not secret (it defends against precomputed-hash
+ * attacks) but must be stable across opens, so it lives beside the DB file.
+ * @returns {Promise<Uint8Array>} the 16-byte salt
+ */
+async function loadOrCreateSalt(root, saltFileName) {
+  const fh = await root.getFileHandle(saltFileName, { create: true });
+  const h = await fh.createSyncAccessHandle();
+  try {
+    const size = h.getSize();
+    if (size === 16) {
+      const salt = new Uint8Array(16);
+      h.read(salt, { at: 0 });
+      return salt;
+    }
+    if (size === 0) {
+      const salt = new Uint8Array(16);
+      self.crypto.getRandomValues(salt);
+      h.write(salt, { at: 0 });
+      h.flush();
+      return salt;
+    }
+    throw new Error(`invalid TalaDB salt file (${size} bytes, expected 16)`);
+  } finally {
+    h.close();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Initialisation — load WASM, acquire lock, open OPFS file
 // ---------------------------------------------------------------------------
 
-async function doInit(dbName, configJson) {
+async function doInit(dbName, configJson, passphrase = null) {
   const wasm = await import(/* @vite-ignore */ '../pkg/taladb_web.js');
   await wasm.default();
 
   // Hoist to module scope so snapshot reloads in dispatch() can use it.
   WorkerDB = wasm.WorkerDB;
 
+  encrypted = typeof passphrase === 'string' && passphrase.length > 0;
+
   // Open the BroadcastChannel now that we know the db name.
   if (typeof BroadcastChannel !== 'undefined') {
     broadcastChannel = new BroadcastChannel(`taladb:${dbName}`);
     broadcastChannel.onmessage = async (e) => {
       if (e.data === 'taladb:changed' && idbFallback) {
-        // Fallback tab: primary tab wrote — reload snapshot before next read.
-        snapshotDirty = true;
-      } else if (e.data === 'taladb:request-snapshot' && !idbFallback && db && activeDbName) {
+        // Wait for snapshot-ready: changed is emitted before the primary's
+        // asynchronous IDB transaction has committed.
+      } else if (e.data === 'taladb:request-snapshot' && !idbFallback && !encrypted && db && activeDbName) {
         // Primary (OPFS) tab: a new tab asked for a snapshot — export and save it.
+        // Never for encrypted DBs: an exported snapshot is decrypted plaintext.
         try {
           const bytes = db.exportSnapshot();
           await idbSaveSnapshot(activeDbName, bytes);
@@ -557,8 +631,15 @@ async function doInit(dbName, configJson) {
         const resolve = pendingSnapshotResolve;
         pendingSnapshotResolve = null;
         resolve();
-      } else if (e.data?.type === 'taladb:secondary-write' && typeof e.data.token === 'string' && e.data.token.length > 0 && !idbFallback && db) {
-        // Primary (OPFS) tab: a secondary tab made a write — merge it in via LWW.
+      } else if (e.data === 'taladb:snapshot-ready' && idbFallback) {
+        snapshotDirty = true;
+      } else if (e.data?.type === 'taladb:secondary-write' && typeof e.data.token === 'string' && e.data.token.length > 0 && db && !encrypted) {
+        // `!encrypted`: encrypted databases are single-tab, so there are no
+        // legitimate secondary-tab writes — accepting them would let any
+        // same-origin script inject documents into an encrypted DB without
+        // knowing the passphrase.
+        // Merge peer writes in every mode. This also makes multiple tabs
+        // converge when OPFS is entirely unavailable and every tab uses IDB.
         // The token requirement rejects unauthenticated injection attempts that
         // omit the SESSION_TOKEN field (not a guarantee against same-origin attackers
         // who observe the token, but defence-in-depth against naive injection).
@@ -583,17 +664,27 @@ async function doInit(dbName, configJson) {
     if (configJson) return WorkerDB.openWithConfigAndSnapshot(snapshot, configJson);
     return WorkerDB.openWithSnapshot(snapshot);
   }
+  // Salt for key derivation, loaded/created in an OPFS sidecar (encrypted mode
+  // only). Passed to the WASM open so the derived key is stable across opens.
+  let salt = null;
   function openWithOpfs(syncHandle) {
-    if (configJson) return WorkerDB.openWithConfigAndOpfs(syncHandle, configJson);
-    return WorkerDB.openWithOpfs(syncHandle);
+    // openWithConfigAndOpfs(handle, configJson, passphrase?, salt?)
+    return WorkerDB.openWithConfigAndOpfs(syncHandle, configJson ?? null, passphrase, salt);
   }
 
   const opfsAvailable = await checkOpfs();
   if (!opfsAvailable) {
+    if (encrypted) {
+      throw new Error(
+        'TalaDB encryption requires OPFS, which is unavailable in this browser context. ' +
+        'Refusing to open — the in-memory/IndexedDB fallback cannot encrypt at rest.'
+      );
+    }
     warn('OPFS unavailable — falling back to IndexedDB-backed in-memory');
     const snapshot = await idbLoadSnapshot(dbName);
     db = openWithSnapshot(snapshot);
     idbFallback = true;
+    snapshotWriter = true;
     if (snapshot) {
       log(`Restored from IndexedDB snapshot (${snapshot.byteLength} bytes)`);
     } else {
@@ -606,11 +697,26 @@ async function doInit(dbName, configJson) {
   const fileName = `taladb_${dbName.replaceAll(/[/\\:]/g, '_')}.redb`;
   const fileHandle = await root.getFileHandle(fileName, { create: true });
 
+  // Encrypted mode: the 16-byte key-derivation salt lives in an OPFS sidecar
+  // file next to the DB. It is loaded/created only AFTER this tab has won the
+  // exclusive lock (or determined no locking applies), so two tabs racing to
+  // open never collide on the salt file's exclusive access handle.
+
   if (!('locks' in navigator)) {
     // Web Locks not available — open directly (single-tab safe only).
     warn('Web Locks unavailable — multi-tab write safety disabled');
+    if (encrypted) salt = await loadOrCreateSalt(root, `${fileName}.salt`);
     const syncHandle = await fileHandle.createSyncAccessHandle();
-    db = openWithOpfs(syncHandle);
+    try {
+      db = openWithOpfs(syncHandle);
+    } catch (e) {
+      // A failed open (e.g. wrong passphrase) must release the exclusive OPFS
+      // access handle, or every retry fails with "Access Handles cannot be
+      // created" until the page reloads.
+      try { syncHandle.close(); } catch { /* best-effort */ }
+      throw e;
+    }
+    snapshotWriter = !encrypted; // encrypted DBs never write a plaintext IDB snapshot
     log(`Opened "${fileName}" via OPFS`);
     return;
   }
@@ -625,7 +731,18 @@ async function doInit(dbName, configJson) {
   await new Promise((resolve, reject) => {
     navigator.locks.request(lockName, { ifAvailable: true }, async (lock) => {
       if (lock === null) {
-        // Lock is held by another tab — use IDB snapshot so this tab loads immediately.
+        // Lock is held by another tab.
+        if (encrypted) {
+          // The IDB-snapshot fallback stores decrypted plaintext, so it's
+          // refused for encrypted databases — they're single-tab. Reject
+          // rather than downgrade.
+          reject(new Error(
+            'This encrypted TalaDB database is already open in another tab. ' +
+            'Encrypted browser databases are single-tab (the multi-tab fallback would store plaintext).'
+          ));
+          return;
+        }
+        // Unencrypted: use IDB snapshot so this tab loads immediately.
         warn('OPFS lock held by another tab — falling back to IndexedDB snapshot (live-sync via BroadcastChannel)');
         let snapshot = await idbLoadSnapshot(dbName);
 
@@ -642,6 +759,7 @@ async function doInit(dbName, configJson) {
 
         db = openWithSnapshot(snapshot ?? null);
         idbFallback = true;
+        snapshotWriter = false;
         if (snapshot) {
           log(`Restored from IDB snapshot (${snapshot.byteLength} bytes)`);
         } else {
@@ -652,9 +770,12 @@ async function doInit(dbName, configJson) {
       }
 
       // Acquired the lock — use OPFS.
+      let syncHandle = null;
       try {
-        const syncHandle = await fileHandle.createSyncAccessHandle();
+        if (encrypted) salt = await loadOrCreateSalt(root, `${fileName}.salt`);
+        syncHandle = await fileHandle.createSyncAccessHandle();
         db = openWithOpfs(syncHandle);
+        snapshotWriter = !encrypted; // encrypted DBs never write a plaintext IDB snapshot
         log(`Opened "${fileName}" via OPFS (Web Locks)`);
         resolve(); // signal doInit complete — caller can proceed
 
@@ -665,6 +786,13 @@ async function doInit(dbName, configJson) {
         syncHandle.close();
         db = null;
       } catch (e) {
+        // A failed open (e.g. wrong passphrase) must release the exclusive
+        // OPFS access handle, or every retry fails with "Access Handles
+        // cannot be created" until the page reloads. Returning from this
+        // callback also releases the Web Lock.
+        if (syncHandle) {
+          try { syncHandle.close(); } catch { /* best-effort */ }
+        }
         reject(e);
       }
     });

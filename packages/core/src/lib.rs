@@ -18,23 +18,26 @@ pub mod vector;
 pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
-pub use audit::{read_audit_log, read_audit_log_since, AuditEntry, AuditOp};
+pub use audit::{AuditEntry, AuditOp, read_audit_log, read_audit_log_since};
 pub use collection::{Collection, CollectionIndexInfo, Update};
-pub use config::{load_auto, load_from_path, SyncConfig, TalaDbConfig};
+pub use config::{SyncConfig, TalaDbConfig, load_auto, load_from_path};
 pub use crdt::{
-    CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock, FieldMutation,
-    CRDT_CLOCKS_FIELD,
+    CRDT_CLOCKS_FIELD, CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock,
+    FieldMutation,
 };
 #[cfg(feature = "encryption")]
-pub use crypto::{migrate_encrypted_v0_to_v1, rekey, EncryptionKey};
+pub use crypto::{
+    EncryptedBackend, EncryptionKey, MIN_PBKDF2_ITERATIONS, derive_key, migrate_encrypted_v0_to_v1,
+    rekey,
+};
 pub use document::{Document, Value};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
 #[cfg(feature = "sync-http")]
 pub use http_sync::HttpSyncHook;
-pub use migration::{run_migrations, Migration, BUILTIN_MIGRATIONS, CURRENT_SCHEMA_VERSION};
-pub use query::options::{FindOptions, SortDirection, SortSpec};
+pub use migration::{BUILTIN_MIGRATIONS, CURRENT_SCHEMA_VERSION, Migration, run_migrations};
 pub use query::Filter;
+pub use query::options::{FindOptions, SortDirection, SortSpec};
 pub use sync::{Changeset, LastWriteWins, NoopSyncHook, SyncAdapter, SyncEvent, SyncHook};
 pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 
@@ -53,6 +56,7 @@ const SNAPSHOT_VERSION: u32 = 1;
 const MAX_SNAPSHOT_ENTRY_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// The main TalaDB database handle.
+#[derive(Clone)]
 pub struct Database {
     backend: Arc<dyn StorageBackend>,
     /// Index-definition cache shared by every Collection handle from this
@@ -68,6 +72,57 @@ pub struct Database {
 }
 
 impl Database {
+    /// Open a file-backed database with transparent authenticated encryption.
+    #[cfg(feature = "encryption")]
+    pub fn open_encrypted(path: &Path, passphrase: &str) -> Result<Self, TalaDbError> {
+        if passphrase.is_empty() {
+            return Err(TalaDbError::Config(
+                "encryption passphrase must not be empty".into(),
+            ));
+        }
+        let salt_path = path.with_extension(format!(
+            "{}taladb-salt",
+            path.extension()
+                .and_then(|v| v.to_str())
+                .map(|v| format!("{v}."))
+                .unwrap_or_default()
+        ));
+        let salt = match std::fs::read(&salt_path) {
+            Ok(salt) if salt.len() == 16 => salt,
+            Ok(_) => {
+                return Err(TalaDbError::Encryption(
+                    "invalid encryption salt file".into(),
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut salt = vec![0u8; 16];
+                getrandom::fill(&mut salt).map_err(|e| TalaDbError::Encryption(e.to_string()))?;
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                use std::io::Write;
+                options
+                    .open(&salt_path)
+                    .and_then(|mut file| file.write_all(&salt))
+                    .map_err(|e| {
+                        TalaDbError::Storage(format!("cannot write encryption salt: {e}"))
+                    })?;
+                salt
+            }
+            Err(e) => {
+                return Err(TalaDbError::Storage(format!(
+                    "cannot read encryption salt: {e}"
+                )));
+            }
+        };
+        let raw: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);
+        let key = crypto::derive_key(passphrase, &salt, crypto::MIN_PBKDF2_ITERATIONS)?;
+        Self::open_with_backend(Box::new(crypto::EncryptedBackend::new(raw, key)))
+    }
     /// Open a file-backed database at the given path.
     pub fn open(path: &Path) -> Result<Self, TalaDbError> {
         let backend: Arc<dyn StorageBackend> = Arc::new(RedbBackend::open(path)?);

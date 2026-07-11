@@ -93,7 +93,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.8.5",
+        text: "v0.9.0",
         items: [
           {
             text: "Changelog",
@@ -125,6 +125,7 @@ export default defineConfig({
         text: "Platform Guides",
         items: [
           { text: "Web (Browser / WASM)", link: "/guide/web" },
+          { text: "Next.js", link: "/guide/nextjs" },
           { text: "Node.js", link: "/guide/node" },
           { text: "React Native", link: "/guide/react-native" },
           { text: "Cloudflare Workers", link: "/guide/cloudflare" },

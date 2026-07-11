@@ -57,6 +57,7 @@ type FieldOps<T> = T extends null | undefined ? {
     $exists?: boolean;
     /** Full-text search: matches documents where this string field contains the given token. */
     $contains?: string;
+    $regex?: string;
 };
 type Filter<T extends Document = Document> = {
     [K in keyof T]?: T[K] | FieldOps<T[K]>;
@@ -158,6 +159,21 @@ interface Collection<T extends Document = Document> {
     createIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
     dropIndex(field: keyof Omit<T, '_id'> & string): Promise<void>;
     /**
+     * Create a compound (multi-field) index over an ordered list of fields.
+     *
+     * The query planner uses it to accelerate an `$and` where **every** field of
+     * the index is constrained by equality — e.g. an index on
+     * `['userId', 'status']` serves `find({ userId, status })` with a single
+     * index scan instead of a full-collection scan. Fields are ascending; a
+     * partial-prefix or trailing-range match is not used yet (planned).
+     *
+     * @example
+     * await orders.createCompoundIndex(['userId', 'status'])
+     */
+    createCompoundIndex(fields: (keyof Omit<T, '_id'> & string)[]): Promise<void>;
+    /** Drop a compound index by its ordered field list. */
+    dropCompoundIndex(fields: (keyof Omit<T, '_id'> & string)[]): Promise<void>;
+    /**
      * Create a full-text search index on a string field.
      *
      * Enables fast `{ field: { $contains: 'token' } }` queries using an
@@ -228,7 +244,7 @@ interface Collection<T extends Document = Document> {
      * // later…
      * unsub();
      */
-    subscribe(filter: Filter<T>, callback: (docs: T[]) => void): () => void;
+    subscribe(filter: Filter<T>, callback: (docs: T[]) => void, onError?: (error: unknown) => void): () => void;
 }
 /**
  * A JSON-encoded changeset — the opaque payload exchanged between peers. Produced
@@ -269,8 +285,9 @@ interface SyncOptions {
     /** Direction of the pass. Default `'both'` (bidirectional). */
     direction?: SyncDirection;
     /**
-     * Names this sync target for cursor persistence, so multiple remotes each
-     * keep their own watermark. Default `'default'`.
+     * Names this sync target. Reserved cursor state remains isolated per target
+     * for forward compatibility with monotonic server cursors. Default
+     * `'default'`.
      */
     target?: string;
 }
@@ -279,7 +296,7 @@ interface SyncResult {
     pushed: number;
     /** Number of documents changed locally by the pulled remote changeset. */
     pulled: number;
-    /** New sync cursor (ms epoch) persisted for the next pass. */
+    /** Active sync cursor. Currently `0` because timestamp adapters replay safely. */
     cursor: number;
 }
 interface TalaDB {
@@ -317,6 +334,14 @@ interface TalaDB {
      * await db.compact();
      */
     compact(): Promise<void>;
+    /** Browser HTTP-push queue health, when supported by the active binding. */
+    syncStatus?(): Promise<{
+        pending: number;
+        dropped: number;
+        failed: number;
+    }>;
+    /** Wait for accepted browser HTTP-push events, returning false on timeout. */
+    flushSync?(timeoutMs?: number): Promise<boolean>;
     close(): Promise<void>;
 }
 
@@ -408,6 +433,8 @@ declare class TalaDbValidationError extends Error {
 
 /** Options for `openDB`. */
 interface OpenDBOptions {
+    /** Encrypt native database values at rest. Never hard-code this value. */
+    passphrase?: string;
     /**
      * Explicit path to a `taladb.config.yml` / `taladb.config.json` file.
      * If omitted, TalaDB auto-discovers the file from `process.cwd()` on Node.js.

@@ -207,20 +207,33 @@ class WorkerProxy {
 function makePoller<T extends Document>(
   findFn: () => Promise<T[]>,
   callback: (docs: T[]) => void,
+  onError?: (error: unknown) => void,
 ): () => void {
   let active = true;
   let lastJson = '';
+  let running = false;
+  let rerun = false;
   const poll = async () => {
     if (!active) return;
+    if (running) { rerun = true; return; }
+    running = true;
     try {
       const docs = await findFn();
+      if (!active) return;
       const json = JSON.stringify(docs);
       if (json !== lastJson) {
         lastJson = json;
         callback(docs);
       }
-    } catch { /* ignore errors during poll */ }
-    if (active) setTimeout(poll, 300);
+    } catch (error) {
+      if (active) onError?.(error);
+    } finally {
+      running = false;
+      if (active) {
+        if (rerun) { rerun = false; void poll(); }
+        else setTimeout(poll, 300);
+      }
+    }
   };
   poll();
   return () => { active = false; };
@@ -252,6 +265,8 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
         col.aggregate(pipeline as never) as R[],
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createCompoundIndex: async (fields) => col.createCompoundIndex(JSON.stringify(fields)),
+      dropCompoundIndex: async (fields) => col.dropCompoundIndex(JSON.stringify(fields)),
       createFtsIndex: async (field) => col.createFtsIndex(field),
       dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) => {
@@ -270,8 +285,8 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
         const json = col.listIndexes() as string;
         return JSON.parse(json);
       },
-      subscribe: (filter, callback) =>
-        makePoller(async () => col.find(filter ?? null) as T[], callback),
+      subscribe: (filter, callback, onError) =>
+        makePoller(async () => col.find(filter ?? null) as T[], callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -292,7 +307,7 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
   return handle satisfies TalaDB;
 }
 
-async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<TalaDB> {
+async function createBrowserDB(dbName: string, config?: TalaDbConfig, passphrase?: string): Promise<TalaDB> {
   // createSyncAccessHandle (required for OPFS persistence) is only available
   // in Dedicated Workers per the WHATWG spec — not SharedWorkers. We use a
   // DedicatedWorker so each tab gets its own isolated worker + file handle.
@@ -308,7 +323,17 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
   // Initialize the worker (opens OPFS file or falls back to IDB-backed in-memory).
   // Pass configJson so the worker can wire up HTTP push sync from the first write.
   const configJson = config !== undefined ? JSON.stringify(config) : undefined;
-  await proxy.send('init', { dbName, configJson });
+  try {
+    await proxy.send('init', { dbName, configJson, passphrase });
+  } catch (e) {
+    // A failed init (wrong passphrase, OPFS unavailable, …) must not leave a
+    // zombie worker behind: terminating it force-closes any OPFS access
+    // handles it acquired, so the caller can retry (e.g. re-prompt for the
+    // passphrase) without reloading the page.
+    proxy.abort(e instanceof Error ? e : new Error(String(e)));
+    worker.terminate();
+    throw e;
+  }
 
   // BroadcastChannel: when another tab's worker commits a write it posts
   // "taladb:changed".  We immediately nudge every active subscribe() poller
@@ -385,6 +410,12 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
       dropIndex: (field) =>
         proxy.send<void>('dropIndex', { collection: name, field }),
 
+      createCompoundIndex: (fields) =>
+        proxy.send<void>('createCompoundIndex', { collection: name, fieldsJson: JSON.stringify(fields) }),
+
+      dropCompoundIndex: (fields) =>
+        proxy.send<void>('dropCompoundIndex', { collection: name, fieldsJson: JSON.stringify(fields) }),
+
       createFtsIndex: (field) =>
         proxy.send<void>('createFtsIndex', { collection: name, field }),
 
@@ -426,30 +457,42 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
         return JSON.parse(json) as { document: T; score: number }[];
       },
 
-      subscribe: (filter, callback) => {
+      subscribe: (filter, callback, onError) => {
         let active = true;
         // Must start empty (not '[]') so the first snapshot is always
         // delivered — otherwise an initially-empty collection never fires the
         // callback and useFind stays in loading state forever.
         let lastJson = '';
         let timer: ReturnType<typeof setTimeout> | null = null;
+        let running = false;
+        let rerun = false;
 
         const poll = async () => {
           if (!active) return;
+          if (running) { rerun = true; return; }
+          running = true;
           // Cancel any pending tick — we're running now (either nudged or ticked).
           if (timer !== null) { clearTimeout(timer); timer = null; }
           try {
             const json = await proxy.send<string>('find', {
               collection: name, filterJson: filter ? s(filter) : 'null',
             });
+            if (!active) return;
             if (json !== lastJson) {
               lastJson = json;
               callback(JSON.parse(json) as T[]);
             }
-          } catch { /* ignore errors during poll */ }
+          } catch (error) {
+            if (active) onError?.(error);
+          } finally {
+            running = false;
+          }
           // Schedule the next polling tick (fallback when BroadcastChannel
           // is unavailable or for same-tab writes).
-          if (active) timer = setTimeout(poll, 300);
+          if (active) {
+            if (rerun) { rerun = false; void poll(); }
+            else timer = setTimeout(poll, 300);
+          }
         };
 
         // Register with the BroadcastChannel nudge set so cross-tab writes
@@ -472,6 +515,8 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
   const handle = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: () => proxy.send<void>('compact'),
+    syncStatus: async () => JSON.parse(await proxy.send<string>('syncStatus')) as { pending: number; dropped: number; failed: number },
+    flushSync: (timeoutMs = 5000) => proxy.send<boolean>('flushSync', { timeoutMs }),
     close: async () => {
       channel?.close();
       try {
@@ -499,7 +544,7 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
 // Node.js adapter (wraps @taladb/node native module)
 // ============================================================
 
-async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<TalaDB> {
+async function createNodeDB(dbName: string, config?: TalaDbConfig, passphrase?: string): Promise<TalaDB> {
   // @taladb/node ships platform-specific .node binaries
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore — types generated by `napi build`; not available until package is built
@@ -509,7 +554,7 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
   const TalaDBNode = (native as Record<string, any>).TalaDbNode ?? (native as Record<string, any>).TalaDBNode;
   if (!TalaDBNode) throw new Error('@taladb/node loaded but exports no TalaDbNode class — rebuild the native module');
   const configJson = config !== undefined ? JSON.stringify(config) : null;
-  const db = TalaDBNode.open(dbName, configJson);
+  const db = TalaDBNode.open(dbName, configJson, passphrase ?? null);
 
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
     const col = db.collection(name);
@@ -537,6 +582,8 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
         col.aggregate(pipeline as never) as R[],
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createCompoundIndex: async (fields) => col.createCompoundIndex(fields as string[]),
+      dropCompoundIndex: async (fields) => col.dropCompoundIndex(fields as string[]),
       createFtsIndex: async (field) => col.createFtsIndex(field),
       dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) =>
@@ -551,8 +598,8 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
         const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
         return raw;
       },
-      subscribe: (filter, callback) =>
-        makePoller(async () => col.find(filter ?? null) as T[], callback),
+      subscribe: (filter, callback, onError) =>
+        makePoller(async () => col.find(filter ?? null) as T[], callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -593,6 +640,8 @@ interface NativeDB {
   aggregate(collection: string, pipeline: unknown[]): Record<string, unknown>[];
   createIndex(collection: string, field: string): void;
   dropIndex(collection: string, field: string): void;
+  createCompoundIndex(collection: string, fields: string[]): void;
+  dropCompoundIndex(collection: string, fields: string[]): void;
   createFtsIndex(collection: string, field: string): void;
   dropFtsIndex(collection: string, field: string): void;
   createVectorIndex(collection: string, field: string, dimensions: number, opts?: Record<string, unknown>): void;
@@ -601,6 +650,13 @@ interface NativeDB {
   findNearest(collection: string, field: string, query: number[], topK: number, filter?: Record<string, unknown> | null): { document: Record<string, unknown>; score: number }[];
   compact(): void;
   close(): void;
+  // Bidirectional-sync primitives. Optional: only present on binaries built
+  // with the sync HostObject methods (added in 0.9.x). Absent on older
+  // prebuilt native modules, in which case db.sync() falls back to a clear
+  // "not available" error rather than crashing.
+  exportChanges?(collectionsJson: string[], sinceMs: number): string;
+  importChanges?(changeset: string): number;
+  listCollectionNames?(): string[];
 }
 
 async function createNativeDB(_dbName: string): Promise<TalaDB> {
@@ -631,6 +687,8 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
         native.aggregate(name, pipeline as unknown[]) as R[],
       createIndex: async (field) => native.createIndex(name, field),
       dropIndex: async (field) => native.dropIndex(name, field),
+      createCompoundIndex: async (fields) => native.createCompoundIndex(name, fields as string[]),
+      dropCompoundIndex: async (fields) => native.dropCompoundIndex(name, fields as string[]),
       createFtsIndex: async (field) => native.createFtsIndex(name, field),
       dropFtsIndex: async (field) => native.dropFtsIndex(name, field),
       createVectorIndex: async (field, options) => {
@@ -650,17 +708,41 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
         const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw as { document: T; score: number }[];
       },
-      subscribe: (filter, callback) =>
-        makePoller(async () => native.find(name, filter ?? {}) as T[], callback),
+      subscribe: (filter, callback, onError) =>
+        makePoller(async () => native.find(name, filter ?? {}) as T[], callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
+
+  // Bidirectional sync is available only when the native module exposes the
+  // changeset primitives (0.9.x+ JSI HostObject). Feature-detect so an older
+  // prebuilt binary degrades to a clear error instead of a hard crash.
+  const syncSurface =
+    typeof native.exportChanges === 'function' &&
+    typeof native.importChanges === 'function' &&
+    typeof native.listCollectionNames === 'function'
+      ? (() => {
+          const handle = {
+            collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
+            exportChanges: async (collections: string[], sinceMs: number) => native.exportChanges!(collections, sinceMs),
+            importChanges: async (changeset: string) => native.importChanges!(changeset),
+            listCollectionNames: async () => native.listCollectionNames!(),
+            sync: (adapter: SyncAdapter, options: SyncOptions) =>
+              runSync(handle as unknown as SyncHandle, adapter, options),
+          };
+          return {
+            exportChanges: handle.exportChanges,
+            importChanges: handle.importChanges,
+            sync: handle.sync,
+          };
+        })()
+      : unsupportedSync('react-native');
 
   return {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
-    ...unsupportedSync('react-native'),
+    ...syncSurface,
   };
 }
 
@@ -670,6 +752,8 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
 
 /** Options for `openDB`. */
 export interface OpenDBOptions {
+  /** Encrypt native database values at rest. Never hard-code this value. */
+  passphrase?: string;
   /**
    * Explicit path to a `taladb.config.yml` / `taladb.config.json` file.
    * If omitted, TalaDB auto-discovers the file from `process.cwd()` on Node.js.
@@ -701,6 +785,9 @@ export interface OpenDBOptions {
  * });
  */
 export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Promise<TalaDB> {
+  if (options?.passphrase !== undefined && options.passphrase.length === 0) {
+    throw new Error('TalaDB encryption passphrase must not be empty');
+  }
   let resolvedConfig: TalaDbConfig | undefined;
   if (options?.config !== undefined) {
     validateConfig(options.config);
@@ -711,8 +798,16 @@ export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Pro
 
   const platform = detectPlatform();
   switch (platform) {
-    case 'browser':      return createBrowserDB(dbName, resolvedConfig);
-    case 'react-native': return createNativeDB(dbName);
-    case 'node':         return createNodeDB(dbName, resolvedConfig);
+    case 'browser':
+      // Browser encryption is applied inside the OPFS worker (AES-GCM-256, salt
+      // in an OPFS sidecar). The worker fails closed if OPFS is unavailable, so
+      // an encrypted DB is never silently downgraded to a plaintext fallback.
+      return createBrowserDB(dbName, resolvedConfig, options?.passphrase);
+    case 'react-native':
+      if (options?.passphrase !== undefined) {
+        throw new Error('On React Native, pass the passphrase in the config JSON to TalaDBModule.initialize(); refusing to assume the already-open native database is encrypted');
+      }
+      return createNativeDB(dbName);
+    case 'node':         return createNodeDB(dbName, resolvedConfig, options?.passphrase);
   }
 }

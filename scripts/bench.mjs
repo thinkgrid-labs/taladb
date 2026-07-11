@@ -207,16 +207,15 @@ try {
       row('find, indexed range ($gte)', '`publishedAt`, newest ~100 docs', fmtMs(r.median), { median: r.median, iters: r.iters })
     }
 
-    // Two-sided range ($gte + $lt). The greedy planner currently uses the
-    // index for the lower bound only and post-filters the upper bound, so
-    // this scans everything above `start` — included for transparency.
+    // Two-sided range ($gte + $lt). Since v0.9.0 the planner emits a single
+    // bounded index scan for both bounds, so only the ~100-doc window is read.
     {
       let i = 0
       const r = bench(() => {
         const start = 1_700_000_000_000 + ((i += 4409) % (N - 100)) * 1000
         return col.find({ publishedAt: { $gte: start, $lt: start + 100_000 } })
-      }, { maxIters: 20, budgetMs: 4000 })
-      row('find, indexed range ($gte + $lt)', '`publishedAt` window (~100 matches); planner uses lower bound only', fmtMs(r.median), { median: r.median, iters: r.iters })
+      }, { maxIters: 500 })
+      row('find, indexed range ($gte + $lt)', '`publishedAt` window (~100 matches); bounded index scan', fmtMs(r.median), { median: r.median, iters: r.iters })
     }
 
     // Count with an unindexed equality (measures filtered scan without result materialisation).

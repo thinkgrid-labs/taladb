@@ -35,6 +35,10 @@ export const TalaDBModule = {
     NativeTalaDB.initialize(dbName, configJson),
   /** Close the database gracefully. */
   close: () => NativeTalaDB.close(),
+  /** HTTP push events dropped by backpressure or failed after retries. */
+  syncStatus: () => native().syncStatus(),
+  /** Wait for HTTP push work accepted before this call. */
+  flushSync: (timeoutMs = 5000) => native().flushSync(timeoutMs),
 };
 
 // ---------------------------------------------------------------------------
@@ -67,7 +71,33 @@ export interface Collection<T extends Document = Document> {
 
 export interface DB {
   collection<T extends Document = Document>(name: string): Collection<T>;
+  syncStatus(): { dropped: number; failed: number };
+  flushSync(timeoutMs?: number): boolean;
   close(): Promise<void>;
+}
+
+interface JsiTalaDB {
+  insert(collection: string, doc: Object): string;
+  insertMany(collection: string, docs: Object[]): string[];
+  find(collection: string, filter: Object | null): Object[];
+  findOne(collection: string, filter: Object | null): Object | null;
+  updateOne(collection: string, filter: Object, update: Object): boolean;
+  updateMany(collection: string, filter: Object, update: Object): number;
+  deleteOne(collection: string, filter: Object): boolean;
+  deleteMany(collection: string, filter: Object): number;
+  count(collection: string, filter: Object | null): number;
+  createIndex(collection: string, field: string): void;
+  dropIndex(collection: string, field: string): void;
+  createFtsIndex(collection: string, field: string): void;
+  dropFtsIndex(collection: string, field: string): void;
+  syncStatus(): { dropped: number; failed: number };
+  flushSync(timeoutMs?: number): boolean;
+}
+
+function native(): JsiTalaDB {
+  const host = (globalThis as { __TalaDB__?: JsiTalaDB }).__TalaDB__;
+  if (!host) throw new Error('TalaDB is not initialized; await TalaDBModule.initialize() first');
+  return host;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,25 +112,27 @@ export interface DB {
  */
 function collection<T extends Document>(colName: string): Collection<T> {
   return {
-    insert: (doc) => NativeTalaDB.insert(colName, doc as Object),
-    insertMany: (docs) => NativeTalaDB.insertMany(colName, docs as Object[]),
-    find: (filter?) => NativeTalaDB.find(colName, filter ?? null) as T[],
-    findOne: (filter) => NativeTalaDB.findOne(colName, filter) as T | null,
-    updateOne: (filter, update) => NativeTalaDB.updateOne(colName, filter, update),
-    updateMany: (filter, update) => NativeTalaDB.updateMany(colName, filter, update),
-    deleteOne: (filter) => NativeTalaDB.deleteOne(colName, filter),
-    deleteMany: (filter) => NativeTalaDB.deleteMany(colName, filter),
-    count: (filter?) => NativeTalaDB.count(colName, filter ?? null),
-    createIndex: (field) => NativeTalaDB.createIndex(colName, field),
-    dropIndex: (field) => NativeTalaDB.dropIndex(colName, field),
-    createFtsIndex: (field) => NativeTalaDB.createFtsIndex(colName, field),
-    dropFtsIndex: (field) => NativeTalaDB.dropFtsIndex(colName, field),
+    insert: (doc) => native().insert(colName, doc as Object),
+    insertMany: (docs) => native().insertMany(colName, docs as Object[]),
+    find: (filter?) => native().find(colName, filter ?? null) as T[],
+    findOne: (filter) => native().findOne(colName, filter) as T | null,
+    updateOne: (filter, update) => native().updateOne(colName, filter, update),
+    updateMany: (filter, update) => native().updateMany(colName, filter, update),
+    deleteOne: (filter) => native().deleteOne(colName, filter),
+    deleteMany: (filter) => native().deleteMany(colName, filter),
+    count: (filter?) => native().count(colName, filter ?? null),
+    createIndex: (field) => native().createIndex(colName, field),
+    dropIndex: (field) => native().dropIndex(colName, field),
+    createFtsIndex: (field) => native().createFtsIndex(colName, field),
+    dropFtsIndex: (field) => native().dropFtsIndex(colName, field),
   };
 }
 
 export function openDB(_dbName: string): DB {
   return {
     collection,
+    syncStatus: () => native().syncStatus(),
+    flushSync: (timeoutMs = 5000) => native().flushSync(timeoutMs),
     close: () => NativeTalaDB.close(),
   };
 }

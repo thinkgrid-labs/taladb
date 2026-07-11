@@ -38,6 +38,7 @@ TalaDBHostObject::TalaDBHostObject(TalaDbHandle *db) : db_(db) {}
 
 TalaDBHostObject::~TalaDBHostObject() {
     if (db_) {
+        taladb_sync_flush(db_, 5000);
         taladb_close(db_);
         db_ = nullptr;
     }
@@ -245,12 +246,15 @@ std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
         "deleteOne", "deleteMany",
         "count",
         "aggregate",
+        "exportChanges", "importChanges", "listCollectionNames",
         "createIndex", "dropIndex",
+        "createCompoundIndex", "dropCompoundIndex",
         "createFtsIndex", "dropFtsIndex",
         "createVectorIndex", "dropVectorIndex", "upgradeVectorIndex",
         "findNearest", "findNearestAsync",
         "findAsync",
         "compact",
+        "syncStatus", "flushSync",
         "close",
     };
     std::vector<PropNameID> result;
@@ -445,6 +449,51 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
     }
 
     // ------------------------------------------------------------------
+    // Bidirectional sync — exportChanges / importChanges / listCollectionNames
+    // (back JS db.sync(); the runtime-agnostic loop lives in taladb/src/sync.ts)
+    // ------------------------------------------------------------------
+    if (name == "exportChanges") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "exportChanges"), 2,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 2) throw JSError(rt, "exportChanges requires 2 arguments");
+                auto collectionsJson = stringify(rt, args[0]);   // string[] → JSON array
+                double sinceMs       = args[1].getNumber();
+                char *result = taladb_export_changes(db_, collectionsJson.c_str(), sinceMs);
+                if (!result) throw JSError(rt, "taladb_export_changes failed");
+                std::string json(result);
+                taladb_free_string(result);
+                // Return the changeset as an opaque string (not parsed) — the
+                // JS sync adapter passes it straight to the transport.
+                return String::createFromUtf8(rt, json);
+            });
+    }
+
+    if (name == "importChanges") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "importChanges"), 1,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 1) throw JSError(rt, "importChanges requires 1 argument");
+                auto changeset = args[0].getString(rt).utf8(rt);
+                int32_t n = taladb_import_changes(db_, changeset.c_str());
+                if (n < 0) throw JSError(rt, "taladb_import_changes failed");
+                return Value(static_cast<double>(n));
+            });
+    }
+
+    if (name == "listCollectionNames") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "listCollectionNames"), 0,
+            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                char *result = taladb_list_collection_names(db_);
+                if (!result) throw JSError(rt, "taladb_list_collection_names failed");
+                std::string json(result);
+                taladb_free_string(result);
+                return parse(rt, json);  // JSON array → JS string[]
+            });
+    }
+
+    // ------------------------------------------------------------------
     // createIndex / dropIndex / createFtsIndex / dropFtsIndex
     // ------------------------------------------------------------------
     if (name == "createIndex" || name == "dropIndex" ||
@@ -459,6 +508,24 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 else if (name == "dropIndex")      taladb_drop_index      (db_, col.c_str(), field.c_str());
                 else if (name == "createFtsIndex") taladb_create_fts_index(db_, col.c_str(), field.c_str());
                 else                               taladb_drop_fts_index  (db_, col.c_str(), field.c_str());
+                return Value::undefined();
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // createCompoundIndex / dropCompoundIndex(collection, fields: string[]): void
+    // ------------------------------------------------------------------
+    if (name == "createCompoundIndex" || name == "dropCompoundIndex") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forUtf8(rt, name), 2,
+            [this, name](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 2) throw JSError(rt, (name + " requires 2 arguments").c_str());
+                auto col        = args[0].getString(rt).utf8(rt);
+                auto fieldsJson = stringify(rt, args[1]);   // string[] → JSON array
+                if (name == "createCompoundIndex")
+                    taladb_create_compound_index(db_, col.c_str(), fieldsJson.c_str());
+                else
+                    taladb_drop_compound_index(db_, col.c_str(), fieldsJson.c_str());
                 return Value::undefined();
             });
     }
@@ -623,6 +690,26 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
             });
     }
 
+    if (name == "syncStatus") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "syncStatus"), 0,
+            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                char *raw = taladb_sync_status(db_);
+                if (!raw) throw ffiError(rt, "taladb_sync_status failed");
+                std::string json(raw); taladb_free_string(raw);
+                return parse(rt, json);
+            });
+    }
+
+    if (name == "flushSync") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "flushSync"), 1,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                uint64_t timeout = count && args[0].isNumber() ? (uint64_t)args[0].getNumber() : 5000;
+                return Value(taladb_sync_flush(db_, timeout) == 1);
+            });
+    }
+
     // ------------------------------------------------------------------
     // close(): void  (synchronous — the destructor does the real work)
     // ------------------------------------------------------------------
@@ -631,6 +718,7 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
             rt, PropNameID::forAscii(rt, "close"), 0,
             [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
                 if (db_) {
+                    taladb_sync_flush(db_, 5000);
                     taladb_close(db_);
                     db_ = nullptr;
                 }

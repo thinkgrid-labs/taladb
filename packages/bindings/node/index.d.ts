@@ -15,7 +15,7 @@ export declare class TalaDbNode {
    * `sync-http` feature is compiled in, an `HttpSyncHook` is attached to
    * every collection returned by `collection()`.
    */
-  static open(path: string, configJson?: string | undefined | null): TalaDbNode
+  static open(path: string, configJson?: string | undefined | null, passphrase?: string | undefined | null): TalaDbNode
   /**
    * Compact the underlying storage file, reclaiming space freed by deletes
    * and updates. Call during idle periods after large bulk deletes or
@@ -81,6 +81,10 @@ export declare class CollectionNode {
   createIndex(field: string): void
   /** Drop a secondary index. */
   dropIndex(field: string): void
+  /** Create a compound (multi-field) index over an ordered list of fields. */
+  createCompoundIndex(fields: Array<string>): void
+  /** Drop a compound index by its ordered field list. */
+  dropCompoundIndex(fields: Array<string>): void
   /**
    * Create a vector index on `field`.
    *

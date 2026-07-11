@@ -18,16 +18,20 @@ use taladb_core::{
     Changeset, Database, Filter, HnswOptions, LastWriteWins, SyncAdapter, Update, Value,
     VectorMetric,
 };
+// Encryption is only wired on the wasm OPFS open path — gate the imports the
+// same way as `open_with_config_and_opfs` so native workspace builds (CI's
+// cargo check/clippy) don't see them as unused.
+#[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
+use taladb_core::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, StorageBackend, derive_key};
 
 use crate::doc_to_json;
 #[cfg(not(feature = "cf-workers"))]
 use crate::storage::opfs_backend::OpfsBackend;
 
 #[cfg(target_arch = "wasm32")]
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{Map, Value as JsonValue, json};
 #[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
-#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use taladb_core::config::SyncConfig;
@@ -50,20 +54,29 @@ struct QueuedSyncTask {
     payload: JsonValue,
 }
 
+#[derive(Default)]
+struct SyncHealth {
+    pending: std::sync::atomic::AtomicU64,
+    dropped: std::sync::atomic::AtomicU64,
+    failed: std::sync::atomic::AtomicU64,
+}
+
 #[cfg(target_arch = "wasm32")]
 struct WasmSyncHook {
     config: Arc<SyncConfig>,
     queue: Arc<std::sync::Mutex<std::collections::VecDeque<QueuedSyncTask>>>,
     draining: Arc<std::sync::atomic::AtomicBool>,
+    health: Arc<SyncHealth>,
 }
 
 #[cfg(target_arch = "wasm32")]
 impl WasmSyncHook {
-    fn new(config: SyncConfig) -> Self {
+    fn new(config: SyncConfig, health: Arc<SyncHealth>) -> Self {
         WasmSyncHook {
             config: Arc::new(config),
             queue: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            health,
         }
     }
 
@@ -97,14 +110,18 @@ impl SyncHook for WasmSyncHook {
         let payload = build_wasm_payload(event, &self.config.exclude_fields);
         let headers = self.config.headers.clone();
 
-        self.queue
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push_back(QueuedSyncTask {
-                endpoint,
-                headers,
-                payload,
-            });
+        let mut queue = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+        if queue.len() >= 256 {
+            self.health.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        queue.push_back(QueuedSyncTask {
+            endpoint,
+            headers,
+            payload,
+        });
+        self.health.pending.fetch_add(1, Ordering::Relaxed);
+        drop(queue);
 
         // Start the drain task if one is not already running. WASM is
         // single-threaded, so there is no interleaving between the swap and
@@ -113,11 +130,17 @@ impl SyncHook for WasmSyncHook {
         if !self.draining.swap(true, Ordering::AcqRel) {
             let queue = Arc::clone(&self.queue);
             let draining = Arc::clone(&self.draining);
+            let health = Arc::clone(&self.health);
             wasm_bindgen_futures::spawn_local(async move {
                 loop {
                     let task = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
                     match task {
-                        Some(t) => fire_wasm_with_retry(&t.endpoint, &t.headers, &t.payload).await,
+                        Some(t) => {
+                            if !fire_wasm_with_retry(&t.endpoint, &t.headers, &t.payload).await {
+                                health.failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                            health.pending.fetch_sub(1, Ordering::Relaxed);
+                        }
                         None => break,
                     }
                 }
@@ -222,7 +245,7 @@ async fn fire_wasm_with_retry(
     endpoint: &str,
     headers: &HashMap<String, String>,
     payload: &JsonValue,
-) {
+) -> bool {
     const BACKOFFS_MS: &[u32] = &[200, 400, 800];
     let client = reqwest::Client::new();
     let max_attempts = BACKOFFS_MS.len() + 1;
@@ -237,25 +260,38 @@ async fn fire_wasm_with_retry(
             req = req.header(k.as_str(), v.as_str());
         }
 
-        match req.send().await {
-            Ok(resp) if resp.status().is_success() => return,
+        use futures::future::{Either, select};
+        let send = Box::pin(req.send());
+        let timeout = Box::pin(sleep_ms_wasm(10_000));
+        let response = match select(send, timeout).await {
+            Either::Left((result, _)) => result,
+            Either::Right(_) => continue,
+        };
+        match response {
+            Ok(resp) if resp.status().is_success() => return true,
             Ok(resp) if resp.status().is_server_error() => continue,
-            Ok(_) => return,    // 4xx — permanent, no retry
-            Err(_) => continue, // network error — retry
+            Ok(_) => return false, // 4xx — permanent, no retry
+            Err(_) => continue,    // network error — retry
         }
     }
-    // All attempts exhausted — silently drop
+    false
 }
 
 /// Build a WASM sync hook from an optional JSON config string.
 #[cfg(target_arch = "wasm32")]
-fn build_wasm_sync_hook(config_json: Option<String>) -> Result<Option<Arc<dyn SyncHook>>, JsValue> {
+fn build_wasm_sync_hook(
+    config_json: Option<String>,
+    health: Arc<SyncHealth>,
+) -> Result<Option<Arc<dyn SyncHook>>, JsValue> {
     if let Some(json) = config_json {
         let config: TalaDbConfig =
             serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        config
+            .validate()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         if config.sync.enabled {
             return Ok(Some(
-                Arc::new(WasmSyncHook::new(config.sync)) as Arc<dyn SyncHook>
+                Arc::new(WasmSyncHook::new(config.sync, health)) as Arc<dyn SyncHook>
             ));
         }
     }
@@ -271,6 +307,7 @@ pub struct WorkerDB {
     db: Database,
     #[cfg(target_arch = "wasm32")]
     sync_hook: Option<Arc<dyn SyncHook>>,
+    sync_health: Arc<SyncHealth>,
 }
 
 #[wasm_bindgen]
@@ -287,6 +324,7 @@ impl WorkerDB {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
+            sync_health: Arc::new(SyncHealth::default()),
         })
     }
 
@@ -310,6 +348,7 @@ impl WorkerDB {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
+            sync_health: Arc::new(SyncHealth::default()),
         })
     }
 
@@ -331,8 +370,13 @@ impl WorkerDB {
                 .map_err(|e| JsValue::from_str(&e.to_string()))?,
             _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
         };
-        let sync_hook = build_wasm_sync_hook(config_json)?;
-        Ok(WorkerDB { db, sync_hook })
+        let sync_health = Arc::new(SyncHealth::default());
+        let sync_hook = build_wasm_sync_hook(config_json, Arc::clone(&sync_health))?;
+        Ok(WorkerDB {
+            db,
+            sync_hook,
+            sync_health,
+        })
     }
 
     /// Serialize the entire in-memory database to bytes for persistence.
@@ -344,6 +388,23 @@ impl WorkerDB {
         self.db
             .export_snapshot()
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = syncStatus)]
+    pub fn sync_status(&self) -> String {
+        use std::sync::atomic::Ordering;
+        serde_json::json!({
+            "pending": self.sync_health.pending.load(Ordering::Relaxed),
+            "dropped": self.sync_health.dropped.load(Ordering::Relaxed),
+            "failed": self.sync_health.failed.load(Ordering::Relaxed),
+        })
+        .to_string()
+    }
+
+    #[wasm_bindgen(js_name = syncPending)]
+    pub fn sync_pending(&self) -> u64 {
+        use std::sync::atomic::Ordering;
+        self.sync_health.pending.load(Ordering::Relaxed)
     }
 
     /// Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
@@ -367,6 +428,7 @@ impl WorkerDB {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
+            sync_health: Arc::new(SyncHealth::default()),
         })
     }
 
@@ -385,14 +447,46 @@ impl WorkerDB {
     pub fn open_with_config_and_opfs(
         sync_handle: FileSystemSyncAccessHandle,
         config_json: Option<String>,
+        passphrase: Option<String>,
+        salt: Option<Vec<u8>>,
     ) -> Result<WorkerDB, JsValue> {
         let opfs = OpfsBackend::from_handle(sync_handle);
         let redb_backend = RedbBackend::open_with_redb_backend(opfs)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let db = Database::open_with_backend(Box::new(redb_backend))
+
+        // When a passphrase is supplied, wrap the OPFS-backed storage in the
+        // AES-GCM-256 EncryptedBackend so every value is ciphertext at rest —
+        // the same construction as the native `open_encrypted`. The 16-byte
+        // salt is generated and persisted by the JS worker (an OPFS sidecar)
+        // and passed in, so key derivation is deterministic across opens.
+        let backend: Box<dyn StorageBackend> = match passphrase {
+            Some(passphrase) => {
+                if passphrase.is_empty() {
+                    return Err(JsValue::from_str("encryption passphrase must not be empty"));
+                }
+                let salt = salt.ok_or_else(|| {
+                    JsValue::from_str("encryption salt is required when a passphrase is given")
+                })?;
+                if salt.len() != 16 {
+                    return Err(JsValue::from_str("encryption salt must be 16 bytes"));
+                }
+                let key = derive_key(&passphrase, &salt, MIN_PBKDF2_ITERATIONS)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let raw: Arc<dyn StorageBackend> = Arc::new(redb_backend);
+                Box::new(EncryptedBackend::new(raw, key))
+            }
+            None => Box::new(redb_backend),
+        };
+
+        let db = Database::open_with_backend(backend)
             .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
-        let sync_hook = build_wasm_sync_hook(config_json)?;
-        Ok(WorkerDB { db, sync_hook })
+        let sync_health = Arc::new(SyncHealth::default());
+        let sync_hook = build_wasm_sync_hook(config_json, Arc::clone(&sync_health))?;
+        Ok(WorkerDB {
+            db,
+            sync_hook,
+            sync_health,
+        })
     }
 
     // ------------------------------------------------------------------
@@ -583,6 +677,36 @@ impl WorkerDB {
             .collection(collection)
             .map_err(|e| JsValue::from_str(&e.to_string()))?
             .drop_index(field)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Create a compound index. `fields_json` is a JSON array of field names.
+    #[wasm_bindgen(js_name = createCompoundIndex)]
+    pub fn create_compound_index(
+        &self,
+        collection: &str,
+        fields_json: &str,
+    ) -> Result<(), JsValue> {
+        let fields: Vec<String> =
+            serde_json::from_str(fields_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .create_compound_index(&refs)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Drop a compound index by its ordered field list (`fields_json`).
+    #[wasm_bindgen(js_name = dropCompoundIndex)]
+    pub fn drop_compound_index(&self, collection: &str, fields_json: &str) -> Result<(), JsValue> {
+        let fields: Vec<String> =
+            serde_json::from_str(fields_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+        self.db
+            .collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .drop_compound_index(&refs)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -900,20 +1024,28 @@ fn json_to_core_value(j: &serde_json::Value) -> Value {
 fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
     let obj = v.as_object()?;
 
-    if let Some(arr) = obj.get("$and") {
-        let f: Option<Vec<Filter>> = arr.as_array()?.iter().map(json_to_filter_val).collect();
-        return Some(Filter::And(f?));
-    }
-    if let Some(arr) = obj.get("$or") {
-        let f: Option<Vec<Filter>> = arr.as_array()?.iter().map(json_to_filter_val).collect();
-        return Some(Filter::Or(f?));
-    }
-    if let Some(inner) = obj.get("$not") {
-        return Some(Filter::Not(Box::new(json_to_filter_val(inner)?)));
-    }
-
     let mut filters: Vec<Filter> = Vec::new();
     for (field, expr) in obj {
+        if field.starts_with('$') {
+            let logical = match field.as_str() {
+                "$and" => Filter::And(
+                    expr.as_array()?
+                        .iter()
+                        .map(json_to_filter_val)
+                        .collect::<Option<_>>()?,
+                ),
+                "$or" => Filter::Or(
+                    expr.as_array()?
+                        .iter()
+                        .map(json_to_filter_val)
+                        .collect::<Option<_>>()?,
+                ),
+                "$not" => Filter::Not(Box::new(json_to_filter_val(expr)?)),
+                _ => return None,
+            };
+            filters.push(logical);
+            continue;
+        }
         if !expr.is_object() {
             filters.push(Filter::Eq(field.clone(), json_to_core_value(expr)));
             continue;
@@ -941,10 +1073,8 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
                     field.clone(),
                     val.as_array()?.iter().map(json_to_core_value).collect(),
                 ),
-                "$exists" => Filter::Exists(field.clone(), val.as_bool().unwrap_or(true)),
-                "$contains" => {
-                    Filter::Contains(field.clone(), val.as_str().unwrap_or("").to_string())
-                }
+                "$exists" => Filter::Exists(field.clone(), val.as_bool()?),
+                "$contains" => Filter::Contains(field.clone(), val.as_str()?.to_string()),
                 "$regex" => Filter::Regex(field.clone(), val.as_str()?.to_string()),
                 _ => return None,
             };
@@ -963,6 +1093,7 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
         .as_object()
         .ok_or_else(|| JsValue::from_str("update must be an object"))?;
 
+    let mut updates = Vec::new();
     if let Some(set) = obj.get("$set") {
         let pairs = set
             .as_object()
@@ -970,7 +1101,7 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
             .iter()
             .map(|(k, v)| (k.clone(), json_to_core_value(v)))
             .collect();
-        return Ok(Update::Set(pairs));
+        updates.push(Update::Set(pairs));
     }
     if let Some(unset) = obj.get("$unset") {
         let keys = unset
@@ -979,7 +1110,7 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
             .keys()
             .cloned()
             .collect();
-        return Ok(Update::Unset(keys));
+        updates.push(Update::Unset(keys));
     }
     if let Some(inc) = obj.get("$inc") {
         let pairs = inc
@@ -988,30 +1119,37 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
             .iter()
             .map(|(k, v)| (k.clone(), json_to_core_value(v)))
             .collect();
-        return Ok(Update::Inc(pairs));
+        updates.push(Update::Inc(pairs));
     }
     if let Some(push) = obj.get("$push") {
         let map = push
             .as_object()
             .ok_or_else(|| JsValue::from_str("$push must be object"))?;
-        let (k, v) = map
-            .iter()
-            .next()
-            .ok_or_else(|| JsValue::from_str("$push needs one field"))?;
-        return Ok(Update::Push(k.clone(), json_to_core_value(v)));
+        updates.extend(
+            map.iter()
+                .map(|(k, v)| Update::Push(k.clone(), json_to_core_value(v))),
+        );
     }
     if let Some(pull) = obj.get("$pull") {
         let map = pull
             .as_object()
             .ok_or_else(|| JsValue::from_str("$pull must be object"))?;
-        let (k, v) = map
-            .iter()
-            .next()
-            .ok_or_else(|| JsValue::from_str("$pull needs one field"))?;
-        return Ok(Update::Pull(k.clone(), json_to_core_value(v)));
+        updates.extend(
+            map.iter()
+                .map(|(k, v)| Update::Pull(k.clone(), json_to_core_value(v))),
+        );
     }
-
-    Err(JsValue::from_str("unsupported update operator"))
+    if obj
+        .keys()
+        .any(|k| !matches!(k.as_str(), "$set" | "$unset" | "$inc" | "$push" | "$pull"))
+    {
+        return Err(JsValue::from_str("unsupported update operator"));
+    }
+    match updates.len() {
+        0 => Err(JsValue::from_str("update must contain an operator")),
+        1 => Ok(updates.remove(0)),
+        _ => Ok(Update::Many(updates)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1049,6 +1187,18 @@ mod filter_parse_tests {
             json_to_filter_val(&json!({"email": {"$regex": r"@example\.com$"}})),
             Some(Filter::Regex(..))
         ));
+    }
+
+    #[test]
+    fn logical_operator_keeps_sibling_predicates() {
+        let filter = json_to_filter_val(&json!({"tenant":"a","$or":[{"x":1},{"x":2}]})).unwrap();
+        assert!(matches!(filter, Filter::And(parts) if parts.len() == 2));
+    }
+
+    #[test]
+    fn strict_operator_operands() {
+        assert!(json_to_filter_val(&json!({"a":{"$exists":"yes"}})).is_none());
+        assert!(json_to_filter_val(&json!({"a":{"$contains":1}})).is_none());
     }
 }
 

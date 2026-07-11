@@ -1720,6 +1720,7 @@ version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -1861,7 +1862,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-cli"
-version = "0.8.4"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1877,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-core"
-version = "0.8.4"
+version = "0.9.0"
 dependencies = [
  "aes-gcm",
  "getrandom 0.3.4",
@@ -1906,7 +1907,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-ffi"
-version = "0.8.4"
+version = "0.9.0"
 dependencies = [
  "serde_json",
  "taladb-core",
@@ -1914,7 +1915,7 @@ dependencies = [
 
 [[package]]
 name = "taladb-node"
-version = "0.8.4"
+version = "0.9.0"
 dependencies = [
  "napi",
  "napi-build",
@@ -1926,9 +1927,11 @@ dependencies = [
 
 [[package]]
 name = "taladb-web"
-version = "0.8.4"
+version = "0.9.0"
 dependencies = [
  "console_error_panic_hook",
+ "futures",
+ "getrandom 0.2.17",
  "getrandom 0.3.4",
  "js-sys",
  "redb",
