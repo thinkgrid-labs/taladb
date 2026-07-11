@@ -60,7 +60,24 @@ export default defineConfig({
     ["link", { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }],
     ["link", { rel: "icon", href: "/favicon.png", type: "image/png" }],
     ["link", { rel: "apple-touch-icon", href: "/apple-touch-icon.png" }],
-    ["meta", { name: "theme-color", content: "#B54B31" }],
+    ["meta", { name: "theme-color", content: "#3157D9" }],
+    ["link", { rel: "preconnect", href: "https://api.fontshare.com" }],
+    ["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
+    ["link", { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" }],
+    [
+      "link",
+      {
+        rel: "stylesheet",
+        href: "https://api.fontshare.com/v2/css?f[]=general-sans@500,600,700,800&display=swap",
+      },
+    ],
+    [
+      "link",
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap",
+      },
+    ],
     ["meta", { name: "author", content: "thinkgrid-labs" }],
     [
       "meta",
@@ -77,7 +94,7 @@ export default defineConfig({
   },
 
   themeConfig: {
-    logo: { src: "/tala-db.png", alt: "TalaDB" },
+    logo: { src: "/logo.svg", alt: "TalaDB" },
     siteTitle: false,
 
     nav: [
