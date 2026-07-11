@@ -15,8 +15,8 @@ use web_sys::FileSystemSyncAccessHandle;
 #[cfg(not(feature = "cf-workers"))]
 use taladb_core::engine::RedbBackend;
 use taladb_core::{
-    Changeset, Database, Filter, HnswOptions, LastWriteWins, SyncAdapter, Update, Value,
-    VectorMetric,
+    Changeset, Database, EncryptedBackend, Filter, HnswOptions, LastWriteWins,
+    MIN_PBKDF2_ITERATIONS, StorageBackend, SyncAdapter, Update, Value, VectorMetric, derive_key,
 };
 
 use crate::doc_to_json;
@@ -442,11 +442,38 @@ impl WorkerDB {
     pub fn open_with_config_and_opfs(
         sync_handle: FileSystemSyncAccessHandle,
         config_json: Option<String>,
+        passphrase: Option<String>,
+        salt: Option<Vec<u8>>,
     ) -> Result<WorkerDB, JsValue> {
         let opfs = OpfsBackend::from_handle(sync_handle);
         let redb_backend = RedbBackend::open_with_redb_backend(opfs)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let db = Database::open_with_backend(Box::new(redb_backend))
+
+        // When a passphrase is supplied, wrap the OPFS-backed storage in the
+        // AES-GCM-256 EncryptedBackend so every value is ciphertext at rest —
+        // the same construction as the native `open_encrypted`. The 16-byte
+        // salt is generated and persisted by the JS worker (an OPFS sidecar)
+        // and passed in, so key derivation is deterministic across opens.
+        let backend: Box<dyn StorageBackend> = match passphrase {
+            Some(passphrase) => {
+                if passphrase.is_empty() {
+                    return Err(JsValue::from_str("encryption passphrase must not be empty"));
+                }
+                let salt = salt.ok_or_else(|| {
+                    JsValue::from_str("encryption salt is required when a passphrase is given")
+                })?;
+                if salt.len() != 16 {
+                    return Err(JsValue::from_str("encryption salt must be 16 bytes"));
+                }
+                let key = derive_key(&passphrase, &salt, MIN_PBKDF2_ITERATIONS)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let raw: Arc<dyn StorageBackend> = Arc::new(redb_backend);
+                Box::new(EncryptedBackend::new(raw, key))
+            }
+            None => Box::new(redb_backend),
+        };
+
+        let db = Database::open_with_backend(backend)
             .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
         let sync_health = Arc::new(SyncHealth::default());
         let sync_hook = build_wasm_sync_hook(config_json, Arc::clone(&sync_health))?;

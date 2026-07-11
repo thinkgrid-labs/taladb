@@ -1,13 +1,15 @@
 ---
 title: Encryption at Rest
-description: Enable AES-GCM-256 encryption for native TalaDB databases.
+description: Enable transparent AES-GCM-256 encryption at rest on Node.js, the browser (WASM + OPFS), and React Native.
 ---
 
 # Encryption at Rest
 
-TalaDB supports transparent AES-GCM-256 encryption for Node.js and the native React Native engine. Browser encryption is not yet available; passing `passphrase` in a browser fails closed instead of opening plaintext storage.
+TalaDB supports transparent AES-GCM-256 encryption on **all three runtimes** — Node.js, the browser (WASM + OPFS), and native React Native.
 
 ## Enabling encryption
+
+On **Node.js and the browser**, pass a `passphrase` to `openDB`:
 
 ```ts
 import { openDB } from 'taladb';
@@ -15,7 +17,7 @@ import { openDB } from 'taladb';
 const db = await openDB('myapp.db', { passphrase: 'my-secret-password' });
 ```
 
-The `openDB` option above applies to Node.js. In React Native, encryption must be selected while installing the native JSI database:
+In **React Native**, encryption is selected while installing the native JSI database (the passphrase goes in the config JSON, since the native handle is opened at `initialize` time):
 
 ```ts
 await TalaDBModule.initialize('myapp.db', JSON.stringify({
@@ -24,7 +26,11 @@ await TalaDBModule.initialize('myapp.db', JSON.stringify({
 const db = await openDB('myapp.db')
 ```
 
-All reads and writes behave the same after opening. Keep the generated `*.taladb-salt` sidecar together with the database; losing either the passphrase or salt makes the data unrecoverable.
+All reads and writes behave the same after opening. Keep the generated salt sidecar together with the database; losing either the passphrase or salt makes the data unrecoverable. (On Node.js/RN this is a `*.taladb-salt` file; in the browser it is a companion file in the same OPFS directory as the database.)
+
+::: warning Browser encryption requires OPFS and is single-tab
+Encryption in the browser depends on OPFS (available in all current browsers). If OPFS is unavailable, `openDB({ passphrase })` **fails closed** rather than falling back to the plaintext in-memory/IndexedDB path. Encrypted browser databases are also **single-tab**: the multi-tab fallback works by sharing a decrypted snapshot through IndexedDB, which would defeat encryption, so a second tab opening the same encrypted database is refused. Unencrypted databases keep full multi-tab support.
+:::
 
 Encryption must be selected when creating a database. Passing a passphrase for an existing plaintext database fails rather than silently mixing plaintext and ciphertext; export/import into a newly encrypted database to migrate existing data.
 

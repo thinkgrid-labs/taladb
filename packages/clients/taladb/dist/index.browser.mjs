@@ -62,17 +62,12 @@ async function runSync(handle, adapter, options) {
   const collections = await resolveCollections(handle, options);
   const cursorCol = handle.collection(CURSOR_COLLECTION);
   const cursor = await readCursor(cursorCol, target);
-  const startedAt = Date.now();
-  const local = doPush ? await handle.exportChanges(collections, cursor.pushMs) : "[]";
+  const local = doPush ? await handle.exportChanges(collections, 0) : "[]";
   let pulled = 0;
-  let pullMs = cursor.pullMs;
   if (doPull) {
-    const remote = await adapter.pull(cursor.pullMs);
+    const remote = await adapter.pull(0);
     if (remote && remote !== "[]") {
       pulled = await handle.importChanges(remote);
-      for (const c of JSON.parse(remote)) {
-        if (typeof c.changed_at === "number" && c.changed_at > pullMs) pullMs = c.changed_at;
-      }
     }
   }
   let pushed = 0;
@@ -81,10 +76,10 @@ async function runSync(handle, adapter, options) {
     await adapter.push(local);
   }
   await writeCursor(cursorCol, target, {
-    pushMs: doPush ? startedAt : cursor.pushMs,
-    pullMs
+    pushMs: cursor.pushMs,
+    pullMs: cursor.pullMs
   });
-  return { pushed, pulled, cursor: startedAt };
+  return { pushed, pulled, cursor: 0 };
 }
 
 // src/http-adapter.ts
@@ -218,28 +213,44 @@ var WorkerProxy = class {
     this.pending.clear();
   }
 };
-function makePoller(findFn, callback) {
+function makePoller(findFn, callback, onError) {
   let active = true;
   let lastJson = "";
+  let running = false;
+  let rerun = false;
   const poll = async () => {
     if (!active) return;
+    if (running) {
+      rerun = true;
+      return;
+    }
+    running = true;
     try {
       const docs = await findFn();
+      if (!active) return;
       const json = JSON.stringify(docs);
       if (json !== lastJson) {
         lastJson = json;
         callback(docs);
       }
-    } catch {
+    } catch (error) {
+      if (active) onError?.(error);
+    } finally {
+      running = false;
+      if (active) {
+        if (rerun) {
+          rerun = false;
+          void poll();
+        } else setTimeout(poll, 300);
+      }
     }
-    if (active) setTimeout(poll, 300);
   };
   poll();
   return () => {
     active = false;
   };
 }
-async function createBrowserDB(dbName, config) {
+async function createBrowserDB(dbName, config, passphrase) {
   const workerUrl = new URL("@taladb/web/worker/taladb.worker.js", import.meta.url);
   const worker = new Worker(workerUrl, { type: "module", name: "taladb" });
   const proxy = new WorkerProxy(worker);
@@ -247,7 +258,7 @@ async function createBrowserDB(dbName, config) {
     proxy.abort(new Error(`taladb worker error: ${e.message ?? "unknown"}`));
   };
   const configJson = config !== void 0 ? JSON.stringify(config) : void 0;
-  await proxy.send("init", { dbName, configJson });
+  await proxy.send("init", { dbName, configJson, passphrase });
   const nudgeCallbacks = /* @__PURE__ */ new Set();
   let channel = null;
   if (typeof BroadcastChannel !== "undefined") {
@@ -308,6 +319,8 @@ async function createBrowserDB(dbName, config) {
       },
       createIndex: (field) => proxy.send("createIndex", { collection: name, field }),
       dropIndex: (field) => proxy.send("dropIndex", { collection: name, field }),
+      createCompoundIndex: (fields) => proxy.send("createCompoundIndex", { collection: name, fieldsJson: JSON.stringify(fields) }),
+      dropCompoundIndex: (fields) => proxy.send("dropCompoundIndex", { collection: name, fieldsJson: JSON.stringify(fields) }),
       createFtsIndex: (field) => proxy.send("createFtsIndex", { collection: name, field }),
       dropFtsIndex: (field) => proxy.send("dropFtsIndex", { collection: name, field }),
       createVectorIndex: (field, options) => {
@@ -338,12 +351,19 @@ async function createBrowserDB(dbName, config) {
         });
         return JSON.parse(json);
       },
-      subscribe: (filter, callback) => {
+      subscribe: (filter, callback, onError) => {
         let active = true;
         let lastJson = "";
         let timer = null;
+        let running = false;
+        let rerun = false;
         const poll = async () => {
           if (!active) return;
+          if (running) {
+            rerun = true;
+            return;
+          }
+          running = true;
           if (timer !== null) {
             clearTimeout(timer);
             timer = null;
@@ -353,13 +373,22 @@ async function createBrowserDB(dbName, config) {
               collection: name,
               filterJson: filter ? s(filter) : "null"
             });
+            if (!active) return;
             if (json !== lastJson) {
               lastJson = json;
               callback(JSON.parse(json));
             }
-          } catch {
+          } catch (error) {
+            if (active) onError?.(error);
+          } finally {
+            running = false;
           }
-          if (active) timer = setTimeout(poll, 300);
+          if (active) {
+            if (rerun) {
+              rerun = false;
+              void poll();
+            } else timer = setTimeout(poll, 300);
+          }
         };
         nudgeCallbacks.add(poll);
         poll();
@@ -378,6 +407,8 @@ async function createBrowserDB(dbName, config) {
   const handle = {
     collection: (name, opts) => wrapCollection(name, opts),
     compact: () => proxy.send("compact"),
+    syncStatus: async () => JSON.parse(await proxy.send("syncStatus")),
+    flushSync: (timeoutMs = 5e3) => proxy.send("flushSync", { timeoutMs }),
     close: async () => {
       channel?.close();
       try {
@@ -396,12 +427,12 @@ async function createBrowserDB(dbName, config) {
   };
   return handle;
 }
-async function createNodeDB(dbName, config) {
+async function createNodeDB(dbName, config, passphrase) {
   const native = await import("./node-A4LKRSW5.mjs");
   const TalaDBNode = native.TalaDbNode ?? native.TalaDBNode;
   if (!TalaDBNode) throw new Error("@taladb/node loaded but exports no TalaDbNode class \u2014 rebuild the native module");
   const configJson = config !== void 0 ? JSON.stringify(config) : null;
-  const db = TalaDBNode.open(dbName, configJson);
+  const db = TalaDBNode.open(dbName, configJson, passphrase ?? null);
   function wrapCollection(name, opts) {
     const col = db.collection(name);
     const wrapped = {
@@ -417,6 +448,8 @@ async function createNodeDB(dbName, config) {
       aggregate: async (pipeline) => col.aggregate(pipeline),
       createIndex: async (field) => col.createIndex(field),
       dropIndex: async (field) => col.dropIndex(field),
+      createCompoundIndex: async (fields) => col.createCompoundIndex(fields),
+      dropCompoundIndex: async (fields) => col.dropCompoundIndex(fields),
       createFtsIndex: async (field) => col.createFtsIndex(field),
       dropFtsIndex: async (field) => col.dropFtsIndex(field),
       createVectorIndex: async (field, options) => col.createVectorIndex(field, options.dimensions, options.metric ?? null, options.indexType ?? null, options.hnswM ?? null, options.hnswEfConstruction ?? null),
@@ -430,7 +463,7 @@ async function createNodeDB(dbName, config) {
         const raw = await col.findNearest(field, vector, topK, filter ?? null);
         return raw;
       },
-      subscribe: (filter, callback) => makePoller(async () => col.find(filter ?? null), callback)
+      subscribe: (filter, callback, onError) => makePoller(async () => col.find(filter ?? null), callback, onError)
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -468,6 +501,8 @@ async function createNativeDB(_dbName) {
       aggregate: async (pipeline) => native.aggregate(name, pipeline),
       createIndex: async (field) => native.createIndex(name, field),
       dropIndex: async (field) => native.dropIndex(name, field),
+      createCompoundIndex: async (fields) => native.createCompoundIndex(name, fields),
+      dropCompoundIndex: async (fields) => native.dropCompoundIndex(name, fields),
       createFtsIndex: async (field) => native.createFtsIndex(name, field),
       dropFtsIndex: async (field) => native.dropFtsIndex(name, field),
       createVectorIndex: async (field, options) => {
@@ -487,18 +522,35 @@ async function createNativeDB(_dbName) {
         const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw;
       },
-      subscribe: (filter, callback) => makePoller(async () => native.find(name, filter ?? {}), callback)
+      subscribe: (filter, callback, onError) => makePoller(async () => native.find(name, filter ?? {}), callback, onError)
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
+  const syncSurface = typeof native.exportChanges === "function" && typeof native.importChanges === "function" && typeof native.listCollectionNames === "function" ? (() => {
+    const handle = {
+      collection: (name, opts) => wrapCollection(name, opts),
+      exportChanges: async (collections, sinceMs) => native.exportChanges(collections, sinceMs),
+      importChanges: async (changeset) => native.importChanges(changeset),
+      listCollectionNames: async () => native.listCollectionNames(),
+      sync: (adapter, options) => runSync(handle, adapter, options)
+    };
+    return {
+      exportChanges: handle.exportChanges,
+      importChanges: handle.importChanges,
+      sync: handle.sync
+    };
+  })() : unsupportedSync("react-native");
   return {
     collection: (name, opts) => wrapCollection(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
-    ...unsupportedSync("react-native")
+    ...syncSurface
   };
 }
 async function openDB(dbName = "taladb.db", options) {
+  if (options?.passphrase !== void 0 && options.passphrase.length === 0) {
+    throw new Error("TalaDB encryption passphrase must not be empty");
+  }
   let resolvedConfig;
   if (options?.config !== void 0) {
     validateConfig(options.config);
@@ -509,11 +561,14 @@ async function openDB(dbName = "taladb.db", options) {
   const platform = detectPlatform();
   switch (platform) {
     case "browser":
-      return createBrowserDB(dbName, resolvedConfig);
+      return createBrowserDB(dbName, resolvedConfig, options?.passphrase);
     case "react-native":
+      if (options?.passphrase !== void 0) {
+        throw new Error("On React Native, pass the passphrase in the config JSON to TalaDBModule.initialize(); refusing to assume the already-open native database is encrypted");
+      }
       return createNativeDB(dbName);
     case "node":
-      return createNodeDB(dbName, resolvedConfig);
+      return createNodeDB(dbName, resolvedConfig, options?.passphrase);
   }
 }
 export {

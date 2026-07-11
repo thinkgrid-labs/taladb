@@ -307,7 +307,7 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
   return handle satisfies TalaDB;
 }
 
-async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<TalaDB> {
+async function createBrowserDB(dbName: string, config?: TalaDbConfig, passphrase?: string): Promise<TalaDB> {
   // createSyncAccessHandle (required for OPFS persistence) is only available
   // in Dedicated Workers per the WHATWG spec — not SharedWorkers. We use a
   // DedicatedWorker so each tab gets its own isolated worker + file handle.
@@ -323,7 +323,7 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
   // Initialize the worker (opens OPFS file or falls back to IDB-backed in-memory).
   // Pass configJson so the worker can wire up HTTP push sync from the first write.
   const configJson = config !== undefined ? JSON.stringify(config) : undefined;
-  await proxy.send('init', { dbName, configJson });
+  await proxy.send('init', { dbName, configJson, passphrase });
 
   // BroadcastChannel: when another tab's worker commits a write it posts
   // "taladb:changed".  We immediately nudge every active subscribe() poller
@@ -789,10 +789,10 @@ export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Pro
   const platform = detectPlatform();
   switch (platform) {
     case 'browser':
-      if (options?.passphrase !== undefined) {
-        throw new Error('TalaDB browser encryption is not yet available; refusing to open an unencrypted database');
-      }
-      return createBrowserDB(dbName, resolvedConfig);
+      // Browser encryption is applied inside the OPFS worker (AES-GCM-256, salt
+      // in an OPFS sidecar). The worker fails closed if OPFS is unavailable, so
+      // an encrypted DB is never silently downgraded to a plaintext fallback.
+      return createBrowserDB(dbName, resolvedConfig, options?.passphrase);
     case 'react-native':
       if (options?.passphrase !== undefined) {
         throw new Error('On React Native, pass the passphrase in the config JSON to TalaDBModule.initialize(); refusing to assume the already-open native database is encrypted');

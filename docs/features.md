@@ -191,13 +191,17 @@ In the browser, writes from *other tabs* trigger subscriptions too (via `Broadca
 
 ## Encryption at rest
 
-The `encryption` Cargo feature adds:
+Pass a `passphrase` to `openDB` (Node.js and the browser) — or to `TalaDBModule.initialize` on React Native — and every value is transparently encrypted with **AES-GCM-256** before it touches disk, on all three runtimes:
 
-- `EncryptedBackend` — a `StorageBackend` wrapper that encrypts every value with AES-GCM-256 before writing and decrypts on read
-- `encrypt` / `decrypt` — low-level primitives for manual use
-- `derive_key` — PBKDF2-HMAC-SHA256 key derivation from a passphrase and salt
+```ts
+const db = await openDB('myapp.db', { passphrase: userSuppliedPassphrase })
+```
 
-Nonces are generated per write using the OS random number generator. The 16-byte GCM authentication tag prevents silent data corruption and detects tampering.
+- `EncryptedBackend` — a `StorageBackend` wrapper that encrypts every value with AES-GCM-256 before writing and decrypts on read; it wraps the file backend (Node/RN) or the OPFS backend (browser) identically
+- Keys are derived with **PBKDF2-HMAC-SHA256** (600,000 iterations) from the passphrase and a random 16-byte salt stored beside the database
+- Per-write random nonces; the 16-byte GCM tag detects tampering and rejects a wrong passphrase before returning a handle
+
+Document IDs and index keys are not encrypted (they must remain comparable for lookups) — so don't index a field whose confidentiality you rely on encryption for. See the [Encryption reference](/api/encryption) for the full model, including the browser's OPFS/single-tab requirement.
 
 ## OPFS-backed browser persistence
 
