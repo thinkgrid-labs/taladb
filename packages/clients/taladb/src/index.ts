@@ -323,7 +323,17 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig, passphrase
   // Initialize the worker (opens OPFS file or falls back to IDB-backed in-memory).
   // Pass configJson so the worker can wire up HTTP push sync from the first write.
   const configJson = config !== undefined ? JSON.stringify(config) : undefined;
-  await proxy.send('init', { dbName, configJson, passphrase });
+  try {
+    await proxy.send('init', { dbName, configJson, passphrase });
+  } catch (e) {
+    // A failed init (wrong passphrase, OPFS unavailable, …) must not leave a
+    // zombie worker behind: terminating it force-closes any OPFS access
+    // handles it acquired, so the caller can retry (e.g. re-prompt for the
+    // passphrase) without reloading the page.
+    proxy.abort(e instanceof Error ? e : new Error(String(e)));
+    worker.terminate();
+    throw e;
+  }
 
   // BroadcastChannel: when another tab's worker commits a write it posts
   // "taladb:changed".  We immediately nudge every active subscribe() poller

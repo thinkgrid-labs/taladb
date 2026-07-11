@@ -633,7 +633,11 @@ async function doInit(dbName, configJson, passphrase = null) {
         resolve();
       } else if (e.data === 'taladb:snapshot-ready' && idbFallback) {
         snapshotDirty = true;
-      } else if (e.data?.type === 'taladb:secondary-write' && typeof e.data.token === 'string' && e.data.token.length > 0 && db) {
+      } else if (e.data?.type === 'taladb:secondary-write' && typeof e.data.token === 'string' && e.data.token.length > 0 && db && !encrypted) {
+        // `!encrypted`: encrypted databases are single-tab, so there are no
+        // legitimate secondary-tab writes — accepting them would let any
+        // same-origin script inject documents into an encrypted DB without
+        // knowing the passphrase.
         // Merge peer writes in every mode. This also makes multiple tabs
         // converge when OPFS is entirely unavailable and every tab uses IDB.
         // The token requirement rejects unauthenticated injection attempts that
@@ -693,18 +697,25 @@ async function doInit(dbName, configJson, passphrase = null) {
   const fileName = `taladb_${dbName.replaceAll(/[/\\:]/g, '_')}.redb`;
   const fileHandle = await root.getFileHandle(fileName, { create: true });
 
-  // Encrypted mode: load or create the 16-byte key-derivation salt from an
-  // OPFS sidecar file. Stored next to the DB (not in it) so it survives and
-  // is available before the encrypted backend opens.
-  if (encrypted) {
-    salt = await loadOrCreateSalt(root, `${fileName}.salt`);
-  }
+  // Encrypted mode: the 16-byte key-derivation salt lives in an OPFS sidecar
+  // file next to the DB. It is loaded/created only AFTER this tab has won the
+  // exclusive lock (or determined no locking applies), so two tabs racing to
+  // open never collide on the salt file's exclusive access handle.
 
   if (!('locks' in navigator)) {
     // Web Locks not available — open directly (single-tab safe only).
     warn('Web Locks unavailable — multi-tab write safety disabled');
+    if (encrypted) salt = await loadOrCreateSalt(root, `${fileName}.salt`);
     const syncHandle = await fileHandle.createSyncAccessHandle();
-    db = openWithOpfs(syncHandle);
+    try {
+      db = openWithOpfs(syncHandle);
+    } catch (e) {
+      // A failed open (e.g. wrong passphrase) must release the exclusive OPFS
+      // access handle, or every retry fails with "Access Handles cannot be
+      // created" until the page reloads.
+      try { syncHandle.close(); } catch { /* best-effort */ }
+      throw e;
+    }
     snapshotWriter = !encrypted; // encrypted DBs never write a plaintext IDB snapshot
     log(`Opened "${fileName}" via OPFS`);
     return;
@@ -759,8 +770,10 @@ async function doInit(dbName, configJson, passphrase = null) {
       }
 
       // Acquired the lock — use OPFS.
+      let syncHandle = null;
       try {
-        const syncHandle = await fileHandle.createSyncAccessHandle();
+        if (encrypted) salt = await loadOrCreateSalt(root, `${fileName}.salt`);
+        syncHandle = await fileHandle.createSyncAccessHandle();
         db = openWithOpfs(syncHandle);
         snapshotWriter = !encrypted; // encrypted DBs never write a plaintext IDB snapshot
         log(`Opened "${fileName}" via OPFS (Web Locks)`);
@@ -773,6 +786,13 @@ async function doInit(dbName, configJson, passphrase = null) {
         syncHandle.close();
         db = null;
       } catch (e) {
+        // A failed open (e.g. wrong passphrase) must release the exclusive
+        // OPFS access handle, or every retry fails with "Access Handles
+        // cannot be created" until the page reloads. Returning from this
+        // callback also releases the Web Lock.
+        if (syncHandle) {
+          try { syncHandle.close(); } catch { /* best-effort */ }
+        }
         reject(e);
       }
     });

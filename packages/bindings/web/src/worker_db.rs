@@ -15,9 +15,14 @@ use web_sys::FileSystemSyncAccessHandle;
 #[cfg(not(feature = "cf-workers"))]
 use taladb_core::engine::RedbBackend;
 use taladb_core::{
-    Changeset, Database, EncryptedBackend, Filter, HnswOptions, LastWriteWins,
-    MIN_PBKDF2_ITERATIONS, StorageBackend, SyncAdapter, Update, Value, VectorMetric, derive_key,
+    Changeset, Database, Filter, HnswOptions, LastWriteWins, SyncAdapter, Update, Value,
+    VectorMetric,
 };
+// Encryption is only wired on the wasm OPFS open path — gate the imports the
+// same way as `open_with_config_and_opfs` so native workspace builds (CI's
+// cargo check/clippy) don't see them as unused.
+#[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
+use taladb_core::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, StorageBackend, derive_key};
 
 use crate::doc_to_json;
 #[cfg(not(feature = "cf-workers"))]

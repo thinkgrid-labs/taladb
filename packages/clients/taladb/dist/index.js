@@ -354,7 +354,13 @@ async function createBrowserDB(dbName, config, passphrase) {
     proxy.abort(new Error(`taladb worker error: ${e.message ?? "unknown"}`));
   };
   const configJson = config !== void 0 ? JSON.stringify(config) : void 0;
-  await proxy.send("init", { dbName, configJson, passphrase });
+  try {
+    await proxy.send("init", { dbName, configJson, passphrase });
+  } catch (e) {
+    proxy.abort(e instanceof Error ? e : new Error(String(e)));
+    worker.terminate();
+    throw e;
+  }
   const nudgeCallbacks = /* @__PURE__ */ new Set();
   let channel = null;
   if (typeof BroadcastChannel !== "undefined") {
