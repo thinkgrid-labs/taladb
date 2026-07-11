@@ -596,6 +596,105 @@ pub unsafe extern "C" fn taladb_aggregate(
 }
 
 // ---------------------------------------------------------------------------
+// Bidirectional sync — changeset export / import (backs JS `db.sync()`)
+// ---------------------------------------------------------------------------
+
+/// Export a changeset for `collections_json` (a JSON array of collection
+/// names) with `changed_at > since_ms`, as a JSON string. NULL on error.
+/// Caller must free with `taladb_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_export_changes(
+    handle: *mut TalaDbHandle,
+    collections_json: *const c_char,
+    since_ms: f64,
+) -> *mut c_char {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return std::ptr::null_mut(),
+    };
+    let cols_str = match cstr_to_string(collections_json) {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+    let collections: Vec<String> = match serde_json::from_str(&cols_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_last_error(format!("invalid collections JSON: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+    let refs: Vec<&str> = collections.iter().map(String::as_str).collect();
+    match h.db.export_changes(&refs, since_ms as u64) {
+        Ok(changeset) => match serde_json::to_string(&changeset) {
+            Ok(s) => to_cstring(s),
+            Err(e) => {
+                set_last_error(e.to_string());
+                std::ptr::null_mut()
+            }
+        },
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Merge a JSON changeset (from a remote peer) via Last-Write-Wins. Returns the
+/// number of documents changed, or -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_import_changes(
+    handle: *mut TalaDbHandle,
+    changeset_json: *const c_char,
+) -> i32 {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return -1,
+    };
+    let json = match cstr_to_string(changeset_json) {
+        Some(s) => s,
+        None => return -1,
+    };
+    let changeset: taladb_core::Changeset = match serde_json::from_str(&json) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(format!("changeset parse failed: {e}"));
+            return -1;
+        }
+    };
+    match h.db.import_changes(changeset) {
+        Ok(n) => n as i32,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+/// User collection names (reserved `_`-prefixed excluded), as a JSON array
+/// string. Backs the sync orchestration's "sync all collections" default.
+/// NULL on error. Caller must free with `taladb_free_string`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_list_collection_names(handle: *mut TalaDbHandle) -> *mut c_char {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return std::ptr::null_mut(),
+    };
+    match h.db.list_collection_names() {
+        Ok(names) => match serde_json::to_string(&names) {
+            Ok(s) => to_cstring(s),
+            Err(e) => {
+                set_last_error(e.to_string());
+                std::ptr::null_mut()
+            }
+        },
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Index management
 // ---------------------------------------------------------------------------
 

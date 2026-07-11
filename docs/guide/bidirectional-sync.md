@@ -8,7 +8,7 @@ description: Sync a local-first app (React, Next.js, React Native) to your backe
 [HTTP Push Sync](/guide/http-sync) is fire-and-forget: it POSTs every local write outward and never hears back. **Bidirectional sync** is the full loop — pull remote changes into the local database *and* push local changes out, tracked by cursors so each pass is incremental, with automatic Last-Write-Wins conflict resolution.
 
 ::: info Runtime support
-Available on **Node.js** and the **browser** (since v0.9.0 — both the OPFS worker and the in-memory fallback). In the browser, all sync engine work runs inside the Dedicated Worker, off the main thread, so a pass never blocks rendering. React Native shares the same engine; its binding wiring lands in a future release — calling `db.sync()` there throws a clear error until then. Track it on the [roadmap](/roadmap).
+Available on **Node.js** and the **browser** (since v0.9.0 — both the OPFS worker and the in-memory fallback). In the browser, all sync engine work runs inside the Dedicated Worker, off the main thread, so a pass never blocks rendering. **React Native** support is implemented across the stack and pending on-device verification (see [below](#react-native)); until a verified native build ships, `db.sync()` on RN throws a clear error via feature detection. Track it on the [roadmap](/roadmap).
 :::
 
 ## Client → server: sync your app to your backend
@@ -180,9 +180,9 @@ Pointing the adapter at a **Next.js route handler** (`app/api/sync/push/route.ts
 
 ### React Native
 
-`taladb` + `@taladb/react-native` give you the same local-first database on iOS and Android today. **`db.sync()` on React Native lands in a future release** — the core engine already supports it; the changeset primitives are being exposed through the JSI binding. Until then `db.sync()` throws a clear error on RN.
+`taladb` + `@taladb/react-native` give you the same local-first database on iOS and Android today. **`db.sync()` on React Native is implemented but pending on-device verification** — the changeset primitives are wired through the full stack (Rust FFI → JSI HostObject → the TS adapter), and the API is identical to Node/web. The client feature-detects the native methods, so on a native module that predates them `db.sync()` still throws a clear error rather than crashing. Once a native build with these methods is verified on iOS and Android it graduates to fully supported — track it on the [roadmap](/roadmap).
 
-Plan for these mobile realities when it arrives (the API will be identical):
+Plan for these mobile realities (the API is identical to the React examples above):
 
 - **Foreground sync is the baseline** — the same pattern as React, driven by `AppState` instead of `visibilitychange`: sync on launch, on `active`, and on an interval while the app is foregrounded. This alone covers most apps.
 - **True background sync is OS-scheduled, not guaranteed.** iOS (BGTaskScheduler / background fetch, via e.g. `react-native-background-fetch`) requires the *Background Modes → Background fetch* capability and decides itself when your task runs; Android schedules through WorkManager with Doze/App-Standby restrictions and OEM battery managers on top. Design as "opportunistic catch-up in the background, guaranteed reconciliation on next launch" — never assume a background pass happened.

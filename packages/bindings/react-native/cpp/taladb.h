@@ -155,6 +155,32 @@ char *taladb_aggregate(TalaDbHandle *handle,
                        const char   *pipeline_json);
 
 /* -------------------------------------------------------------------------
+ * Bidirectional sync — changeset export / import (backs JS db.sync())
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Export a changeset for the collections in collections_json (a JSON array of
+ * names) with changed_at > since_ms. Returns a JSON string, or NULL on error.
+ * Caller must free with taladb_free_string().
+ */
+char *taladb_export_changes(TalaDbHandle *handle,
+                            const char   *collections_json,
+                            double        since_ms);
+
+/**
+ * Merge a JSON changeset (from a remote peer) via Last-Write-Wins.
+ * Returns the number of documents changed, or -1 on error.
+ */
+int32_t taladb_import_changes(TalaDbHandle *handle,
+                              const char   *changeset_json);
+
+/**
+ * User collection names (reserved names excluded) as a JSON array string.
+ * Returns NULL on error. Caller must free with taladb_free_string().
+ */
+char *taladb_list_collection_names(TalaDbHandle *handle);
+
+/* -------------------------------------------------------------------------
  * Index management
  * ---------------------------------------------------------------------- */
 

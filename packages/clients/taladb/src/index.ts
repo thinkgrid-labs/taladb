@@ -601,6 +601,13 @@ interface NativeDB {
   findNearest(collection: string, field: string, query: number[], topK: number, filter?: Record<string, unknown> | null): { document: Record<string, unknown>; score: number }[];
   compact(): void;
   close(): void;
+  // Bidirectional-sync primitives. Optional: only present on binaries built
+  // with the sync HostObject methods (added in 0.9.x). Absent on older
+  // prebuilt native modules, in which case db.sync() falls back to a clear
+  // "not available" error rather than crashing.
+  exportChanges?(collectionsJson: string[], sinceMs: number): string;
+  importChanges?(changeset: string): number;
+  listCollectionNames?(): string[];
 }
 
 async function createNativeDB(_dbName: string): Promise<TalaDB> {
@@ -656,11 +663,35 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
 
+  // Bidirectional sync is available only when the native module exposes the
+  // changeset primitives (0.9.x+ JSI HostObject). Feature-detect so an older
+  // prebuilt binary degrades to a clear error instead of a hard crash.
+  const syncSurface =
+    typeof native.exportChanges === 'function' &&
+    typeof native.importChanges === 'function' &&
+    typeof native.listCollectionNames === 'function'
+      ? (() => {
+          const handle = {
+            collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
+            exportChanges: async (collections: string[], sinceMs: number) => native.exportChanges!(collections, sinceMs),
+            importChanges: async (changeset: string) => native.importChanges!(changeset),
+            listCollectionNames: async () => native.listCollectionNames!(),
+            sync: (adapter: SyncAdapter, options: SyncOptions) =>
+              runSync(handle as unknown as SyncHandle, adapter, options),
+          };
+          return {
+            exportChanges: handle.exportChanges,
+            importChanges: handle.importChanges,
+            sync: handle.sync,
+          };
+        })()
+      : unsupportedSync('react-native');
+
   return {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
-    ...unsupportedSync('react-native'),
+    ...syncSurface,
   };
 }
 
