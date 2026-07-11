@@ -608,42 +608,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keep each artifact in its own directory (no merge-multiple): the RN
-      # artifacts are trees with duplicate basenames (libtaladb_ffi.{a,so} per
-      # slice/ABI, repeated headers) and the two dist artifacts both hold
-      # index.mjs/js/d.ts — flattening them together clobbers files and makes
-      # softprops delete-then-reupload the same asset name (the "Not Found -
-      # delete-a-release-asset" failure).
-      - name: Download all release artifacts
+      # Only the CLI belongs on the GitHub release. Every library ships via npm —
+      # the native packages (@taladb/node, @taladb/web, @taladb/react-native)
+      # embed their own binaries — so the wasm/xcframework/jniLibs/dist artifacts
+      # here would just be loose duplicates. taladb-cli is the one artifact with
+      # no npm channel; docs/features.md points users to Releases for it.
+      #
+      # `release-taladb-*-*` selects exactly the three platform CLI builds
+      # (release-taladb-linux-x86_64, -macos-aarch64, -windows-x86_64) and
+      # excludes release-taladb / release-taladb-react (no second dash). Each CLI
+      # archive already has a unique, platform-suffixed name, so merge-multiple
+      # is collision-free — no more duplicate-basename delete-reupload failure.
+      - name: Download CLI archives
         uses: actions/download-artifact@v4
         with:
-          pattern: release-*
-          path: /tmp/artifacts
+          pattern: release-taladb-*-*
+          path: /tmp/release-assets
+          merge-multiple: true
 
-      - name: Stage release assets
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/release-assets
-
-          # Single-file distributables (wasm tarball, per-platform CLI archives)
-          # already have unique names — copy them straight over. The npm dist
-          # artifacts (release-taladb, release-taladb-react) carry no archives,
-          # so they're naturally excluded: they ship to npm, not the release.
-          find /tmp/artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
-            -exec cp {} /tmp/release-assets/ \;
-
-          # React Native binaries are directory trees — the GitHub release asset
-          # namespace is flat and basename-keyed, so collapse each into one
-          # uniquely-named archive that preserves the internal layout.
-          if [ -d /tmp/artifacts/release-rn-ios ]; then
-            ( cd /tmp/artifacts/release-rn-ios && zip -r /tmp/release-assets/TalaDBFfi.xcframework.zip . )
-          fi
-          if [ -d /tmp/artifacts/release-rn-android ]; then
-            ( cd /tmp/artifacts/release-rn-android && zip -r /tmp/release-assets/taladb-android-jniLibs.zip . )
-          fi
-
-          echo "Release assets:"
-          ls -lh /tmp/release-assets/
+      - name: List assets
+        run: ls -lh /tmp/release-assets/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
