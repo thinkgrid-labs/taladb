@@ -202,13 +202,42 @@ fn plan_inner(
                     })
                     .collect();
                 if let Some(vals) = values {
-                    let val_refs: Vec<&crate::document::Value> = vals;
-                    if let Some((start, end)) = compound_range_eq(&val_refs) {
-                        return QueryPlan::CompoundIndexEq {
-                            fields: cidx.fields.clone(),
-                            start,
-                            end,
-                        };
+                    let mut variants: Vec<Vec<crate::document::Value>> =
+                        vec![vals.iter().map(|v| (*v).clone()).collect()];
+                    for i in 0..vals.len() {
+                        if matches!(vals[i], crate::document::Value::Float(f) if *f == 0.0) {
+                            let alternate = crate::document::Value::Float(
+                                if matches!(vals[i], crate::document::Value::Float(f) if f.is_sign_negative())
+                                {
+                                    0.0
+                                } else {
+                                    -0.0
+                                },
+                            );
+                            let mut additional = variants.clone();
+                            for variant in &mut additional {
+                                variant[i] = alternate.clone();
+                            }
+                            variants.extend(additional);
+                        }
+                    }
+                    let plans: Vec<_> = variants
+                        .into_iter()
+                        .filter_map(|values| {
+                            let refs: Vec<_> = values.iter().collect();
+                            compound_range_eq(&refs).map(|(start, end)| {
+                                QueryPlan::CompoundIndexEq {
+                                    fields: cidx.fields.clone(),
+                                    start,
+                                    end,
+                                }
+                            })
+                        })
+                        .collect();
+                    if plans.len() == 1 {
+                        return plans.into_iter().next().unwrap();
+                    } else if !plans.is_empty() {
+                        return QueryPlan::IndexOr { plans };
                     }
                 }
             }

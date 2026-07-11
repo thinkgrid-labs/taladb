@@ -72,7 +72,8 @@ type FieldOps<T> = T extends null | undefined
       $nin?: T[];
       $exists?: boolean;
       /** Full-text search: matches documents where this string field contains the given token. */
-      $contains?: string;
+  $contains?: string;
+  $regex?: string;
     };
 
 export type Filter<T extends Document = Document> = {

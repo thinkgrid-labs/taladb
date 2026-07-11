@@ -992,20 +992,28 @@ fn json_to_core_value(j: &serde_json::Value) -> Value {
 fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
     let obj = v.as_object()?;
 
-    if let Some(arr) = obj.get("$and") {
-        let f: Option<Vec<Filter>> = arr.as_array()?.iter().map(json_to_filter_val).collect();
-        return Some(Filter::And(f?));
-    }
-    if let Some(arr) = obj.get("$or") {
-        let f: Option<Vec<Filter>> = arr.as_array()?.iter().map(json_to_filter_val).collect();
-        return Some(Filter::Or(f?));
-    }
-    if let Some(inner) = obj.get("$not") {
-        return Some(Filter::Not(Box::new(json_to_filter_val(inner)?)));
-    }
-
     let mut filters: Vec<Filter> = Vec::new();
     for (field, expr) in obj {
+        if field.starts_with('$') {
+            let logical = match field.as_str() {
+                "$and" => Filter::And(
+                    expr.as_array()?
+                        .iter()
+                        .map(json_to_filter_val)
+                        .collect::<Option<_>>()?,
+                ),
+                "$or" => Filter::Or(
+                    expr.as_array()?
+                        .iter()
+                        .map(json_to_filter_val)
+                        .collect::<Option<_>>()?,
+                ),
+                "$not" => Filter::Not(Box::new(json_to_filter_val(expr)?)),
+                _ => return None,
+            };
+            filters.push(logical);
+            continue;
+        }
         if !expr.is_object() {
             filters.push(Filter::Eq(field.clone(), json_to_core_value(expr)));
             continue;
@@ -1033,10 +1041,8 @@ fn json_to_filter_val(v: &serde_json::Value) -> Option<Filter> {
                     field.clone(),
                     val.as_array()?.iter().map(json_to_core_value).collect(),
                 ),
-                "$exists" => Filter::Exists(field.clone(), val.as_bool().unwrap_or(true)),
-                "$contains" => {
-                    Filter::Contains(field.clone(), val.as_str().unwrap_or("").to_string())
-                }
+                "$exists" => Filter::Exists(field.clone(), val.as_bool()?),
+                "$contains" => Filter::Contains(field.clone(), val.as_str()?.to_string()),
                 "$regex" => Filter::Regex(field.clone(), val.as_str()?.to_string()),
                 _ => return None,
             };
@@ -1055,6 +1061,7 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
         .as_object()
         .ok_or_else(|| JsValue::from_str("update must be an object"))?;
 
+    let mut updates = Vec::new();
     if let Some(set) = obj.get("$set") {
         let pairs = set
             .as_object()
@@ -1062,7 +1069,7 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
             .iter()
             .map(|(k, v)| (k.clone(), json_to_core_value(v)))
             .collect();
-        return Ok(Update::Set(pairs));
+        updates.push(Update::Set(pairs));
     }
     if let Some(unset) = obj.get("$unset") {
         let keys = unset
@@ -1071,7 +1078,7 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
             .keys()
             .cloned()
             .collect();
-        return Ok(Update::Unset(keys));
+        updates.push(Update::Unset(keys));
     }
     if let Some(inc) = obj.get("$inc") {
         let pairs = inc
@@ -1080,30 +1087,37 @@ fn json_to_update_val(v: &serde_json::Value) -> Result<Update, JsValue> {
             .iter()
             .map(|(k, v)| (k.clone(), json_to_core_value(v)))
             .collect();
-        return Ok(Update::Inc(pairs));
+        updates.push(Update::Inc(pairs));
     }
     if let Some(push) = obj.get("$push") {
         let map = push
             .as_object()
             .ok_or_else(|| JsValue::from_str("$push must be object"))?;
-        let (k, v) = map
-            .iter()
-            .next()
-            .ok_or_else(|| JsValue::from_str("$push needs one field"))?;
-        return Ok(Update::Push(k.clone(), json_to_core_value(v)));
+        updates.extend(
+            map.iter()
+                .map(|(k, v)| Update::Push(k.clone(), json_to_core_value(v))),
+        );
     }
     if let Some(pull) = obj.get("$pull") {
         let map = pull
             .as_object()
             .ok_or_else(|| JsValue::from_str("$pull must be object"))?;
-        let (k, v) = map
-            .iter()
-            .next()
-            .ok_or_else(|| JsValue::from_str("$pull needs one field"))?;
-        return Ok(Update::Pull(k.clone(), json_to_core_value(v)));
+        updates.extend(
+            map.iter()
+                .map(|(k, v)| Update::Pull(k.clone(), json_to_core_value(v))),
+        );
     }
-
-    Err(JsValue::from_str("unsupported update operator"))
+    if obj
+        .keys()
+        .any(|k| !matches!(k.as_str(), "$set" | "$unset" | "$inc" | "$push" | "$pull"))
+    {
+        return Err(JsValue::from_str("unsupported update operator"));
+    }
+    match updates.len() {
+        0 => Err(JsValue::from_str("update must contain an operator")),
+        1 => Ok(updates.remove(0)),
+        _ => Ok(Update::Many(updates)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,6 +1155,18 @@ mod filter_parse_tests {
             json_to_filter_val(&json!({"email": {"$regex": r"@example\.com$"}})),
             Some(Filter::Regex(..))
         ));
+    }
+
+    #[test]
+    fn logical_operator_keeps_sibling_predicates() {
+        let filter = json_to_filter_val(&json!({"tenant":"a","$or":[{"x":1},{"x":2}]})).unwrap();
+        assert!(matches!(filter, Filter::And(parts) if parts.len() == 2));
+    }
+
+    #[test]
+    fn strict_operator_operands() {
+        assert!(json_to_filter_val(&json!({"a":{"$exists":"yes"}})).is_none());
+        assert!(json_to_filter_val(&json!({"a":{"$contains":1}})).is_none());
     }
 }
 

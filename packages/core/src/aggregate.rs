@@ -97,6 +97,8 @@ pub enum Stage {
     Limit(u64),
     /// Keep only the listed fields (plus `_id` for Group results).
     Project(Vec<String>),
+    /// Inclusion projection with the logical `_id` explicitly excluded.
+    ProjectExcludeId(Vec<String>),
 }
 
 /// A pipeline is an ordered list of stages.
@@ -135,7 +137,11 @@ pub fn parse_pipeline(
         }
         let (op, body) = obj.iter().next().unwrap();
         let stage = match op.as_str() {
-            "$match" => Stage::Match(parse_filter(body)?),
+            "$match" => {
+                let filter = parse_filter(body)?;
+                validate_regexes(&filter).map_err(|e| format!("pipeline[{i}] $match: {e}"))?;
+                Stage::Match(filter)
+            }
             "$group" => parse_group(body).map_err(|e| format!("pipeline[{i}] $group: {e}"))?,
             "$sort" => {
                 Stage::Sort(parse_sort(body).map_err(|e| format!("pipeline[{i}] $sort: {e}"))?)
@@ -146,14 +152,31 @@ pub fn parse_pipeline(
             "$limit" => Stage::Limit(
                 as_u64(body).ok_or_else(|| format!("pipeline[{i}] $limit must be a u64"))?,
             ),
-            "$project" => Stage::Project(
-                parse_project(body).map_err(|e| format!("pipeline[{i}] $project: {e}"))?,
-            ),
+            "$project" => {
+                let (fields, include_id) =
+                    parse_project(body).map_err(|e| format!("pipeline[{i}] $project: {e}"))?;
+                if include_id {
+                    Stage::Project(fields)
+                } else {
+                    Stage::ProjectExcludeId(fields)
+                }
+            }
             other => return Err(format!("pipeline[{i}]: unsupported stage '{other}'")),
         };
         stages.push(stage);
     }
     Ok(stages)
+}
+
+fn validate_regexes(filter: &Filter) -> Result<(), String> {
+    match filter {
+        Filter::Regex(_, pattern) => regex::Regex::new(pattern)
+            .map(|_| ())
+            .map_err(|e| format!("invalid regex: {e}")),
+        Filter::And(filters) | Filter::Or(filters) => filters.iter().try_for_each(validate_regexes),
+        Filter::Not(inner) => validate_regexes(inner),
+        _ => Ok(()),
+    }
 }
 
 fn as_u64(v: &Json) -> Option<u64> {
@@ -195,7 +218,7 @@ fn parse_accumulator(spec: &Json) -> Result<Accumulator, String> {
     match op.as_str() {
         // `{ $sum: 1 }` counts; `{ $sum: "$field" }` sums the field.
         "$sum" => match arg {
-            Json::Number(_) => Ok(Accumulator::Count),
+            Json::Number(n) if n.as_i64() == Some(1) => Ok(Accumulator::Count),
             _ => Ok(Accumulator::Sum(
                 field_ref(arg).ok_or("$sum expects \"$field\" or 1")?,
             )),
@@ -242,19 +265,22 @@ fn parse_sort(body: &Json) -> Result<Vec<SortSpec>, String> {
 }
 
 /// `{ field: 1, ... }` — keep the listed fields (value must be truthy/1).
-fn parse_project(body: &Json) -> Result<Vec<String>, String> {
+fn parse_project(body: &Json) -> Result<(Vec<String>, bool), String> {
     let obj = body.as_object().ok_or("$project must be an object")?;
     let mut fields = Vec::new();
+    let mut include_id = true;
     for (field, keep) in obj {
         let included = matches!(keep, Json::Number(n) if n.as_i64() != Some(0))
             || matches!(keep, Json::Bool(true));
         if included {
             fields.push(field.clone());
+        } else if field == "_id" {
+            include_id = false;
         } else if !matches!(keep, Json::Number(_) | Json::Bool(false)) {
             return Err(format!("$project value for '{field}' must be 0 or 1"));
         }
     }
-    Ok(fields)
+    Ok((fields, include_id))
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +327,14 @@ fn apply_stage(docs: Vec<Document>, stage: &Stage) -> Result<Vec<Document>, Tala
         Stage::Project(fields) => Ok(docs
             .into_iter()
             .map(|mut d| {
+                d.fields
+                    .retain(|(k, _)| k == "_id" || fields.iter().any(|f| f == k));
+                d
+            })
+            .collect()),
+        Stage::ProjectExcludeId(fields) => Ok(docs
+            .into_iter()
+            .map(|mut d| {
                 d.fields.retain(|(k, _)| fields.iter().any(|f| f == k));
                 d
             })
@@ -314,7 +348,7 @@ fn apply_stage(docs: Vec<Document>, stage: &Stage) -> Result<Vec<Document>, Tala
 
 /// Mutable per-group accumulator state.
 enum AccState {
-    Sum(f64),
+    Sum { int: i128, float: Option<f64> },
     AvgState { sum: f64, count: u64 },
     Min(Option<Value>),
     Max(Option<Value>),
@@ -327,7 +361,10 @@ enum AccState {
 
 fn make_state(acc: &Accumulator) -> AccState {
     match acc {
-        Accumulator::Sum(_) => AccState::Sum(0.0),
+        Accumulator::Sum(_) => AccState::Sum {
+            int: 0,
+            float: None,
+        },
         Accumulator::Avg(_) => AccState::AvgState { sum: 0.0, count: 0 },
         Accumulator::Min(_) => AccState::Min(None),
         Accumulator::Max(_) => AccState::Max(None),
@@ -341,9 +378,14 @@ fn make_state(acc: &Accumulator) -> AccState {
 
 fn update_state(state: &mut AccState, acc: &Accumulator, doc: &Document) {
     match (state, acc) {
-        (AccState::Sum(s), Accumulator::Sum(f)) => {
+        (AccState::Sum { int, float }, Accumulator::Sum(f)) => {
             if let Some(v) = doc.get(f) {
-                *s += numeric_to_f64(v).unwrap_or(0.0);
+                match v {
+                    Value::Int(n) if float.is_none() => *int += *n as i128,
+                    Value::Int(n) => *float = Some(float.unwrap() + *n as f64),
+                    Value::Float(n) => *float = Some(float.unwrap_or(*int as f64) + n),
+                    _ => {}
+                }
             }
         }
         (AccState::AvgState { sum, count }, Accumulator::Avg(f)) => {
@@ -407,7 +449,11 @@ fn update_state(state: &mut AccState, acc: &Accumulator, doc: &Document) {
 
 fn finalize_state(state: AccState) -> Value {
     match state {
-        AccState::Sum(s) => float_or_int(s),
+        AccState::Sum { int, float } => match float {
+            Some(n) => float_or_int(n),
+            None if int <= i64::MAX as i128 && int >= i64::MIN as i128 => Value::Int(int as i64),
+            None => Value::Float(int as f64),
+        },
         AccState::AvgState { sum, count } => {
             if count == 0 {
                 Value::Null
@@ -486,8 +532,7 @@ fn float_or_int(f: f64) -> Value {
 }
 
 fn value_lt(a: &Value, b: &Value) -> bool {
-    matches!(a.partial_cmp_numeric(b), Some(std::cmp::Ordering::Less))
-        || matches!((a, b), (Value::Str(x), Value::Str(y)) if x < y)
+    crate::query::options::cmp_values(a, b) == std::cmp::Ordering::Less
 }
 
 /// Produce a stable string key for HashMap grouping.
@@ -495,7 +540,7 @@ fn value_to_key_string(v: &Value) -> String {
     match v {
         Value::Null => "\x00null".into(),
         Value::Bool(b) => format!("\x01{}", b),
-        Value::Int(n) => format!("\x02{:020}", n + i64::MIN),
+        Value::Int(n) => format!("\x02{:020}", (*n as i128) - (i64::MIN as i128)),
         Value::Float(f) => format!("\x03{:e}", f),
         Value::Str(s) => format!("\x04{}", s),
         Value::Bytes(b) => format!("\x05{:?}", b),
@@ -521,6 +566,29 @@ mod parse_tests {
 
     fn parse(json: &str) -> Result<Pipeline, String> {
         parse_pipeline(&serde_json::from_str(json).unwrap(), &tiny_filter)
+    }
+
+    #[test]
+    fn rejects_non_one_numeric_sum() {
+        assert!(parse(r#"[{"$group":{"_id":null,"n":{"$sum":2}}}]"#).is_err());
+    }
+
+    #[test]
+    fn negative_integer_group_key_is_safe() {
+        assert!(!value_to_key_string(&Value::Int(-1)).is_empty());
+        assert!(!value_to_key_string(&Value::Int(i64::MIN)).is_empty());
+    }
+
+    #[test]
+    fn project_can_explicitly_exclude_group_id() {
+        let pl = parse(r#"[{"$project":{"_id":0,"total":1}}]"#).unwrap();
+        assert!(matches!(&pl[0], Stage::ProjectExcludeId(f) if f == &vec!["total".to_string()]));
+    }
+
+    #[test]
+    fn sort_preserves_caller_key_priority() {
+        let pl = parse(r#"[{"$sort":{"z":1,"a":-1}}]"#).unwrap();
+        assert!(matches!(&pl[0], Stage::Sort(s) if s[0].field == "z" && s[1].field == "a"));
     }
 
     #[test]

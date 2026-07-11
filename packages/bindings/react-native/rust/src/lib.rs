@@ -996,19 +996,28 @@ fn parse_filter(json: &str) -> Result<Filter, String> {
 
 fn json_to_filter(v: &serde_json::Value) -> Option<Filter> {
     let obj = v.as_object()?;
-    if let Some(arr) = obj.get("$and") {
-        let filters: Option<Vec<Filter>> = arr.as_array()?.iter().map(json_to_filter).collect();
-        return Some(Filter::And(filters?));
-    }
-    if let Some(arr) = obj.get("$or") {
-        let filters: Option<Vec<Filter>> = arr.as_array()?.iter().map(json_to_filter).collect();
-        return Some(Filter::Or(filters?));
-    }
-    if let Some(inner) = obj.get("$not") {
-        return Some(Filter::Not(Box::new(json_to_filter(inner)?)));
-    }
     let mut filters: Vec<Filter> = Vec::new();
     for (field, expr) in obj {
+        if field.starts_with('$') {
+            let logical = match field.as_str() {
+                "$and" => Filter::And(
+                    expr.as_array()?
+                        .iter()
+                        .map(json_to_filter)
+                        .collect::<Option<_>>()?,
+                ),
+                "$or" => Filter::Or(
+                    expr.as_array()?
+                        .iter()
+                        .map(json_to_filter)
+                        .collect::<Option<_>>()?,
+                ),
+                "$not" => Filter::Not(Box::new(json_to_filter(expr)?)),
+                _ => return None,
+            };
+            filters.push(logical);
+            continue;
+        }
         if !expr.is_object() {
             filters.push(Filter::Eq(field.clone(), json_to_value(expr)));
             continue;
@@ -1028,7 +1037,7 @@ fn json_to_filter(v: &serde_json::Value) -> Option<Filter> {
                 "$gte" => Filter::Gte(field.clone(), v),
                 "$lt" => Filter::Lt(field.clone(), v),
                 "$lte" => Filter::Lte(field.clone(), v),
-                "$exists" => Filter::Exists(field.clone(), val.as_bool().unwrap_or(true)),
+                "$exists" => Filter::Exists(field.clone(), val.as_bool()?),
                 "$in" => Filter::In(
                     field.clone(),
                     val.as_array()?.iter().map(json_to_value).collect(),
@@ -1037,6 +1046,8 @@ fn json_to_filter(v: &serde_json::Value) -> Option<Filter> {
                     field.clone(),
                     val.as_array()?.iter().map(json_to_value).collect(),
                 ),
+                "$contains" => Filter::Contains(field.clone(), val.as_str()?.to_string()),
+                "$regex" => Filter::Regex(field.clone(), val.as_str()?.to_string()),
                 _ => return None,
             };
             filters.push(f);
@@ -1480,17 +1491,18 @@ pub unsafe extern "C" fn taladb_find_start(
 fn parse_update(json: &str) -> Option<Update> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let obj = v.as_object()?;
+    let mut updates = Vec::new();
     if let Some(set) = obj.get("$set") {
         let pairs = set
             .as_object()?
             .iter()
             .map(|(k, v)| (k.clone(), json_to_value(v)))
             .collect();
-        return Some(Update::Set(pairs));
+        updates.push(Update::Set(pairs));
     }
     if let Some(unset) = obj.get("$unset") {
         let keys = unset.as_object()?.keys().cloned().collect();
-        return Some(Update::Unset(keys));
+        updates.push(Update::Unset(keys));
     }
     if let Some(inc) = obj.get("$inc") {
         let pairs = inc
@@ -1498,19 +1510,33 @@ fn parse_update(json: &str) -> Option<Update> {
             .iter()
             .map(|(k, v)| (k.clone(), json_to_value(v)))
             .collect();
-        return Some(Update::Inc(pairs));
+        updates.push(Update::Inc(pairs));
     }
     if let Some(push) = obj.get("$push") {
         let map = push.as_object()?;
-        let (k, v) = map.iter().next()?;
-        return Some(Update::Push(k.clone(), json_to_value(v)));
+        updates.extend(
+            map.iter()
+                .map(|(k, v)| Update::Push(k.clone(), json_to_value(v))),
+        );
     }
     if let Some(pull) = obj.get("$pull") {
         let map = pull.as_object()?;
-        let (k, v) = map.iter().next()?;
-        return Some(Update::Pull(k.clone(), json_to_value(v)));
+        updates.extend(
+            map.iter()
+                .map(|(k, v)| Update::Pull(k.clone(), json_to_value(v))),
+        );
     }
-    None
+    if obj
+        .keys()
+        .any(|k| !matches!(k.as_str(), "$set" | "$unset" | "$inc" | "$push" | "$pull"))
+    {
+        return None;
+    }
+    match updates.len() {
+        0 => None,
+        1 => Some(updates.remove(0)),
+        _ => Some(Update::Many(updates)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1554,6 +1580,18 @@ mod tests {
             parse_filter(r#"{"name":"Alice"}"#),
             Ok(Filter::Eq(..))
         ));
+    }
+
+    #[test]
+    fn logical_operator_keeps_sibling_predicates() {
+        let filter = parse_filter(r#"{"tenant":"a","$or":[{"x":1},{"x":2}]}"#).unwrap();
+        assert!(matches!(filter, Filter::And(parts) if parts.len() == 2));
+    }
+
+    #[test]
+    fn update_keeps_all_operators_and_array_fields() {
+        let update = parse_update(r#"{"$set":{"a":1},"$push":{"x":1,"y":2}}"#).unwrap();
+        assert!(matches!(update, Update::Many(parts) if parts.len() == 3));
     }
 
     #[test]

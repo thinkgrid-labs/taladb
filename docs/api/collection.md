@@ -517,8 +517,8 @@ Groups documents by a key and computes per-group accumulators. The output docume
 
 | Accumulator | Description | Example |
 |---|---|---|
-| `$sum` | Sum of numeric values | `{ total: { $sum: 'amount' } }` |
-| `$avg` | Arithmetic mean of numeric values. Returns `null` if no numeric values exist. | `{ avg: { $avg: 'score' } }` |
+| `$sum` | Sum of numeric values | `{ total: { $sum: '$amount' } }` |
+| `$avg` | Arithmetic mean of numeric values. Returns `null` if no numeric values exist. | `{ avg: { $avg: '$score' } }` |
 | `$min` | Minimum value | `{ lowest: { $min: 'price' } }` |
 | `$max` | Maximum value | `{ highest: { $max: 'price' } }` |
 | `$count` | Number of documents in the group | `{ n: { $count: {} } }` |
@@ -552,11 +552,11 @@ Groups documents by a key and computes per-group accumulators. The output docume
 
 #### `$sort`
 
-Sorts the working document set. Takes an array of sort specs.
+Sorts the working document set. Object key order defines sort priority.
 
 ```ts
-{ $sort: [{ field: 'createdAt', direction: 'desc' }] }
-{ $sort: [{ field: 'dept', direction: 'asc' }, { field: 'salary', direction: 'desc' }] }
+{ $sort: { createdAt: -1 } }
+{ $sort: { dept: 1, salary: -1 } }
 ```
 
 #### `$skip`
@@ -580,7 +580,7 @@ Keeps only the first N documents.
 Retains only the listed fields in each document. All other fields are removed.
 
 ```ts
-{ $project: ['_id', 'name', 'email'] }
+{ $project: { _id: 1, name: 1, email: 1 } }
 ```
 
 ### Pipeline examples
@@ -598,7 +598,7 @@ const results = await orders.aggregate([
       count:   { $count: {} },
     },
   },
-  { $sort: [{ field: 'revenue', direction: 'desc' }] },
+  { $sort: { revenue: -1 } },
   { $limit: 10 },
 ])
 ```
@@ -608,9 +608,9 @@ const results = await orders.aggregate([
 ```ts
 const top5 = await scores.aggregate([
   { $match: { active: true } },
-  { $sort:  [{ field: 'score', direction: 'desc' }] },
+  { $sort:  { score: -1 } },
   { $limit: 5 },
-  { $project: ['_id', 'username', 'score'] },
+  { $project: { _id: 1, username: 1, score: 1 } },
 ])
 ```
 
@@ -627,10 +627,10 @@ const summary = await transactions.aggregate([
       max:    { $max: 'amount' },
     },
   },
-  { $sort:   [{ field: '_id', direction: 'asc' }] },
+  { $sort:   { _id: 1 } },
   { $skip:   0 },
   { $limit:  30 },
-  { $project: ['_id', 'total', 'count', 'max'] },
+  { $project: { _id: 1, total: 1, count: 1, max: 1 } },
 ])
 ```
 
@@ -647,7 +647,7 @@ console.log(result.allTags)  // deduplicated array of all tags
 
 ```ts
 const sessions = await events.aggregate([
-  { $sort: [{ field: 'ts', direction: 'asc' }] },
+  { $sort: { ts: 1 } },
   {
     $group: {
       _id:   '$sessionId',

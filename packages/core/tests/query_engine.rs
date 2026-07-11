@@ -740,6 +740,39 @@ fn compound_index_with_int_fields() {
 }
 
 #[test]
+fn compound_index_float_zero_matches_both_signs() {
+    let db = db();
+    let col = db.collection("zeroes").unwrap();
+    col.create_compound_index(&["x", "kind"]).unwrap();
+    col.insert(vec![
+        ("x".into(), Value::Float(0.0)),
+        ("kind".into(), Value::Str("v".into())),
+    ])
+    .unwrap();
+    col.insert(vec![
+        ("x".into(), Value::Float(-0.0)),
+        ("kind".into(), Value::Str("v".into())),
+    ])
+    .unwrap();
+    let docs = col
+        .find(Filter::And(vec![
+            Filter::Eq("x".into(), Value::Float(0.0)),
+            Filter::Eq("kind".into(), Value::Str("v".into())),
+        ]))
+        .unwrap();
+    assert_eq!(docs.len(), 2);
+}
+
+#[test]
+fn compound_index_rejects_ambiguous_or_duplicate_fields() {
+    let db = db();
+    let col = db.collection("invalid_indexes").unwrap();
+    assert!(col.create_compound_index(&["a", "a"]).is_err());
+    assert!(col.create_compound_index(&["a::b", "c"]).is_err());
+    assert!(col.create_compound_index(&["", "c"]).is_err());
+}
+
+#[test]
 fn compound_index_doc_missing_field_not_indexed() {
     let db = db();
     let col = db.collection("ci_sparse").unwrap();
@@ -872,6 +905,25 @@ fn aggregate_match_then_group() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("total"), Some(&Value::Int(60)));
+}
+
+#[test]
+fn aggregate_integer_sum_is_exact_above_f64_precision() {
+    let db = db();
+    let col = db.collection("exact_sum").unwrap();
+    col.insert(vec![("n".into(), Value::Int(9_007_199_254_740_992))])
+        .unwrap();
+    col.insert(vec![("n".into(), Value::Int(1))]).unwrap();
+    let results = col
+        .aggregate(vec![Stage::Group {
+            key: GroupKey::Null,
+            accumulators: vec![("total".into(), Accumulator::Sum("n".into()))],
+        }])
+        .unwrap();
+    assert_eq!(
+        results[0].get("total"),
+        Some(&Value::Int(9_007_199_254_740_993))
+    );
 }
 
 #[test]

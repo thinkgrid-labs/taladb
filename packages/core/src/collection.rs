@@ -63,6 +63,8 @@ pub struct CollectionIndexInfo {
 
 #[derive(Clone)]
 pub enum Update {
+    /// Apply multiple update operators atomically, in document order.
+    Many(Vec<Update>),
     /// $set — set or replace field values
     Set(Vec<(String, Value)>),
     /// $unset — remove fields
@@ -509,6 +511,20 @@ impl Collection {
         if fields.len() < 2 {
             return Err(TalaDbError::InvalidOperation(
                 "compound index requires at least 2 fields".into(),
+            ));
+        }
+        if fields
+            .iter()
+            .any(|field| field.is_empty() || field.contains("::"))
+        {
+            return Err(TalaDbError::InvalidOperation(
+                "compound index fields must be non-empty and must not contain '::'".into(),
+            ));
+        }
+        let unique: std::collections::HashSet<&str> = fields.iter().copied().collect();
+        if unique.len() != fields.len() {
+            return Err(TalaDbError::InvalidOperation(
+                "compound index fields must be unique".into(),
             ));
         }
         let meta_key = compound_meta_key(&self.name, fields);
@@ -1793,6 +1809,11 @@ impl Collection {
 
 fn apply_update(doc: &mut Document, update: Update) -> Result<(), TalaDbError> {
     match update {
+        Update::Many(updates) => {
+            for update in updates {
+                apply_update(doc, update)?;
+            }
+        }
         Update::Set(pairs) => {
             for (k, v) in pairs {
                 doc.set(k, v);
