@@ -8,7 +8,7 @@ Documents + vector search built in Rust — browser, Node.js, and React Native. 
 [![npm](https://img.shields.io/npm/v/taladb?label=npm)](https://www.npmjs.com/package/taladb)
 [![Status: Stable](https://img.shields.io/badge/Status-Stable-green)](https://github.com/thinkgrid-labs/taladb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-2024_Edition-orange?logo=rust)](https://www.rust-lang.org)
 [![WASM](https://img.shields.io/badge/WASM-wasm--bindgen-purple?logo=webassembly)](https://rustwasm.github.io/wasm-bindgen/)
 [![Platform](https://img.shields.io/badge/Platform-Browser%20%7C%20React%20Native%20%7C%20Node.js-green)](https://github.com/thinkgrid-labs/taladb)
 [![Sponsor](https://img.shields.io/badge/Sponsor-thinkgrid--labs-red?logo=github-sponsors)](https://github.com/sponsors/thinkgrid-labs)
