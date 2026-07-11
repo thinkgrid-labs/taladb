@@ -268,7 +268,11 @@ export interface Collection<T extends Document = Document> {
    * // later…
    * unsub();
    */
-  subscribe(filter: Filter<T>, callback: (docs: T[]) => void): () => void;
+  subscribe(
+    filter: Filter<T>,
+    callback: (docs: T[]) => void,
+    onError?: (error: unknown) => void,
+  ): () => void;
 }
 
 // --------------- Sync ---------------
@@ -368,5 +372,9 @@ export interface TalaDB {
    * await db.compact();
    */
   compact(): Promise<void>;
+  /** Browser HTTP-push queue health, when supported by the active binding. */
+  syncStatus?(): Promise<{ pending: number; dropped: number; failed: number }>;
+  /** Wait for accepted browser HTTP-push events, returning false on timeout. */
+  flushSync?(timeoutMs?: number): Promise<boolean>;
   close(): Promise<void>;
 }

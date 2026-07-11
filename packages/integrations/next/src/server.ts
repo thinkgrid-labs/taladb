@@ -42,6 +42,10 @@ export interface SyncStore {
 
 export interface CreateSyncHandlersOptions {
   store: SyncStore;
+  /** Maximum accepted push body size in bytes. Default 1 MiB. */
+  maxBodyBytes?: number;
+  /** Maximum records accepted in one push. Default 10,000. */
+  maxRecords?: number;
   /**
    * Identify and authorize the caller, returning a scope key (e.g. the user
    * id) — this is your security boundary. Return `null`/`undefined` to reject
@@ -75,6 +79,8 @@ export interface SyncHandlers {
  */
 export function createSyncHandlers(options: CreateSyncHandlersOptions): SyncHandlers {
   const { store } = options;
+  const maxBodyBytes = options.maxBodyBytes ?? 1024 * 1024;
+  const maxRecords = options.maxRecords ?? 10_000;
   const authorize = options.authorize ?? (() => 'default');
 
   async function resolveScope(req: Request): Promise<string | null> {
@@ -87,7 +93,15 @@ export function createSyncHandlers(options: CreateSyncHandlersOptions): SyncHand
       const scope = await resolveScope(req);
       if (scope === null) return new Response('unauthorized', { status: 401 });
 
+      const declaredLength = Number(req.headers.get('content-length'));
+      if (Number.isFinite(declaredLength) && declaredLength > maxBodyBytes) {
+        return new Response('changeset too large', { status: 413 });
+      }
+
       const body = await req.text();
+      if (new TextEncoder().encode(body).byteLength > maxBodyBytes) {
+        return new Response('changeset too large', { status: 413 });
+      }
       // Validate shape before it reaches the store — reject non-array bodies
       // and records missing the keys every store depends on.
       let records: unknown;
@@ -99,13 +113,18 @@ export function createSyncHandlers(options: CreateSyncHandlersOptions): SyncHand
       if (!Array.isArray(records)) {
         return new Response('invalid changeset: expected a JSON array', { status: 400 });
       }
+      if (records.length > maxRecords) {
+        return new Response('too many change records', { status: 413 });
+      }
       for (const r of records) {
         const rec = r as Partial<ChangeRecord>;
         if (
           typeof rec !== 'object' || rec === null ||
           typeof rec.collection !== 'string' ||
           typeof rec.id !== 'string' ||
-          typeof rec.changed_at !== 'number'
+          typeof rec.changed_at !== 'number' ||
+          !Number.isSafeInteger(rec.changed_at) ||
+          rec.changed_at < 0
         ) {
           return new Response('invalid changeset: malformed change record', { status: 400 });
         }
@@ -122,7 +141,7 @@ export function createSyncHandlers(options: CreateSyncHandlersOptions): SyncHand
 
       const sinceRaw = new URL(req.url).searchParams.get('since') ?? '0';
       const since = Number(sinceRaw);
-      if (!Number.isFinite(since) || since < 0) {
+      if (!Number.isSafeInteger(since) || since < 0) {
         return new Response('invalid since parameter', { status: 400 });
       }
       const changeset = await store.pull(since, scope);
@@ -144,8 +163,9 @@ export function createSyncHandlers(options: CreateSyncHandlersOptions): SyncHand
  * {@link taladbSyncStore} (or your own database) in production.
  */
 export function memorySyncStore(): SyncStore {
-  // scope → (collection::id → latest record)
-  const scopes = new Map<string, Map<string, ChangeRecord>>();
+  // Preserve every distinct candidate at the greatest timestamp. TalaDB core
+  // applies its exact postcard/delete tie-break when importing the candidates.
+  const scopes = new Map<string, Map<string, ChangeRecord[]>>();
   return {
     async push(changeset, scope) {
       let docs = scopes.get(scope);
@@ -155,17 +175,28 @@ export function memorySyncStore(): SyncStore {
       }
       for (const change of JSON.parse(changeset) as ChangeRecord[]) {
         const key = `${change.collection}::${change.id}`;
-        const existing = docs.get(key);
-        if (!existing || change.changed_at > existing.changed_at) docs.set(key, change);
+        const existing = docs.get(key) ?? [];
+        const latest = existing[0]?.changed_at;
+        if (latest === undefined || change.changed_at > latest) docs.set(key, [change]);
+        else if (change.changed_at === latest) {
+          const serialized = JSON.stringify(change);
+          if (!existing.some((candidate) => JSON.stringify(candidate) === serialized)) {
+            existing.push(change);
+          }
+        }
       }
     },
     async pull(sinceMs, scope) {
       const docs = scopes.get(scope);
       if (!docs) return '[]';
-      return JSON.stringify([...docs.values()].filter((c) => c.changed_at > sinceMs));
+      return JSON.stringify(
+        [...docs.values()].flat().filter((c) => c.changed_at > sinceMs),
+      );
     },
   };
 }
+
+const taladbStoreQueues = new WeakMap<object, Map<string, Promise<void>>>();
 
 /**
  * A store backed by a server-side TalaDB — TalaDB syncing to TalaDB. Open a
@@ -179,15 +210,15 @@ export function memorySyncStore(): SyncStore {
  * export const { POST, GET } = createSyncHandlers({ store: taladbSyncStore(serverDb) })
  * ```
  *
- * One document per synced client document per scope, holding the latest
- * change (LWW) — the same layout as `@taladb/sync-mongodb`, so any number of
- * clients converge through it.
+ * Stores the greatest timestamp per synced document and preserves distinct
+ * equal-timestamp candidates so TalaDB core can apply its exact deterministic
+ * tie-break when clients import them.
  */
 export function taladbSyncStore(db: TalaDB, collectionName = 'sync_changes'): SyncStore {
   interface Row {
     _id?: string;
     scope: string;
-    key: string;
+    doc_key: string;
     changed_at: number;
     /** The full change record, serialized — opaque to the store. */
     change: string;
@@ -195,28 +226,42 @@ export function taladbSyncStore(db: TalaDB, collectionName = 'sync_changes'): Sy
   }
   const col = db.collection<Row>(collectionName);
   // One-sided indexed ranges are fast (see /benchmarks); pull filters on
-  // changed_at, push looks up by key.
+  // changed_at, push looks up by the scoped document key.
   const indexed = (async () => {
-    await col.createIndex('key').catch(() => {});
+    await col.createIndex('doc_key').catch(() => {});
     await col.createIndex('changed_at').catch(() => {});
   })();
 
+  let queues = taladbStoreQueues.get(db as object);
+  if (!queues) {
+    queues = new Map();
+    taladbStoreQueues.set(db as object, queues);
+  }
+
   return {
     async push(changeset, scope) {
+      const run = async () => {
       await indexed;
       for (const change of JSON.parse(changeset) as ChangeRecord[]) {
-        const key = `${change.collection}::${change.id}`;
+        const docKey = `${change.collection}::${change.id}`;
         const serialized = JSON.stringify(change);
-        const existing = await col.findOne({ scope, key } as never);
-        if (!existing) {
-          await col.insert({ scope, key, changed_at: change.changed_at, change: serialized });
-        } else if (change.changed_at > existing.changed_at) {
-          await col.updateOne(
-            { scope, key } as never,
-            { $set: { changed_at: change.changed_at, change: serialized } } as never,
-          );
+        const existing = await col.find({ scope, doc_key: docKey } as never);
+        const latest = existing.reduce((n, row) => Math.max(n, row.changed_at), -Infinity);
+        if (change.changed_at > latest) {
+          if (existing.length > 0) await col.deleteMany({ scope, doc_key: docKey } as never);
+          await col.insert({ scope, doc_key: docKey, changed_at: change.changed_at, change: serialized });
+        } else if (
+          change.changed_at === latest &&
+          !existing.some((row) => row.change === serialized)
+        ) {
+          await col.insert({ scope, doc_key: docKey, changed_at: change.changed_at, change: serialized });
         }
       }
+      };
+      const previous = queues!.get(collectionName) ?? Promise.resolve();
+      const operation = previous.then(run, run);
+      queues!.set(collectionName, operation.catch(() => {}));
+      await operation;
     },
     async pull(sinceMs, scope) {
       await indexed;

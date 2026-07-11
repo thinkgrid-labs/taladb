@@ -6,6 +6,8 @@ export interface FindResult<T> {
   data: T[]
   /** True until the first snapshot has been delivered from the database. */
   loading: boolean
+  /** Most recent subscription error, cleared by the next successful snapshot. */
+  error: unknown | null
 }
 
 /**
@@ -29,7 +31,7 @@ export function useFind<T extends Document>(
 ): FindResult<T> {
   // The current snapshot — replaced (new object) on each data update so
   // useSyncExternalStore detects changes via Object.is.
-  const snapshotRef = useRef<FindResult<T>>({ data: [], loading: true })
+  const snapshotRef = useRef<FindResult<T>>({ data: [], loading: true, error: null })
 
   // Serialise filter to a stable string so inline filter objects (e.g.
   // `useFind(col, { active: true })`) don't re-subscribe on every render.
@@ -40,9 +42,12 @@ export function useFind<T extends Document>(
   // consistent loading → data transition when the filter changes.
   const subscribe = useCallback(
     (notify: () => void) => {
-      snapshotRef.current = { data: snapshotRef.current.data, loading: true }
+      snapshotRef.current = { data: snapshotRef.current.data, loading: true, error: null }
       return collection.subscribe(filter ?? ({} as Filter<T>), (docs: T[]) => {
-        snapshotRef.current = { data: docs, loading: false }
+        snapshotRef.current = { data: docs, loading: false, error: null }
+        notify()
+      }, (error) => {
+        snapshotRef.current = { ...snapshotRef.current, loading: false, error }
         notify()
       })
     },

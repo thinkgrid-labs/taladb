@@ -66,8 +66,10 @@ function NamedProvider({
 }: Extract<TalaDBProviderProps, { name: string }>) {
   const [db, setDb] = useState<TalaDB | null>(null)
   const [error, setError] = useState<unknown>(null)
+  const optionsKey = JSON.stringify(options ?? null)
 
   useEffect(() => {
+    setError(null)
     let cancelled = false
     let opened: TalaDB | null = null
     // Dynamic import so `taladb`'s runtime never loads during SSR module
@@ -93,10 +95,10 @@ function NamedProvider({
       if (opened) void opened.close()
       setDb(null)
     }
-    // options participates via the name it configures; re-opening on every
-    // inline-object identity change would thrash the worker.
+    // Use serialized option identity so equivalent inline objects do not
+    // thrash the worker, while actual configuration changes reopen safely.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name])
+  }, [name, optionsKey])
 
   // Surface open failures to the nearest error boundary instead of hanging on
   // the fallback forever.

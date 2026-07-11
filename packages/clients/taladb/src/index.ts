@@ -207,20 +207,33 @@ class WorkerProxy {
 function makePoller<T extends Document>(
   findFn: () => Promise<T[]>,
   callback: (docs: T[]) => void,
+  onError?: (error: unknown) => void,
 ): () => void {
   let active = true;
   let lastJson = '';
+  let running = false;
+  let rerun = false;
   const poll = async () => {
     if (!active) return;
+    if (running) { rerun = true; return; }
+    running = true;
     try {
       const docs = await findFn();
+      if (!active) return;
       const json = JSON.stringify(docs);
       if (json !== lastJson) {
         lastJson = json;
         callback(docs);
       }
-    } catch { /* ignore errors during poll */ }
-    if (active) setTimeout(poll, 300);
+    } catch (error) {
+      if (active) onError?.(error);
+    } finally {
+      running = false;
+      if (active) {
+        if (rerun) { rerun = false; void poll(); }
+        else setTimeout(poll, 300);
+      }
+    }
   };
   poll();
   return () => { active = false; };
@@ -272,8 +285,8 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
         const json = col.listIndexes() as string;
         return JSON.parse(json);
       },
-      subscribe: (filter, callback) =>
-        makePoller(async () => col.find(filter ?? null) as T[], callback),
+      subscribe: (filter, callback, onError) =>
+        makePoller(async () => col.find(filter ?? null) as T[], callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -434,30 +447,42 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
         return JSON.parse(json) as { document: T; score: number }[];
       },
 
-      subscribe: (filter, callback) => {
+      subscribe: (filter, callback, onError) => {
         let active = true;
         // Must start empty (not '[]') so the first snapshot is always
         // delivered — otherwise an initially-empty collection never fires the
         // callback and useFind stays in loading state forever.
         let lastJson = '';
         let timer: ReturnType<typeof setTimeout> | null = null;
+        let running = false;
+        let rerun = false;
 
         const poll = async () => {
           if (!active) return;
+          if (running) { rerun = true; return; }
+          running = true;
           // Cancel any pending tick — we're running now (either nudged or ticked).
           if (timer !== null) { clearTimeout(timer); timer = null; }
           try {
             const json = await proxy.send<string>('find', {
               collection: name, filterJson: filter ? s(filter) : 'null',
             });
+            if (!active) return;
             if (json !== lastJson) {
               lastJson = json;
               callback(JSON.parse(json) as T[]);
             }
-          } catch { /* ignore errors during poll */ }
+          } catch (error) {
+            if (active) onError?.(error);
+          } finally {
+            running = false;
+          }
           // Schedule the next polling tick (fallback when BroadcastChannel
           // is unavailable or for same-tab writes).
-          if (active) timer = setTimeout(poll, 300);
+          if (active) {
+            if (rerun) { rerun = false; void poll(); }
+            else timer = setTimeout(poll, 300);
+          }
         };
 
         // Register with the BroadcastChannel nudge set so cross-tab writes
@@ -480,6 +505,8 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig): Promise<T
   const handle = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: () => proxy.send<void>('compact'),
+    syncStatus: async () => JSON.parse(await proxy.send<string>('syncStatus')) as { pending: number; dropped: number; failed: number },
+    flushSync: (timeoutMs = 5000) => proxy.send<boolean>('flushSync', { timeoutMs }),
     close: async () => {
       channel?.close();
       try {
@@ -561,8 +588,8 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig): Promise<Tala
         const raw = await col.findNearest(field, vector, topK, filter ?? null) as { document: T; score: number }[];
         return raw;
       },
-      subscribe: (filter, callback) =>
-        makePoller(async () => col.find(filter ?? null) as T[], callback),
+      subscribe: (filter, callback, onError) =>
+        makePoller(async () => col.find(filter ?? null) as T[], callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -671,8 +698,8 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
         const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw as { document: T; score: number }[];
       },
-      subscribe: (filter, callback) =>
-        makePoller(async () => native.find(name, filter ?? {}) as T[], callback),
+      subscribe: (filter, callback, onError) =>
+        makePoller(async () => native.find(name, filter ?? {}) as T[], callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }

@@ -324,6 +324,14 @@ never blocked.
 In-flight sync requests are subject to normal browser fetch constraints. If the
 user closes the tab during a retry sequence, any remaining attempts are lost.
 HTTP push sync is best-effort by design.
+
+The worker bounds its HTTP queue and times each attempt out after 10 seconds.
+You can inspect delivery health and drain accepted events before closing:
+
+```ts
+const health = await db.syncStatus?.() // { pending, dropped, failed }
+const drained = await db.flushSync?.(5_000)
+```
 :::
 
 Per-event endpoint overrides are supported:

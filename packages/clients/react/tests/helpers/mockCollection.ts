@@ -11,6 +11,8 @@ export interface MockCollectionHandle<T extends Document> {
   collection: Collection<T>
   /** Replace current docs and notify all active subscribers. */
   push(docs: T[]): void
+  /** Emit a subscription error. */
+  fail(error: unknown): void
   /** How many times subscribe() has been called. */
   subscribeCount(): number
   /** How many times the returned unsubscribe fn has been called. */
@@ -27,6 +29,7 @@ export function createMockCollection<T extends Document>(
   let _unsubscribeCount = 0
   let _lastFilter: Filter<T> | undefined
   const callbacks = new Set<(docs: T[]) => void>()
+  const errorCallbacks = new Set<(error: unknown) => void>()
 
   function notifyAll() {
     const snapshot = [...docs]
@@ -35,10 +38,11 @@ export function createMockCollection<T extends Document>(
 
   const collection: Collection<T> = {
     // ---- live query ----
-    subscribe(filter, callback) {
+    subscribe(filter, callback, onError) {
       _subscribeCount++
       _lastFilter = filter as Filter<T>
       callbacks.add(callback)
+      if (onError) errorCallbacks.add(onError)
       // Fire async (microtask) — mirrors the real makePoller first-tick behaviour
       const snap = [...docs]
       Promise.resolve().then(() => {
@@ -47,6 +51,7 @@ export function createMockCollection<T extends Document>(
       return () => {
         _unsubscribeCount++
         callbacks.delete(callback)
+        if (onError) errorCallbacks.delete(onError)
       }
     },
 
@@ -96,6 +101,9 @@ export function createMockCollection<T extends Document>(
     push(newDocs: T[]) {
       docs = newDocs
       notifyAll()
+    },
+    fail(error: unknown) {
+      for (const callback of errorCallbacks) callback(error)
     },
     subscribeCount: () => _subscribeCount,
     unsubscribeCount: () => _unsubscribeCount,

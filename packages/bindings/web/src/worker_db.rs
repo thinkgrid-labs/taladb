@@ -27,7 +27,6 @@ use crate::storage::opfs_backend::OpfsBackend;
 use serde_json::{Map, Value as JsonValue, json};
 #[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
-#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use taladb_core::config::SyncConfig;
@@ -50,20 +49,29 @@ struct QueuedSyncTask {
     payload: JsonValue,
 }
 
+#[derive(Default)]
+struct SyncHealth {
+    pending: std::sync::atomic::AtomicU64,
+    dropped: std::sync::atomic::AtomicU64,
+    failed: std::sync::atomic::AtomicU64,
+}
+
 #[cfg(target_arch = "wasm32")]
 struct WasmSyncHook {
     config: Arc<SyncConfig>,
     queue: Arc<std::sync::Mutex<std::collections::VecDeque<QueuedSyncTask>>>,
     draining: Arc<std::sync::atomic::AtomicBool>,
+    health: Arc<SyncHealth>,
 }
 
 #[cfg(target_arch = "wasm32")]
 impl WasmSyncHook {
-    fn new(config: SyncConfig) -> Self {
+    fn new(config: SyncConfig, health: Arc<SyncHealth>) -> Self {
         WasmSyncHook {
             config: Arc::new(config),
             queue: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            health,
         }
     }
 
@@ -97,14 +105,18 @@ impl SyncHook for WasmSyncHook {
         let payload = build_wasm_payload(event, &self.config.exclude_fields);
         let headers = self.config.headers.clone();
 
-        self.queue
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push_back(QueuedSyncTask {
-                endpoint,
-                headers,
-                payload,
-            });
+        let mut queue = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+        if queue.len() >= 256 {
+            self.health.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        queue.push_back(QueuedSyncTask {
+            endpoint,
+            headers,
+            payload,
+        });
+        self.health.pending.fetch_add(1, Ordering::Relaxed);
+        drop(queue);
 
         // Start the drain task if one is not already running. WASM is
         // single-threaded, so there is no interleaving between the swap and
@@ -113,11 +125,17 @@ impl SyncHook for WasmSyncHook {
         if !self.draining.swap(true, Ordering::AcqRel) {
             let queue = Arc::clone(&self.queue);
             let draining = Arc::clone(&self.draining);
+            let health = Arc::clone(&self.health);
             wasm_bindgen_futures::spawn_local(async move {
                 loop {
                     let task = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
                     match task {
-                        Some(t) => fire_wasm_with_retry(&t.endpoint, &t.headers, &t.payload).await,
+                        Some(t) => {
+                            if !fire_wasm_with_retry(&t.endpoint, &t.headers, &t.payload).await {
+                                health.failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                            health.pending.fetch_sub(1, Ordering::Relaxed);
+                        }
                         None => break,
                     }
                 }
@@ -222,7 +240,7 @@ async fn fire_wasm_with_retry(
     endpoint: &str,
     headers: &HashMap<String, String>,
     payload: &JsonValue,
-) {
+) -> bool {
     const BACKOFFS_MS: &[u32] = &[200, 400, 800];
     let client = reqwest::Client::new();
     let max_attempts = BACKOFFS_MS.len() + 1;
@@ -237,25 +255,38 @@ async fn fire_wasm_with_retry(
             req = req.header(k.as_str(), v.as_str());
         }
 
-        match req.send().await {
-            Ok(resp) if resp.status().is_success() => return,
+        use futures::future::{Either, select};
+        let send = Box::pin(req.send());
+        let timeout = Box::pin(sleep_ms_wasm(10_000));
+        let response = match select(send, timeout).await {
+            Either::Left((result, _)) => result,
+            Either::Right(_) => continue,
+        };
+        match response {
+            Ok(resp) if resp.status().is_success() => return true,
             Ok(resp) if resp.status().is_server_error() => continue,
-            Ok(_) => return,    // 4xx — permanent, no retry
-            Err(_) => continue, // network error — retry
+            Ok(_) => return false, // 4xx — permanent, no retry
+            Err(_) => continue,    // network error — retry
         }
     }
-    // All attempts exhausted — silently drop
+    false
 }
 
 /// Build a WASM sync hook from an optional JSON config string.
 #[cfg(target_arch = "wasm32")]
-fn build_wasm_sync_hook(config_json: Option<String>) -> Result<Option<Arc<dyn SyncHook>>, JsValue> {
+fn build_wasm_sync_hook(
+    config_json: Option<String>,
+    health: Arc<SyncHealth>,
+) -> Result<Option<Arc<dyn SyncHook>>, JsValue> {
     if let Some(json) = config_json {
         let config: TalaDbConfig =
             serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        config
+            .validate()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         if config.sync.enabled {
             return Ok(Some(
-                Arc::new(WasmSyncHook::new(config.sync)) as Arc<dyn SyncHook>
+                Arc::new(WasmSyncHook::new(config.sync, health)) as Arc<dyn SyncHook>
             ));
         }
     }
@@ -271,6 +302,7 @@ pub struct WorkerDB {
     db: Database,
     #[cfg(target_arch = "wasm32")]
     sync_hook: Option<Arc<dyn SyncHook>>,
+    sync_health: Arc<SyncHealth>,
 }
 
 #[wasm_bindgen]
@@ -287,6 +319,7 @@ impl WorkerDB {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
+            sync_health: Arc::new(SyncHealth::default()),
         })
     }
 
@@ -310,6 +343,7 @@ impl WorkerDB {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
+            sync_health: Arc::new(SyncHealth::default()),
         })
     }
 
@@ -331,8 +365,13 @@ impl WorkerDB {
                 .map_err(|e| JsValue::from_str(&e.to_string()))?,
             _ => Database::open_in_memory().map_err(|e| JsValue::from_str(&e.to_string()))?,
         };
-        let sync_hook = build_wasm_sync_hook(config_json)?;
-        Ok(WorkerDB { db, sync_hook })
+        let sync_health = Arc::new(SyncHealth::default());
+        let sync_hook = build_wasm_sync_hook(config_json, Arc::clone(&sync_health))?;
+        Ok(WorkerDB {
+            db,
+            sync_hook,
+            sync_health,
+        })
     }
 
     /// Serialize the entire in-memory database to bytes for persistence.
@@ -344,6 +383,23 @@ impl WorkerDB {
         self.db
             .export_snapshot()
             .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = syncStatus)]
+    pub fn sync_status(&self) -> String {
+        use std::sync::atomic::Ordering;
+        serde_json::json!({
+            "pending": self.sync_health.pending.load(Ordering::Relaxed),
+            "dropped": self.sync_health.dropped.load(Ordering::Relaxed),
+            "failed": self.sync_health.failed.load(Ordering::Relaxed),
+        })
+        .to_string()
+    }
+
+    #[wasm_bindgen(js_name = syncPending)]
+    pub fn sync_pending(&self) -> u64 {
+        use std::sync::atomic::Ordering;
+        self.sync_health.pending.load(Ordering::Relaxed)
     }
 
     /// Open a database backed by an OPFS `FileSystemSyncAccessHandle`.
@@ -367,6 +423,7 @@ impl WorkerDB {
             db,
             #[cfg(target_arch = "wasm32")]
             sync_hook: None,
+            sync_health: Arc::new(SyncHealth::default()),
         })
     }
 
@@ -391,8 +448,13 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let db = Database::open_with_backend(Box::new(redb_backend))
             .map_err(|e: taladb_core::TalaDbError| JsValue::from_str(&e.to_string()))?;
-        let sync_hook = build_wasm_sync_hook(config_json)?;
-        Ok(WorkerDB { db, sync_hook })
+        let sync_health = Arc::new(SyncHealth::default());
+        let sync_hook = build_wasm_sync_hook(config_json, Arc::clone(&sync_health))?;
+        Ok(WorkerDB {
+            db,
+            sync_hook,
+            sync_health,
+        })
     }
 
     // ------------------------------------------------------------------

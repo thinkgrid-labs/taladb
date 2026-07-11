@@ -6,6 +6,8 @@ export interface FindOneResult<T> {
   data: T | null
   /** True until the first snapshot has been delivered from the database. */
   loading: boolean
+  /** Most recent subscription error, cleared by the next successful snapshot. */
+  error: unknown | null
 }
 
 /**
@@ -26,14 +28,17 @@ export function useFindOne<T extends Document>(
   collection: Collection<T>,
   filter: Filter<T>,
 ): FindOneResult<T> {
-  const snapshotRef = useRef<FindOneResult<T>>({ data: null, loading: true })
+  const snapshotRef = useRef<FindOneResult<T>>({ data: null, loading: true, error: null })
   const filterKey = JSON.stringify(filter)
 
   const subscribe = useCallback(
     (notify: () => void) => {
-      snapshotRef.current = { data: snapshotRef.current.data, loading: true }
+      snapshotRef.current = { data: snapshotRef.current.data, loading: true, error: null }
       return collection.subscribe(filter, (docs: T[]) => {
-        snapshotRef.current = { data: docs[0] ?? null, loading: false }
+        snapshotRef.current = { data: docs[0] ?? null, loading: false, error: null }
+        notify()
+      }, (error) => {
+        snapshotRef.current = { ...snapshotRef.current, loading: false, error }
         notify()
       })
     },

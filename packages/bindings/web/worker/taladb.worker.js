@@ -162,14 +162,15 @@ let broadcastChannel = null;
  */
 let idbFallback = false;
 
+/** Whether this worker is allowed to publish the authoritative IDB snapshot. */
+let snapshotWriter = false;
+
 /**
  * Timestamp (ms) of the last changeset we exported and broadcast to the
  * primary tab.  Used as `sinceMs` for the next export so we only send the
  * delta, not the entire database on every write.
  * @type {number}
  */
-let lastSecondaryPushMs = 0;
-
 // ---------------------------------------------------------------------------
 // IndexedDB helpers (used only when OPFS is unavailable)
 // ---------------------------------------------------------------------------
@@ -260,10 +261,11 @@ async function flushSnapshot() {
   clearTimeout(snapshotTimer);
   snapshotTimer = null;
   lastSnapshotMs = Date.now();
-  if (db && activeDbName) {
+  if (db && activeDbName && snapshotWriter) {
     try {
       const bytes = db.exportSnapshot();
       await idbSaveSnapshot(activeDbName, bytes);
+      broadcastChannel?.postMessage('taladb:snapshot-ready');
     } catch { /* best-effort — ignore failures */ }
   }
 }
@@ -300,11 +302,13 @@ function pushChangesetToPrimary() {
     // Collect all collection names from the current in-memory state.
     // exportChangeset accepts a JSON array of collection names.
     const collections = db.listCollections();
-    const changeset = db.exportChangeset(collections, lastSecondaryPushMs);
+    // Wall-clock timestamps are not safe incremental cursors: a write can be
+    // stamped before an export but commit after its snapshot. Replay is
+    // idempotent under LWW and cannot skip such a write.
+    const changeset = db.exportChangeset(collections, 0);
     // Only broadcast if there is actually something to send.
     const parsed = JSON.parse(changeset);
     if (parsed.length === 0) return;
-    lastSecondaryPushMs = Date.now();
     broadcastChannel.postMessage({ type: 'taladb:secondary-write', token: SESSION_TOKEN, changeset });
     log(`Broadcast ${parsed.length} change(s) to primary tab`);
   } catch (err) {
@@ -323,7 +327,7 @@ function onWriteCommitted() {
   pushChangesetToPrimary();
   // Debounced IDB flush — keeps other tabs' fallback instances in sync via
   // BroadcastChannel + snapshotDirty reload without writing to IDB on every op.
-  scheduleSnapshot();
+  if (snapshotWriter) scheduleSnapshot();
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +503,17 @@ async function dispatch(op, args) {
       db.compact();
       return null;
 
+    case 'syncStatus':
+      return db.syncStatus();
+
+    case 'flushSync': {
+      const deadline = Date.now() + (args.timeoutMs ?? 5000);
+      while (db.syncPending() > 0 && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      return db.syncPending() === 0;
+    }
+
     case 'compactTombstones':
       // Prune tombstones older than beforeMs from a collection.
       // Returns the count of tombstones removed.
@@ -518,6 +533,13 @@ async function dispatch(op, args) {
     }
 
     case 'close':
+      // Give accepted HTTP push events a bounded opportunity to finish.
+      {
+        const deadline = Date.now() + 5000;
+        while (db.syncPending() > 0 && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      }
       // Flush any pending debounced snapshot before releasing the lock so
       // no writes are lost when the tab closes or navigates away.
       await flushSnapshot();
@@ -526,6 +548,7 @@ async function dispatch(op, args) {
       broadcastChannel?.close();
       broadcastChannel = null;
       idbFallback = false;
+      snapshotWriter = false;
       db = null;
       return null;
 
@@ -550,8 +573,8 @@ async function doInit(dbName, configJson) {
     broadcastChannel = new BroadcastChannel(`taladb:${dbName}`);
     broadcastChannel.onmessage = async (e) => {
       if (e.data === 'taladb:changed' && idbFallback) {
-        // Fallback tab: primary tab wrote — reload snapshot before next read.
-        snapshotDirty = true;
+        // Wait for snapshot-ready: changed is emitted before the primary's
+        // asynchronous IDB transaction has committed.
       } else if (e.data === 'taladb:request-snapshot' && !idbFallback && db && activeDbName) {
         // Primary (OPFS) tab: a new tab asked for a snapshot — export and save it.
         try {
@@ -565,8 +588,11 @@ async function doInit(dbName, configJson) {
         const resolve = pendingSnapshotResolve;
         pendingSnapshotResolve = null;
         resolve();
-      } else if (e.data?.type === 'taladb:secondary-write' && typeof e.data.token === 'string' && e.data.token.length > 0 && !idbFallback && db) {
-        // Primary (OPFS) tab: a secondary tab made a write — merge it in via LWW.
+      } else if (e.data === 'taladb:snapshot-ready' && idbFallback) {
+        snapshotDirty = true;
+      } else if (e.data?.type === 'taladb:secondary-write' && typeof e.data.token === 'string' && e.data.token.length > 0 && db) {
+        // Merge peer writes in every mode. This also makes multiple tabs
+        // converge when OPFS is entirely unavailable and every tab uses IDB.
         // The token requirement rejects unauthenticated injection attempts that
         // omit the SESSION_TOKEN field (not a guarantee against same-origin attackers
         // who observe the token, but defence-in-depth against naive injection).
@@ -602,6 +628,7 @@ async function doInit(dbName, configJson) {
     const snapshot = await idbLoadSnapshot(dbName);
     db = openWithSnapshot(snapshot);
     idbFallback = true;
+    snapshotWriter = true;
     if (snapshot) {
       log(`Restored from IndexedDB snapshot (${snapshot.byteLength} bytes)`);
     } else {
@@ -619,6 +646,7 @@ async function doInit(dbName, configJson) {
     warn('Web Locks unavailable — multi-tab write safety disabled');
     const syncHandle = await fileHandle.createSyncAccessHandle();
     db = openWithOpfs(syncHandle);
+    snapshotWriter = true;
     log(`Opened "${fileName}" via OPFS`);
     return;
   }
@@ -650,6 +678,7 @@ async function doInit(dbName, configJson) {
 
         db = openWithSnapshot(snapshot ?? null);
         idbFallback = true;
+        snapshotWriter = false;
         if (snapshot) {
           log(`Restored from IDB snapshot (${snapshot.byteLength} bytes)`);
         } else {
@@ -663,6 +692,7 @@ async function doInit(dbName, configJson) {
       try {
         const syncHandle = await fileHandle.createSyncAccessHandle();
         db = openWithOpfs(syncHandle);
+        snapshotWriter = true;
         log(`Opened "${fileName}" via OPFS (Web Locks)`);
         resolve(); // signal doInit complete — caller can proceed
 

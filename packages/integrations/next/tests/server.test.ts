@@ -71,6 +71,16 @@ function storeContractTests(makeStore: () => SyncStore | Promise<SyncStore>) {
     expect(records[0].op.Upsert.body).toBe('newest');
   });
 
+  it('preserves distinct equal-timestamp candidates for core tie-breaking', async () => {
+    const handlers = createSyncHandlers({ store: await makeStore() });
+    await Promise.all([
+      push(handlers, [record('tie', 200, 'left')]),
+      push(handlers, [record('tie', 200, 'right')]),
+    ]);
+    const { records } = await pull(handlers);
+    expect(records.filter((r: { id: string }) => r.id === 'tie')).toHaveLength(2);
+  });
+
   it('pull filters by since (exclusive)', async () => {
     const handlers = createSyncHandlers({ store: await makeStore() });
     await push(handlers, [record('a', 100), record('b', 200)]);
@@ -117,6 +127,18 @@ describe('createSyncHandlers + memorySyncStore', () => {
     const handlers = createSyncHandlers({ store: memorySyncStore() });
     const res = await handlers.GET(new Request('http://x/pull?since=abc'));
     expect(res.status).toBe(400);
+  });
+
+  it('rejects oversized bodies and record batches', async () => {
+    const handlers = createSyncHandlers({
+      store: memorySyncStore(),
+      maxBodyBytes: 20,
+      maxRecords: 1,
+    });
+    expect((await push(handlers, [record('too-large', 1)])).status).toBe(413);
+
+    const countLimited = createSyncHandlers({ store: memorySyncStore(), maxRecords: 1 });
+    expect((await push(countLimited, [record('a', 1), record('b', 1)])).status).toBe(413);
   });
 });
 
