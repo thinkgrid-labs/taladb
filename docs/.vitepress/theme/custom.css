@@ -6,12 +6,12 @@
    Brand tokens
    ---------------------------------------------------------- */
 :root {
-    --vp-c-brand-1: #b54b31;
-    --vp-c-brand-2: #d35f3c;
-    --vp-c-brand-3: #8a351e;
-    --vp-c-brand-soft: rgba(181, 75, 49, 0.14);
+    --vp-c-brand-1: #3157d9;
+    --vp-c-brand-2: #5b7bde;
+    --vp-c-brand-3: #24409e;
+    --vp-c-brand-soft: rgba(49, 87, 217, 0.12);
 
-    --vp-c-text-1: #1a1d23;
+    --vp-c-text-1: #14171b;
     --vp-c-text-2: #4b5263;
     --vp-c-text-3: #7c8495;
 
@@ -20,6 +20,11 @@
     --vp-c-border: #e5e7eb;
     --vp-c-divider: #eaecf0;
 
+    --vp-font-family-base:
+        "General Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --vp-font-family-mono:
+        "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
     /* Spacing scale used across marketing sections */
     --section-py: 88px;
     --section-px: 32px;
@@ -27,8 +32,8 @@
     --section-max: calc(var(--vp-layout-max-width) - 64px);
 
     /* Code window */
-    --code-bg: #1e2030;
-    --code-header-bg: #252839;
+    --code-bg: #12151a;
+    --code-header-bg: #1d2229;
 
     /* Buttons */
     --btn-radius: 8px;
