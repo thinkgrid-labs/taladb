@@ -43,9 +43,9 @@ export interface SyncHandle {
   importChanges(changeset: SerializedChangeset): Promise<number>;
   /**
    * Tolerant validated import — present only on bindings that support it
-   * (Node.js today). `schemasJson` is a JSON-encoded
-   * `Record<string, SyncSchema>`. When absent, `runSync` falls back to the
-   * unvalidated {@link importChanges}.
+   * (Node.js, browser, and React Native as of 0.9.2). `schemasJson` is a
+   * JSON-encoded `Record<string, SyncSchema>`. When absent — an older native
+   * module — `runSync` falls back to the unvalidated {@link importChanges}.
    */
   importChangesValidated?(
     changeset: SerializedChangeset,

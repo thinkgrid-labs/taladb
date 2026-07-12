@@ -61,10 +61,34 @@ export class TalaDbValidationError extends Error {
   }
 }
 
+/** Structural deep-equality. Key order and property order are not significant. */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const keys = Object.keys(ao);
+  if (keys.length !== Object.keys(bo).length) return false;
+  return keys.every(
+    (k) => Object.prototype.hasOwnProperty.call(bo, k) && deepEqual(ao[k], bo[k]),
+  );
+}
+
 /**
  * Wraps a `Collection<T>` to intercept writes through a schema validator
- * (`schema`) and/or normalize reads through a lazy `migrateDocument` — either
- * or both. Returns the collection unchanged when neither applies.
+ * (`schema`), stamp `_v` on insert when a `syncSchema.version` is declared, and
+ * normalize reads through a lazy `migrateDocument`. Returns the collection
+ * unchanged when none of those apply.
+ *
+ * Read normalization covers `find`, `findOne`, and `subscribe` (live queries).
+ * It cannot cover `aggregate`, `findNearest`, or FTS `search`: those run inside
+ * the engine against the *stored* shape, so a below-version document is matched
+ * and projected as it sits on disk. Use `persistMigrations` or
+ * `openDB({ migrations })` to rewrite storage if you query old documents that way.
  *
  * @internal Exported for unit testing; not part of the public API surface.
  */
@@ -73,12 +97,29 @@ export function applySchema<T extends Document>(
   options: CollectionOptions<T>,
 ): Collection<T> {
   const { schema, validateOnRead = false, migrateDocument, syncSchema, persistMigrations = false } = options;
-  if (!schema && !migrateDocument) return col;
+  const targetVersion = syncSchema?.version ?? 0;
 
-  if (migrateDocument && !(syncSchema && syncSchema.version && syncSchema.version > 0)) {
+  if (migrateDocument && targetVersion < 1) {
     throw new Error('CollectionOptions.migrateDocument requires syncSchema.version (the migration target)');
   }
-  const targetVersion = syncSchema?.version ?? 0;
+  // `renames`/`defaults` only run on the import path when a document's `_v` is
+  // below `version`. With no version the migration step is skipped entirely
+  // while `required`/`types` still apply — so a rename schema would quarantine
+  // every document it was meant to upgrade. Refuse the combination outright.
+  if (syncSchema && targetVersion < 1 && (syncSchema.renames || syncSchema.defaults)) {
+    throw new Error(
+      'CollectionOptions.syncSchema.renames/defaults require syncSchema.version >= 1 — ' +
+        'without a version the import migration step never runs and documents missing the ' +
+        'renamed/defaulted fields are quarantined instead of upgraded',
+    );
+  }
+
+  // Documents written locally carry `_v` so they are recognisable as already
+  // current. Without the stamp a freshly-inserted document reads back with no
+  // `_v`, is treated as version 0, and gets fed through `migrateDocument` as if
+  // it were legacy data — corrupting brand-new documents.
+  const stampVersion = targetVersion > 0;
+  if (!schema && !migrateDocument && !stampVersion) return col;
 
   function parseWrite(doc: unknown, label: string): T {
     try {
@@ -88,13 +129,19 @@ export function applySchema<T extends Document>(
     }
   }
 
+  /** Stamp the current shape version, unless the caller set `_v` explicitly. */
+  function stamp(doc: Omit<T, '_id'>): Omit<T, '_id'> {
+    if (!stampVersion || (doc as Document)._v !== undefined) return doc;
+    return { ...doc, _v: targetVersion };
+  }
+
   /** `$set`/`$unset` that turns `original` into `migrated` (ignoring `_id`). */
   function diffUpdate(original: T, migrated: T): Update<T> | null {
     const $set: Record<string, unknown> = {};
     const $unset: Record<string, true> = {};
     for (const k of Object.keys(migrated)) {
       if (k === '_id') continue;
-      if (JSON.stringify(migrated[k]) !== JSON.stringify(original[k])) $set[k] = migrated[k];
+      if (!deepEqual(migrated[k], original[k])) $set[k] = migrated[k];
     }
     for (const k of Object.keys(original)) {
       if (k !== '_id' && !(k in migrated)) $unset[k] = true;
@@ -113,59 +160,102 @@ export function applySchema<T extends Document>(
     return { ...migrateDocument(doc, fromVersion), _v: targetVersion };
   }
 
-  async function readOne(doc: T | null): Promise<T | null> {
-    if (doc === null) return null;
-    const migrated = migrateRead(doc);
-    // Opt-in: write the upgraded shape back so it becomes permanent (filters and
-    // indexes on the new shape then match). Best-effort — a failed write leaves
-    // the returned value migrated and re-migrates next read. Skipped when the
-    // doc was already current (migrated === doc, same reference).
-    if (persistMigrations && migrated !== doc && typeof doc._id === 'string') {
-      const update = diffUpdate(doc, migrated);
-      if (update) {
-        try {
-          await col.updateOne({ _id: doc._id } as Filter<T>, update);
-        } catch {
-          // best-effort; the returned value is still migrated
-        }
-      }
-    }
-    if (!validateOnRead || !schema) return migrated;
+  function validateRead(doc: T): T {
+    if (!validateOnRead || !schema) return doc;
     try {
-      return schema.parse(migrated);
+      return schema.parse(doc);
     } catch (err) {
       throw new TalaDbValidationError(err, 'read');
     }
   }
 
+  /**
+   * Opt-in write-back of upgraded documents, so the migration becomes permanent
+   * and filters/indexes on the new shape match.
+   *
+   * Sequential, not `Promise.all`: each write-back is its own engine
+   * transaction — fsync'd under the default `flush_every_write` durability —
+   * and fires live-query and sync-push notifications. Fanning them out turned a
+   * single `find()` over a large un-migrated collection into an N-way
+   * concurrent write storm. `openDB({ migrations })` remains the right tool for
+   * rewriting a whole collection at once.
+   */
+  async function persistAll(originals: T[], migrated: T[]): Promise<void> {
+    if (!persistMigrations) return;
+    for (let i = 0; i < originals.length; i++) {
+      const original = originals[i];
+      // Reference-identical => migrateRead left it alone => already current.
+      if (migrated[i] === original || typeof original._id !== 'string') continue;
+      const update = diffUpdate(original, migrated[i]);
+      if (!update) continue;
+      try {
+        await col.updateOne({ _id: original._id } as Filter<T>, update);
+      } catch {
+        // Best-effort: the returned value is still migrated, and the write-back
+        // is retried on the next read.
+      }
+    }
+  }
+
   const wrapReads = Boolean(migrateDocument) || (validateOnRead && Boolean(schema));
+  const wrapWrites = Boolean(schema) || stampVersion;
 
   return {
     ...col,
-    insert: schema
+    insert: wrapWrites
       ? async (doc) => {
-          parseWrite(doc, 'insert');
-          return col.insert(doc);
+          if (schema) parseWrite(doc, 'insert');
+          return col.insert(stamp(doc));
         }
       : col.insert.bind(col),
-    insertMany: schema
+    insertMany: wrapWrites
       ? async (docs) => {
-          docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
-          return col.insertMany(docs);
+          if (schema) docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
+          return col.insertMany(docs.map(stamp));
         }
       : col.insertMany.bind(col),
     find: wrapReads
       ? async (filter?) => {
           const docs = await col.find(filter);
-          return Promise.all(docs.map((d) => readOne(d) as Promise<T>));
+          const migrated = docs.map(migrateRead);
+          await persistAll(docs, migrated);
+          return migrated.map(validateRead);
         }
       : col.find.bind(col),
     findOne: wrapReads
       ? async (filter) => {
           const doc = await col.findOne(filter);
-          return readOne(doc);
+          if (doc === null) return null;
+          const migrated = migrateRead(doc);
+          await persistAll([doc], [migrated]);
+          return validateRead(migrated);
         }
       : col.findOne.bind(col),
+    // Live queries feed every @taladb/react hook (useFind, useFindOne,
+    // useQueries). Leaving them unwrapped meant React components received the
+    // un-migrated shape while a direct find() returned the migrated one.
+    subscribe: wrapReads
+      ? (filter, callback, onError) =>
+          col.subscribe(
+            filter,
+            (docs) => {
+              const migrated = docs.map(migrateRead);
+              let out: T[];
+              try {
+                out = migrated.map(validateRead);
+              } catch (err) {
+                onError?.(err);
+                return;
+              }
+              callback(out);
+              // Fire-and-forget: the callback is synchronous, and a successful
+              // write-back re-fires this same subscription with the upgraded
+              // documents (which then need no further write).
+              void persistAll(docs, migrated);
+            },
+            onError,
+          )
+      : col.subscribe.bind(col),
   };
 }
 
@@ -986,8 +1076,12 @@ export interface OpenDBOptions {
    * Ordered application schema migrations, run once each at open in ascending
    * `version` order (only those newer than the stored migration version). The
    * stored version advances after each migration succeeds — checkpoint per
-   * version, resuming from the last applied one on the next open. **Node.js
-   * only today**; passing this on another runtime throws.
+   * version, resuming from the last applied one on the next open.
+   *
+   * Supported on Node.js, the browser (via the OPFS worker), and React Native.
+   * On a binding whose native module predates 0.9.2 (no `userVersion` /
+   * `setUserVersion`), `openDB` throws rather than silently skipping the
+   * migrations — rebuild or update the native module.
    */
   migrations?: Migration[];
   /**

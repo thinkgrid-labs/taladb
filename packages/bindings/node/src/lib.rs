@@ -519,7 +519,7 @@ impl TalaDBNode {
         let changeset: taladb_core::Changeset = serde_json::from_str(&changeset_json)
             .map_err(|e| napi::Error::from_reason(format!("changeset parse failed: {e}")))?;
         let schemas = build_schemas(&schemas_json)?;
-        let validator = Arc::new(SchemaValidator::new(schemas));
+        let validator = Arc::new(SchemaValidator::try_new(schemas).map_err(err_to_napi)?);
         let report = self
             .db()?
             .import_changes_validated(changeset, validator)

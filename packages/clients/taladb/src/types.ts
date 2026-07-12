@@ -142,7 +142,12 @@ export type SyncFieldType = 'bool' | 'int' | 'float' | 'str' | 'bytes' | 'array'
  * });
  */
 export interface SyncSchema {
-  /** Current document shape version. Omit or `0` to disable the migration step. */
+  /**
+   * Current document shape version. Omit or `0` to disable the migration step
+   * entirely — in which case {@link renames} and {@link defaults} never run, so
+   * declaring either without a `version` is rejected at `db.collection()` rather
+   * than silently quarantining the documents they were meant to upgrade.
+   */
   version?: number;
   /** Fields that must be present and non-null, or the document is quarantined. */
   required?: string[];
@@ -181,8 +186,11 @@ export interface CollectionOptions<T extends Document = Document> {
    * Tolerant structural schema applied to documents arriving via `db.sync()`.
    * See {@link SyncSchema}. Enables validate-on-import ("validate, never cast")
    * in the core sync path, with `_v` migration and quarantine of bad shapes.
-   * Wired on browser (OPFS worker) and Node.js; React Native falls back to
-   * unvalidated import until its binding carries the plumbing.
+   * Wired on browser (OPFS worker), Node.js, and React Native; a binding whose
+   * native module predates 0.9.2 falls back to unvalidated import.
+   *
+   * Declaring a `version` also makes locally-inserted documents carry that `_v`,
+   * so they are never mistaken for legacy documents on read.
    */
   syncSchema?: SyncSchema;
   /**
@@ -426,14 +434,14 @@ export interface SyncResult {
   pulled: number;
   /**
    * Documents in the pulled changeset skipped by an import validator (a
-   * collection this client does not model). Present (possibly `0`) whenever a
-   * `syncSchema` applied; omitted otherwise.
+   * collection this client does not model). Always `0` when no `syncSchema`
+   * applied to the pass.
    */
   skipped?: number;
   /**
    * Documents in the pulled changeset set aside by an import validator because
    * they failed structural validation. Recoverable via {@link TalaDB.quarantined}.
-   * Present (possibly `0`) whenever a `syncSchema` applied; omitted otherwise.
+   * Always `0` when no `syncSchema` applied to the pass.
    */
   quarantined?: number;
   /** Active sync cursor. Currently `0` because timestamp adapters replay safely. */

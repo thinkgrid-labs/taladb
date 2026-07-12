@@ -814,23 +814,32 @@ pub unsafe extern "C" fn taladb_flush(handle: *mut TalaDbHandle) -> i32 {
 
 /// Build the per-collection structural schema map from a
 /// `{ "<collection>": { version, required, types, defaults, renames } }` JSON
-/// object. Returns an empty map on parse failure (import stays tolerant).
-fn build_schemas(schemas_json: &str) -> HashMap<String, StructuralSchema> {
-    let Ok(serde_json::Value::Object(obj)) =
-        serde_json::from_str::<serde_json::Value>(schemas_json)
-    else {
-        return HashMap::new();
+/// object.
+///
+/// Every malformed input is an error, never a silently-empty map: a schema that
+/// fails to load would leave import *unvalidated*, so a typo'd field type on
+/// React Native would accept a document that Node and the browser quarantine —
+/// and two replicas reaching different decisions on the same document is exactly
+/// the divergence the `ImportValidator` determinism contract forbids.
+fn build_schemas(schemas_json: &str) -> Result<HashMap<String, StructuralSchema>, String> {
+    let root: serde_json::Value = serde_json::from_str(schemas_json)
+        .map_err(|e| format!("schema descriptor parse failed: {e}"))?;
+    let serde_json::Value::Object(obj) = root else {
+        return Err("schema descriptor must be a JSON object".to_string());
     };
-    let parse_field_type = |name: &str| match name {
-        "bool" => Some(FieldType::Bool),
-        "int" => Some(FieldType::Int),
-        "float" => Some(FieldType::Float),
-        "str" => Some(FieldType::Str),
-        "bytes" => Some(FieldType::Bytes),
-        "array" => Some(FieldType::Array),
-        "object" => Some(FieldType::Object),
-        "any" => Some(FieldType::Any),
-        _ => None,
+    let parse_field_type = |col: &str, field: &str, name: &str| match name {
+        "bool" => Ok(FieldType::Bool),
+        "int" => Ok(FieldType::Int),
+        "float" => Ok(FieldType::Float),
+        "str" => Ok(FieldType::Str),
+        "bytes" => Ok(FieldType::Bytes),
+        "array" => Ok(FieldType::Array),
+        "object" => Ok(FieldType::Object),
+        "any" => Ok(FieldType::Any),
+        other => Err(format!(
+            "collection `{col}`: unknown field type \"{other}\" for `{field}` \
+             (expected bool|int|float|str|bytes|array|object|any)"
+        )),
     };
     let mut out = HashMap::with_capacity(obj.len());
     for (col, desc) in &obj {
@@ -847,19 +856,15 @@ fn build_schemas(schemas_json: &str) -> HashMap<String, StructuralSchema> {
                     .collect()
             })
             .unwrap_or_default();
-        let types = desc
-            .get("types")
-            .and_then(serde_json::Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| {
-                        v.as_str()
-                            .and_then(parse_field_type)
-                            .map(|t| (k.clone(), t))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut types = HashMap::new();
+        if let Some(map) = desc.get("types").and_then(serde_json::Value::as_object) {
+            for (field, v) in map {
+                let name = v.as_str().ok_or_else(|| {
+                    format!("collection `{col}`: schema type for `{field}` must be a string")
+                })?;
+                types.insert(field.clone(), parse_field_type(col, field, name)?);
+            }
+        }
         let defaults = desc
             .get("defaults")
             .and_then(serde_json::Value::as_object)
@@ -889,7 +894,7 @@ fn build_schemas(schemas_json: &str) -> HashMap<String, StructuralSchema> {
             },
         );
     }
-    out
+    Ok(out)
 }
 
 /// Merge a JSON changeset through a tolerant structural validator built from
@@ -919,7 +924,20 @@ pub unsafe extern "C" fn taladb_import_changes_validated(
             return std::ptr::null_mut();
         }
     };
-    let validator = Arc::new(SchemaValidator::new(build_schemas(&sj)));
+    let schemas = match build_schemas(&sj) {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e);
+            return std::ptr::null_mut();
+        }
+    };
+    let validator = match SchemaValidator::try_new(schemas) {
+        Ok(v) => Arc::new(v),
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
     match h.db.import_changes_validated(changeset, validator) {
         Ok(report) => {
             let json = serde_json::json!({
