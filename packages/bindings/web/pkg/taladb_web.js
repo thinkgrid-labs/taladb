@@ -420,6 +420,29 @@ export class TalaDBWasm {
         }
         return TalaDBWasm.__wrap(ret[0]);
     }
+    /**
+     * Persist the application migration version. Called after each migration's
+     * body succeeds so a crash mid-run resumes from the last applied version.
+     * @param {number} version
+     */
+    setUserVersion(version) {
+        const ret = wasm.taladbwasm_setUserVersion(this.__wbg_ptr, version);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Read the current application migration version (0 if never set). Backs
+     * the `openDB({ migrations })` runner, which advances it per migration.
+     * @returns {number}
+     */
+    userVersion() {
+        const ret = wasm.taladbwasm_userVersion(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
 }
 if (Symbol.dispose) TalaDBWasm.prototype[Symbol.dispose] = TalaDBWasm.prototype.free;
 
@@ -834,6 +857,16 @@ export class WorkerDB {
         }
     }
     /**
+     * Force batched (eventual) OPFS writes to durable storage. No-op under the
+     * default immediate durability. Backs `db.flush()`.
+     */
+    flush() {
+        const ret = wasm.workerdb_flush(this.__wbg_ptr);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Import a remote changeset and merge it into the local database using
      * Last-Write-Wins conflict resolution.
      *
@@ -855,6 +888,37 @@ export class WorkerDB {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Import a remote changeset through a tolerant structural validator built
+     * from `schemas_json` (`{ "<collection>": { version, required, types,
+     * defaults } }`). Returns a JSON `{ applied, skipped, quarantined }`.
+     * Rejected documents are set aside (see `quarantined`), never dropped.
+     * @param {string} changeset_json
+     * @param {string} schemas_json
+     * @returns {string}
+     */
+    importChangesetValidated(changeset_json, schemas_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(changeset_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(schemas_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_importChangesetValidated(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
     }
     /**
      * Insert a document. Returns the new ULID as a string.
@@ -1068,6 +1132,52 @@ export class WorkerDB {
         return WorkerDB.__wrap(ret[0]);
     }
     /**
+     * Documents set aside in `collection`'s quarantine table, as a JSON array
+     * of `{ document, reason, changedAt }`.
+     * @param {string} collection
+     * @returns {string}
+     */
+    quarantined(collection) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_quarantined(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Set write durability: `eventual = true` batches OPFS fsyncs for
+     * throughput (call `flush()` to force), `false` (default) fsyncs each
+     * commit. Derived from `durability.flush_every_write` by the worker.
+     * @param {boolean} eventual
+     */
+    setDurability(eventual) {
+        wasm.workerdb_setDurability(this.__wbg_ptr, eventual);
+    }
+    /**
+     * Persist the application migration version. Called after each migration's
+     * body succeeds so a crash mid-run resumes from the last applied version.
+     * @param {number} version
+     */
+    setUserVersion(version) {
+        const ret = wasm.workerdb_setUserVersion(this.__wbg_ptr, version);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @returns {bigint}
      */
     syncPending() {
@@ -1146,6 +1256,18 @@ export class WorkerDB {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * Read the current application migration version (0 if never set). Backs
+     * the `openDB({ migrations })` runner, which advances it per migration.
+     * @returns {number}
+     */
+    userVersion() {
+        const ret = wasm.workerdb_userVersion(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
 }
 if (Symbol.dispose) WorkerDB.prototype[Symbol.dispose] = WorkerDB.prototype.free;
@@ -1850,18 +1972,18 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 219, function: Function { arguments: [], shim_idx: 220, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__he22c2c171c027d5f, wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87);
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 150, function: Function { arguments: [Externref], shim_idx: 151, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h2c4f24ad7d89538e, wasm_bindgen__convert__closures_____invoke__h1db834cd18eb3d6d);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 688, function: Function { arguments: [Externref], shim_idx: 689, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hcc9749e9df054fa1, wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d);
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 228, function: Function { arguments: [], shim_idx: 229, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__he22c2c171c027d5f, wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 85, function: Function { arguments: [Externref], shim_idx: 86, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h0b9d610530342eed, wasm_bindgen__convert__closures_____invoke__h04047ee6b7bd7952);
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 696, function: Function { arguments: [Externref], shim_idx: 697, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hcc9749e9df054fa1, wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0) {
@@ -1916,8 +2038,8 @@ function wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h04047ee6b7bd7952(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h04047ee6b7bd7952(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h1db834cd18eb3d6d(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h1db834cd18eb3d6d(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d(arg0, arg1, arg2) {
