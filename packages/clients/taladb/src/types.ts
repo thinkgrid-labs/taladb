@@ -208,6 +208,19 @@ export interface CollectionOptions<T extends Document = Document> {
    * });
    */
   migrateDocument?: (doc: T, fromVersion: number) => T;
+  /**
+   * When `true`, a document upgraded by {@link migrateDocument} on read is
+   * **written back** to storage (a best-effort `updateOne` computing the
+   * `$set`/`$unset` diff) so the migration becomes permanent — after which
+   * filters and indexes on the new shape match it. Default `false` (the
+   * migrated shape is returned but not persisted).
+   *
+   * Trade-offs: reads that encounter un-migrated documents now issue writes
+   * (which fire live-query and sync-hook notifications like any other write);
+   * a failed write is swallowed and simply retried on the next read. For a
+   * one-shot eager rewrite instead, prefer `openDB({ migrations })`.
+   */
+  persistMigrations?: boolean;
 }
 
 // --------------- Aggregation ---------------

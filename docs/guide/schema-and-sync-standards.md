@@ -181,13 +181,26 @@ const users = db.collection<User>('users', {
 // find()/findOne() upgrade any doc whose `_v` < 2 and stamp `_v = 2` before you see it.
 ```
 
+By default `migrateDocument` transforms the *returned* value only. To make a
+lazy migration permanent, set `persistMigrations: true` — an upgraded document
+is then written back to storage (a best-effort `$set`/`$unset` diff), after
+which filters and indexes on the new shape match it:
+
+```ts
+db.collection<User>('users', {
+  syncSchema: { version: 2 },
+  migrateDocument: (doc, from) => (from < 2 ? { ...doc, fullName: `${doc.first} ${doc.last}` } : doc),
+  persistMigrations: true, // write the upgrade back the first time each doc is read
+});
+```
+
 > **Standard:** three layers, use the narrowest that fits. `openDB({ migrations })`
 > rewrites local docs eagerly at open; `syncSchema` (+ `renames`/`defaults`)
 > normalizes synced docs eagerly at import; `migrateDocument` normalizes lazily
-> at read as the arbitrary-JS catch-all. `migrateDocument` transforms the
-> *returned* value only — it does not persist, so filters/indexes on the new
-> shape still need an eager rewrite (migration or rename) to match stored old
-> docs.
+> at read as the arbitrary-JS catch-all. A lazy migration is view-only unless
+> `persistMigrations: true` writes it back — that write fires live-query and
+> sync notifications like any other, so prefer an eager `openDB({ migrations })`
+> sweep when you want to migrate the whole collection at once.
 
 ---
 

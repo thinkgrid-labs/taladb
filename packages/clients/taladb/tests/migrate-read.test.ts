@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { applySchema } from '../src/index';
 import type { Collection, Document } from '../src/index';
 
@@ -105,5 +105,79 @@ describe('read-time migrateDocument', () => {
     });
     const [doc] = await col.find();
     expect(doc.fullName).toBe('a b');
+  });
+});
+
+describe('persistMigrations (persist-on-read)', () => {
+  /** A stub whose `updateOne` is a spy, so we can assert the write-back diff. */
+  function persistStub(docs: UserDoc[]) {
+    const updateOne = vi.fn(async () => true);
+    const base = stub(docs);
+    return { col: { ...base, updateOne } as Collection<UserDoc>, updateOne };
+  }
+
+  it('writes the upgraded shape back via updateOne when enabled', async () => {
+    const { col, updateOne } = persistStub([{ _id: 'u1', first: 'Ada', last: 'Lovelace' }]);
+    const wrapped = applySchema(col, {
+      syncSchema: { version: 2 },
+      migrateDocument: migrate,
+      persistMigrations: true,
+    });
+    const [doc] = await wrapped.find();
+    expect(doc.fullName).toBe('Ada Lovelace');
+    expect(updateOne).toHaveBeenCalledTimes(1);
+    const [filter, update] = updateOne.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(filter).toEqual({ _id: 'u1' });
+    expect(update.$set).toMatchObject({ fullName: 'Ada Lovelace', _v: 2 });
+  });
+
+  it('$unset removes fields dropped by the migration', async () => {
+    // migrate v2→v3 renames `fullName` to `name` (drops fullName).
+    const { col, updateOne } = persistStub([{ _id: 'u1', _v: 2, fullName: 'Ada L' } as UserDoc]);
+    const wrapped = applySchema(col, {
+      syncSchema: { version: 3 },
+      migrateDocument: (d) => {
+        const { fullName, ...rest } = d as UserDoc & { fullName?: string };
+        return { ...rest, name: fullName } as UserDoc;
+      },
+      persistMigrations: true,
+    });
+    await wrapped.find();
+    const [, update] = updateOne.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(update.$set).toMatchObject({ name: 'Ada L', _v: 3 });
+    expect(update.$unset).toEqual({ fullName: true });
+  });
+
+  it('does not write when persistMigrations is off', async () => {
+    const { col, updateOne } = persistStub([{ _id: 'u1', first: 'a', last: 'b' }]);
+    const wrapped = applySchema(col, {
+      syncSchema: { version: 2 },
+      migrateDocument: migrate,
+    });
+    await wrapped.find();
+    expect(updateOne).not.toHaveBeenCalled();
+  });
+
+  it('does not write for an already-current document', async () => {
+    const { col, updateOne } = persistStub([{ _id: 'u1', _v: 2, fullName: 'x' }]);
+    const wrapped = applySchema(col, {
+      syncSchema: { version: 2 },
+      migrateDocument: migrate,
+      persistMigrations: true,
+    });
+    await wrapped.find();
+    expect(updateOne).not.toHaveBeenCalled();
+  });
+
+  it('is best-effort: a failed write-back still returns the migrated value', async () => {
+    const base = stub([{ _id: 'u1', first: 'Alan', last: 'Turing' }]);
+    const col = { ...base, updateOne: vi.fn(async () => { throw new Error('disk full'); }) } as Collection<UserDoc>;
+    const wrapped = applySchema(col, {
+      syncSchema: { version: 2 },
+      migrateDocument: migrate,
+      persistMigrations: true,
+    });
+    const [doc] = await wrapped.find();
+    expect(doc.fullName).toBe('Alan Turing'); // returned despite the write failing
   });
 });

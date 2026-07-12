@@ -9,6 +9,8 @@ import type {
   SyncSchema,
   QuarantinedDocument,
   AggregatePipeline,
+  Update,
+  Filter,
 } from './types';
 import { loadConfig, validateConfig } from './config';
 import type { TalaDbConfig, SyncConfig } from './config';
@@ -70,7 +72,7 @@ export function applySchema<T extends Document>(
   col: Collection<T>,
   options: CollectionOptions<T>,
 ): Collection<T> {
-  const { schema, validateOnRead = false, migrateDocument, syncSchema } = options;
+  const { schema, validateOnRead = false, migrateDocument, syncSchema, persistMigrations = false } = options;
   if (!schema && !migrateDocument) return col;
 
   if (migrateDocument && !(syncSchema && syncSchema.version && syncSchema.version > 0)) {
@@ -86,6 +88,23 @@ export function applySchema<T extends Document>(
     }
   }
 
+  /** `$set`/`$unset` that turns `original` into `migrated` (ignoring `_id`). */
+  function diffUpdate(original: T, migrated: T): Update<T> | null {
+    const $set: Record<string, unknown> = {};
+    const $unset: Record<string, true> = {};
+    for (const k of Object.keys(migrated)) {
+      if (k === '_id') continue;
+      if (JSON.stringify(migrated[k]) !== JSON.stringify(original[k])) $set[k] = migrated[k];
+    }
+    for (const k of Object.keys(original)) {
+      if (k !== '_id' && !(k in migrated)) $unset[k] = true;
+    }
+    const update: Record<string, unknown> = {};
+    if (Object.keys($set).length) update.$set = $set;
+    if (Object.keys($unset).length) update.$unset = $unset;
+    return Object.keys(update).length ? (update as Update<T>) : null;
+  }
+
   /** Lazy read-time upgrade: migrate a below-target document, then stamp `_v`. */
   function migrateRead(doc: T): T {
     if (!migrateDocument) return doc;
@@ -94,9 +113,23 @@ export function applySchema<T extends Document>(
     return { ...migrateDocument(doc, fromVersion), _v: targetVersion };
   }
 
-  function readOne(doc: T | null): T | null {
+  async function readOne(doc: T | null): Promise<T | null> {
     if (doc === null) return null;
     const migrated = migrateRead(doc);
+    // Opt-in: write the upgraded shape back so it becomes permanent (filters and
+    // indexes on the new shape then match). Best-effort — a failed write leaves
+    // the returned value migrated and re-migrates next read. Skipped when the
+    // doc was already current (migrated === doc, same reference).
+    if (persistMigrations && migrated !== doc && typeof doc._id === 'string') {
+      const update = diffUpdate(doc, migrated);
+      if (update) {
+        try {
+          await col.updateOne({ _id: doc._id } as Filter<T>, update);
+        } catch {
+          // best-effort; the returned value is still migrated
+        }
+      }
+    }
     if (!validateOnRead || !schema) return migrated;
     try {
       return schema.parse(migrated);
@@ -124,7 +157,7 @@ export function applySchema<T extends Document>(
     find: wrapReads
       ? async (filter?) => {
           const docs = await col.find(filter);
-          return docs.map((d) => readOne(d) as T);
+          return Promise.all(docs.map((d) => readOne(d) as Promise<T>));
         }
       : col.find.bind(col),
     findOne: wrapReads
@@ -747,6 +780,14 @@ interface NativeDB {
   exportChanges?(collectionsJson: string[], sinceMs: number): string;
   importChanges?(changeset: string): number;
   listCollectionNames?(): string[];
+  // Validate-on-import (JSI HostObject 0.9.2+). Feature-detected so `db.sync()`
+  // falls back to unvalidated import on native modules that predate them.
+  importChangesValidated?(changeset: string, schemasJson: string): {
+    applied: number;
+    skipped: number;
+    quarantined: number;
+  };
+  quarantined?(collection: string): unknown[];
   // Migration version accessors (openDB({ migrations })). Present once the JSI
   // HostObject exposes them; feature-detected so older binaries throw a clear
   // "not available" error instead of silently skipping migrations.
@@ -767,7 +808,12 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
   }
   const native: NativeDB = maybeNative;
 
+  // Per-collection sync schemas, registered as collections are opened, so
+  // `db.sync()` validates pulled documents ("validate, never cast").
+  const syncSchemas: Record<string, SyncSchema> = {};
+
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
+    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const wrapped: Collection<T> = {
       insert: async (doc) => native.insert(name, doc as Record<string, unknown>),
       insertMany: async (docs) => native.insertMany(name, docs as Record<string, unknown>[]),
@@ -821,9 +867,14 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
             collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
             exportChanges: async (collections: string[], sinceMs: number) => native.exportChanges!(collections, sinceMs),
             importChanges: async (changeset: string) => native.importChanges!(changeset),
+            // Feature-detected: present on 0.9.2+ JSI HostObjects; when absent,
+            // runSync falls back to unvalidated importChanges.
+            importChangesValidated: native.importChangesValidated
+              ? async (changeset: string, schemasJson: string) => native.importChangesValidated!(changeset, schemasJson)
+              : undefined,
             listCollectionNames: async () => native.listCollectionNames!(),
             sync: (adapter: SyncAdapter, options: SyncOptions) =>
-              runSync(handle as unknown as SyncHandle, adapter, options),
+              runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
           };
           return {
             exportChanges: handle.exportChanges,
@@ -837,6 +888,10 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
+    quarantined: native.quarantined
+      ? async <T extends Document = Document>(collection: string) =>
+          native.quarantined!(collection) as QuarantinedDocument<T>[]
+      : undefined,
     ...syncSurface,
   };
   if (migrations?.length) {
