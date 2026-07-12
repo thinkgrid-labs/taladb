@@ -428,11 +428,24 @@ impl TalaDBNode {
             None => Database::open(std::path::Path::new(&path)),
         }
         .map_err(err_to_napi)?;
+        // Apply durability from config (default: flush every write / immediate).
+        if let Some(json) = config_json.as_deref()
+            && let Ok(cfg) = serde_json::from_str::<TalaDbConfig>(json)
+        {
+            db.set_durability(!cfg.durability.flush_every_write);
+        }
         let sync_hook = build_sync_hook(config_json)?;
         Ok(TalaDBNode {
             inner: Some(db),
             sync_hook,
         })
+    }
+
+    /// Force any batched (eventual-durability) writes to disk. No-op under the
+    /// default immediate durability. Backs `db.flush()`.
+    #[napi]
+    pub fn flush(&self) -> napi::Result<()> {
+        self.db()?.flush().map_err(err_to_napi)
     }
 
     /// Compact the underlying storage file, reclaiming space freed by deletes

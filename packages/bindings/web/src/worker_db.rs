@@ -390,6 +390,23 @@ impl WorkerDB {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Set write durability: `eventual = true` batches OPFS fsyncs for
+    /// throughput (call `flush()` to force), `false` (default) fsyncs each
+    /// commit. Derived from `durability.flush_every_write` by the worker.
+    #[wasm_bindgen(js_name = setDurability)]
+    pub fn set_durability(&self, eventual: bool) {
+        self.db.set_durability(eventual);
+    }
+
+    /// Force batched (eventual) OPFS writes to durable storage. No-op under the
+    /// default immediate durability. Backs `db.flush()`.
+    #[wasm_bindgen(js_name = flush)]
+    pub fn flush(&self) -> Result<(), JsValue> {
+        self.db
+            .flush()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     #[wasm_bindgen(js_name = syncStatus)]
     pub fn sync_status(&self) -> String {
         use std::sync::atomic::Ordering;

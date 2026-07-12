@@ -13,7 +13,7 @@ import type {
   Filter,
 } from './types';
 import { loadConfig, validateConfig } from './config';
-import type { TalaDbConfig, SyncConfig } from './config';
+import type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
 import { runSync, unsupportedSync, type SyncHandle } from './sync';
 
 // Re-export all public types for consumers (export…from satisfies S7763)
@@ -169,7 +169,7 @@ export function applySchema<T extends Document>(
   };
 }
 
-export type { TalaDbConfig, SyncConfig } from './config';
+export type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
 
 // ============================================================
 // Platform detection + dynamic import
@@ -585,6 +585,7 @@ async function createBrowserDB(
   const handle = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: () => proxy.send<void>('compact'),
+    flush: async () => { await proxy.send<void>('flush'); },
     syncStatus: async () => JSON.parse(await proxy.send<string>('syncStatus')) as { pending: number; dropped: number; failed: number },
     flushSync: (timeoutMs = 5000) => proxy.send<boolean>('flushSync', { timeoutMs }),
     close: async () => {
@@ -712,6 +713,7 @@ async function createNodeDB(
     compact: async () => db.compact(),
     // Releases the native file handle/lock (no-op on older .node binaries).
     close: async () => db.close?.(),
+    flush: db.flush ? async () => { db.flush(); } : undefined,
     exportChanges: async (collections: string[], sinceMs: number) => db.exportChanges(sinceMs, collections),
     importChanges: async (changeset: string) => db.importChanges(changeset),
     // Feature-detected: only present when the loaded .node binary supports it,
@@ -793,6 +795,8 @@ interface NativeDB {
   // "not available" error instead of silently skipping migrations.
   userVersion?(): number;
   setUserVersion?(version: number): void;
+  // Force batched (eventual) writes durable. Feature-detected (JSI 0.9.2+).
+  flush?(): void;
 }
 
 async function createNativeDB(_dbName: string, migrations?: Migration[]): Promise<TalaDB> {
@@ -888,6 +892,7 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
+    flush: native.flush ? async () => { native.flush!(); } : undefined,
     quarantined: native.quarantined
       ? async <T extends Document = Document>(collection: string) =>
           native.quarantined!(collection) as QuarantinedDocument<T>[]
@@ -998,6 +1003,14 @@ export interface OpenDBOptions {
    * Useful for passing config programmatically without a config file on disk.
    */
   config?: TalaDbConfig;
+  /**
+   * Storage durability, e.g. `{ flush_every_write: false }` to batch commits
+   * for write throughput (call `db.flush()` to force a sync), or `{ flush_ms }`
+   * to tune the browser IndexedDB-fallback snapshot debounce. Merged into
+   * `config.durability`. Node + browser; on React Native pass it in the config
+   * JSON to `TalaDBModule.initialize`.
+   */
+  durability?: DurabilityConfig;
 }
 
 /**
@@ -1025,6 +1038,14 @@ export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Pro
     resolvedConfig = options.config;
   } else {
     resolvedConfig = await loadConfig(options?.configPath);
+  }
+
+  // A top-level `durability` option merges into config.durability (option wins).
+  if (options?.durability) {
+    resolvedConfig = {
+      ...resolvedConfig,
+      durability: { ...resolvedConfig?.durability, ...options.durability },
+    };
   }
 
   const platform = detectPlatform();

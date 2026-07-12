@@ -115,13 +115,6 @@ The CRDT merge protocol (field-level logical clocks, `CrdtSyncAdapter`) shipped 
 
 Internal improvements that improve efficiency and interoperability.
 
-### Configurable browser durability
-
-The browser engine persists a snapshot to OPFS on a fixed 500 ms debounce, so a hard crash can lose the most recent writes (see [benchmarks](/benchmarks) for the trade-off this buys). Expose it per `openDB`:
-
-- `durability: { flushMs?: number, flushEveryWrite?: boolean }` — tune the debounce, or opt into flush-per-commit for apps where the last write matters more than write throughput
-- `db.flush()` — explicit await-able flush for "save now" moments (before checkout, on visibilitychange)
-
 ### Pluggable serialisation
 
 Allow the caller to swap `postcard` for `MessagePack` or `CBOR` via a `Codec` trait, making it easier to interoperate with databases or wire formats that already use those encodings.

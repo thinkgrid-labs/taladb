@@ -37,7 +37,7 @@ The browser is TalaDB's flagship runtime: the same Rust engine compiled to WebAs
 
 ## Browser — document writes
 
-The engine is memory-resident and persists a snapshot to OPFS on a short debounce, so writes are fast; see the durability note below for the trade-off.
+The browser engine is redb running directly on an OPFS file, fsync-flushing every commit by default — so single writes carry a per-commit flush cost (hence ~900 ops/s) while batched `insertMany` amortises one flush across the batch. See the durability note below for how to trade that for throughput.
 
 | Operation | Detail | Result |
 |---|---|---|
@@ -49,7 +49,7 @@ The engine is memory-resident and persists a snapshot to OPFS on a short debounc
 | `deleteOne` (by `_id`) | point delete | **~667 ops/s** |
 
 ::: warning Browser durability model
-Browser writes are fast because the engine is memory-resident and the worker persists a snapshot to OPFS on a **500 ms debounce** (plus a final flush on `close()` and before releasing the multi-tab lock). A hard crash of the browser process can lose the last ≤ 500 ms of writes. Node.js `fsync`s every committed transaction before the call returns — same API, stronger guarantee. This is the right trade-off for local-first browser apps; just don't read the two runtimes' write columns as identical durability.
+By default the browser OPFS engine `fsync`s (flushes the OPFS access handle) on **every commit** — the same per-commit durability as Node.js — so a hard crash does not lose acknowledged writes. That per-commit flush is what the single-write number above measures. To trade it for throughput, open with `durability: { flush_every_write: false }` (redb *Eventual* — commits are batched) and call `await db.flush()` at "save now" moments (before checkout, on `visibilitychange`). Independently, the worker also writes a **500 ms-debounced** snapshot to *IndexedDB* — but that is only the auxiliary copy other tabs read and the offline fallback; it is not the authoritative store on the OPFS path, and its debounce is tunable via `durability: { flush_ms }`.
 :::
 
 ## Browser — query latency at 100,000 documents
@@ -156,7 +156,7 @@ Read the recall rows carefully: uniform random vectors have no neighbourhood str
 
 - **Scaling** — exact vector search is linear in collection size; document point lookups are logarithmic. Both behave predictably as your data grows.
 - **Latency floor, not ceiling** — the test machine is a 2018 dual-fan ultrabook. Treat these as conservative.
-- **Durability differs by platform** — the browser engine is memory-resident with a 500 ms debounced OPFS snapshot flush (see the note above); Node.js commits are `fsync`-durable per transaction. Same API, different persistence guarantee.
+- **Durability is per-commit on both platforms by default** — Node.js and the browser OPFS engine both `fsync` every commit (see the note above); opt into batched commits with `durability: { flush_every_write: false }` + `db.flush()` for throughput. The 500 ms debounce is only the browser's auxiliary IndexedDB snapshot, not the OPFS store.
 - **Browser vs native** — flat vector search is ~2× slower in WASM today purely for lack of `simd128`; a measured SIMD build closes the gap. Everything else is at parity or (for scans) faster in the browser.
 - **React Native — not yet benchmarked.** RN runs the same Rust core via JSI with a file-backed database (like Node.js), so expect broadly Node-like numbers scaled to the device CPU — but these are an *expectation, not a measurement*. A device-driven suite (running inside an app on a simulator/emulator) is planned; until it lands, there are deliberately no RN figures here.
 - **Methodology** — deterministic seeded data, warmup before measurement, medians reported, one process at a time on an otherwise idle machine. Read [`scripts/bench-web.mjs`](https://github.com/thinkgrid-labs/taladb/blob/main/scripts/bench-web.mjs) + [`scripts/bench-web/bench.browser.js`](https://github.com/thinkgrid-labs/taladb/blob/main/scripts/bench-web/bench.browser.js) (browser) and [`scripts/bench.mjs`](https://github.com/thinkgrid-labs/taladb/blob/main/scripts/bench.mjs) (Node) for the exact workloads.

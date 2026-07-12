@@ -137,6 +137,7 @@ pub unsafe extern "C" fn taladb_open_with_config(
     };
 
     let mut passphrase: Option<String> = None;
+    let mut durability_eventual = false;
     let sync_hook: Option<Arc<HttpSyncHook>> = if !config_json.is_null() {
         match unsafe { CStr::from_ptr(config_json) }.to_str() {
             Ok(json_str) => {
@@ -153,6 +154,7 @@ pub unsafe extern "C" fn taladb_open_with_config(
                             set_last_error(e.to_string());
                             return std::ptr::null_mut();
                         }
+                        durability_eventual = !config.durability.flush_every_write;
                         if config.sync.enabled {
                             Some(Arc::new(HttpSyncHook::new(config.sync)))
                         } else {
@@ -179,7 +181,10 @@ pub unsafe extern "C" fn taladb_open_with_config(
         None => Database::open(Path::new(path_str)),
     };
     match opened {
-        Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db, sync_hook })),
+        Ok(db) => {
+            db.set_durability(durability_eventual);
+            Box::into_raw(Box::new(TalaDbHandle { db, sync_hook }))
+        }
         Err(e) => {
             set_last_error(e.to_string());
             std::ptr::null_mut()
@@ -782,6 +787,23 @@ pub unsafe extern "C" fn taladb_set_user_version(handle: *mut TalaDbHandle, vers
         None => return -1,
     };
     match h.db.set_user_version(version) {
+        Ok(()) => 0,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+/// Force any batched (eventual-durability) writes to disk. Returns 0 on
+/// success, -1 on error. No-op under the default immediate durability.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_flush(handle: *mut TalaDbHandle) -> i32 {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return -1,
+    };
+    match h.db.flush() {
         Ok(()) => 0,
         Err(e) => {
             set_last_error(e.to_string());

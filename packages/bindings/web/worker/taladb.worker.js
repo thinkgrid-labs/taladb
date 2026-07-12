@@ -258,7 +258,9 @@ async function idbSaveSnapshot(dbName, bytes) {
  * per document.  A max-interval cap ensures data is never more than 5 s stale
  * in IDB even under continuous write load.
  */
-const SNAPSHOT_DEBOUNCE_MS = 500;
+/** IDB snapshot debounce, in ms. Overridable via config `durability.flush_ms`
+ * at init (the OPFS/redb path uses `durability.flush_every_write` instead). */
+let snapshotDebounceMs = 500;
 const SNAPSHOT_MAX_INTERVAL_MS = 5000;
 
 /** setTimeout handle for the pending debounced flush. */
@@ -295,7 +297,23 @@ function scheduleSnapshot() {
     return;
   }
   clearTimeout(snapshotTimer);
-  snapshotTimer = setTimeout(() => { flushSnapshot().catch(() => {}); }, SNAPSHOT_DEBOUNCE_MS);
+  snapshotTimer = setTimeout(() => { flushSnapshot().catch(() => {}); }, snapshotDebounceMs);
+}
+
+/** Apply `durability` config to a freshly-opened WorkerDB instance: OPFS/redb
+ * durability from `flush_every_write`, and the IDB-fallback debounce from
+ * `flush_ms`. Returns the instance for chaining. */
+function applyDurability(inst) {
+  let flushEveryWrite = true;
+  try {
+    const d = activeConfigJson ? JSON.parse(activeConfigJson)?.durability : null;
+    if (d) {
+      if (typeof d.flush_every_write === 'boolean') flushEveryWrite = d.flush_every_write;
+      if (typeof d.flush_ms === 'number' && d.flush_ms >= 0) snapshotDebounceMs = d.flush_ms;
+    }
+  } catch { /* ignore malformed config */ }
+  inst?.setDurability?.(!flushEveryWrite); // feature-detect (older WASM lacks it)
+  return inst;
 }
 
 /**
@@ -514,6 +532,13 @@ async function dispatch(op, args) {
       db.compact();
       return null;
 
+    case 'flush':
+      // "Save now": force batched OPFS writes durable (no-op under immediate
+      // durability) and write the IDB fallback snapshot immediately.
+      db.flush?.();
+      await flushSnapshot();
+      return null;
+
     case 'syncStatus':
       return db.syncStatus();
 
@@ -681,15 +706,19 @@ async function doInit(dbName, configJson, passphrase = null) {
   // Uses the config-aware constructors when configJson is provided so that
   // HTTP push sync is wired up from the first write.
   function openWithSnapshot(snapshot) {
-    if (configJson) return WorkerDB.openWithConfigAndSnapshot(snapshot, configJson);
-    return WorkerDB.openWithSnapshot(snapshot);
+    const inst = configJson
+      ? WorkerDB.openWithConfigAndSnapshot(snapshot, configJson)
+      : WorkerDB.openWithSnapshot(snapshot);
+    return applyDurability(inst);
   }
   // Salt for key derivation, loaded/created in an OPFS sidecar (encrypted mode
   // only). Passed to the WASM open so the derived key is stable across opens.
   let salt = null;
   function openWithOpfs(syncHandle) {
     // openWithConfigAndOpfs(handle, configJson, passphrase?, salt?)
-    return WorkerDB.openWithConfigAndOpfs(syncHandle, configJson ?? null, passphrase, salt);
+    return applyDurability(
+      WorkerDB.openWithConfigAndOpfs(syncHandle, configJson ?? null, passphrase, salt),
+    );
   }
 
   const opfsAvailable = await checkOpfs();

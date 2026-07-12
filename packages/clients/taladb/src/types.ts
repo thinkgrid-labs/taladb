@@ -494,6 +494,13 @@ export interface TalaDB {
    * without support.
    */
   quarantined?<T extends Document = Document>(collection: string): Promise<QuarantinedDocument<T>[]>;
+  /**
+   * Force any batched (eventual-durability) writes to durable storage, and on
+   * the browser also write the IndexedDB fallback snapshot immediately. A
+   * no-op under the default `flush_every_write: true` durability. Use for
+   * "save now" moments (before checkout, on `visibilitychange`).
+   */
+  flush?(): Promise<void>;
   /** Browser HTTP-push queue health, when supported by the active binding. */
   syncStatus?(): Promise<{ pending: number; dropped: number; failed: number }>;
   /** Wait for accepted browser HTTP-push events, returning false on timeout. */

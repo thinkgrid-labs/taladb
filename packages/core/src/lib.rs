@@ -20,7 +20,7 @@ pub mod watch;
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
 pub use audit::{AuditEntry, AuditOp, read_audit_log, read_audit_log_since};
 pub use collection::{Collection, CollectionIndexInfo, Update};
-pub use config::{SyncConfig, TalaDbConfig, load_auto, load_from_path};
+pub use config::{DurabilityConfig, SyncConfig, TalaDbConfig, load_auto, load_from_path};
 pub use crdt::{
     CRDT_CLOCKS_FIELD, CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock,
     FieldMutation,
@@ -194,6 +194,20 @@ impl Database {
     /// `Collection` handle.
     pub fn backend(&self) -> &dyn StorageBackend {
         self.backend.as_ref()
+    }
+
+    /// Set write durability. `eventual = false` (default) fsyncs every commit;
+    /// `true` batches commits (higher write throughput) and requires
+    /// [`flush`](Self::flush) to force a durable sync. Maps to a
+    /// [`DurabilityConfig`]'s `flush_every_write` (`eventual = !flush_every_write`).
+    pub fn set_durability(&self, eventual: bool) {
+        self.backend.set_durability(eventual);
+    }
+
+    /// Force any batched (eventual) writes to durable storage. A no-op when
+    /// committing immediately or on in-memory backends.
+    pub fn flush(&self) -> Result<(), TalaDbError> {
+        self.backend.flush()
     }
 
     /// Get a collection handle by name.

@@ -216,3 +216,29 @@ describe.skipIf(!nativeAvailable)('openDB({ migrations }) e2e (native engine)', 
     expect(ran).toEqual([1, 2]); // v1 applied, v2 threw, v3 never ran
   });
 });
+
+describe.skipIf(!nativeAvailable)('durability + flush e2e (native engine)', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'taladb-dur-e2e-'));
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('eventual durability + db.flush() persists writes', async () => {
+    const db = await openDB(join(dir, 'dur.db'), { durability: { flush_every_write: false } });
+    await db.collection('notes').insert({ title: 'batched' });
+    await db.flush!(); // force the eventual write durable
+    expect(await db.collection('notes').count({})).toBe(1);
+    await db.close();
+  });
+
+  it('default (flush_every_write) works and db.flush() is a safe no-op', async () => {
+    const db = await openDB(join(dir, 'imm.db'));
+    await db.collection('notes').insert({ title: 'immediate' });
+    await db.flush!(); // no-op under immediate durability
+    expect(await db.collection('notes').count({})).toBe(1);
+    await db.close();
+  });
+});

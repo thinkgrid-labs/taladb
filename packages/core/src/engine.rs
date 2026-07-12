@@ -1,8 +1,9 @@
 use std::ops::Bound;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use redb::{Database, ReadableTable, TableDefinition, TableHandle};
+use redb::{Database, Durability, ReadableTable, TableDefinition, TableHandle};
 
 use crate::error::TalaDbError;
 
@@ -19,6 +20,15 @@ pub trait StorageBackend: Send + Sync {
     /// Compact the underlying storage, reclaiming space from deleted/updated
     /// records. No-op on backends that manage compaction automatically.
     fn compact(&self) -> Result<(), TalaDbError> {
+        Ok(())
+    }
+    /// Set write durability. `eventual = false` (default) fsyncs every commit;
+    /// `true` batches commits for throughput, requiring [`flush`](Self::flush)
+    /// to force a durable sync. No-op on backends without a durability knob.
+    fn set_durability(&self, _eventual: bool) {}
+    /// Force any batched (eventual) commits to durable storage. No-op on
+    /// in-memory backends and when already committing immediately.
+    fn flush(&self) -> Result<(), TalaDbError> {
         Ok(())
     }
 }
@@ -62,6 +72,10 @@ pub struct RedbBackend {
     // begin_write/begin_read return owned transactions so the lock is held
     // only for the duration of the call, not across the transaction lifetime.
     db: Arc<Mutex<Database>>,
+    /// When true, write transactions commit with `Durability::Eventual`
+    /// (batched fsync) instead of the default `Immediate`. Toggled by
+    /// [`set_durability`](StorageBackend::set_durability).
+    eventual: AtomicBool,
 }
 
 impl RedbBackend {
@@ -69,6 +83,7 @@ impl RedbBackend {
         let db = Database::create(path)?;
         Ok(RedbBackend {
             db: Arc::new(Mutex::new(db)),
+            eventual: AtomicBool::new(false),
         })
     }
 
@@ -76,6 +91,7 @@ impl RedbBackend {
         let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
         Ok(RedbBackend {
             db: Arc::new(Mutex::new(db)),
+            eventual: AtomicBool::new(false),
         })
     }
 
@@ -86,17 +102,23 @@ impl RedbBackend {
         let db = Database::builder().create_with_backend(backend)?;
         Ok(RedbBackend {
             db: Arc::new(Mutex::new(db)),
+            eventual: AtomicBool::new(false),
         })
     }
 }
 
 impl StorageBackend for RedbBackend {
     fn begin_write(&self) -> Result<Box<dyn WriteTxn + '_>, TalaDbError> {
-        let txn = self
+        let mut txn = self
             .db
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .begin_write()?;
+        txn.set_durability(if self.eventual.load(Ordering::Relaxed) {
+            Durability::Eventual
+        } else {
+            Durability::Immediate
+        });
         Ok(Box::new(RedbWriteTxn { txn }))
     }
 
@@ -115,6 +137,24 @@ impl StorageBackend for RedbBackend {
             .unwrap_or_else(|p| p.into_inner())
             .compact()
             .map_err(|e| TalaDbError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn set_durability(&self, eventual: bool) {
+        self.eventual.store(eventual, Ordering::Relaxed);
+    }
+
+    fn flush(&self) -> Result<(), TalaDbError> {
+        // An empty commit with Immediate durability fsyncs the file, persisting
+        // any prior Eventual commits. No-op cost when already committing
+        // immediately (the data is already durable).
+        let mut txn = self
+            .db
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .begin_write()?;
+        txn.set_durability(Durability::Immediate);
+        txn.commit()?;
         Ok(())
     }
 }

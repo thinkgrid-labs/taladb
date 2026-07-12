@@ -205,6 +205,12 @@ char *taladb_quarantined(TalaDbHandle *handle, const char *collection);
 int64_t taladb_user_version(TalaDbHandle *handle);
 int32_t taladb_set_user_version(TalaDbHandle *handle, uint32_t version);
 
+/**
+ * Force any batched (eventual-durability) writes to disk. Returns 0 on success,
+ * -1 on error. No-op under the default immediate durability. Backs db.flush().
+ */
+int32_t taladb_flush(TalaDbHandle *handle);
+
 /* -------------------------------------------------------------------------
  * Index management
  * ---------------------------------------------------------------------- */

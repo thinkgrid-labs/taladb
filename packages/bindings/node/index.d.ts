@@ -17,6 +17,11 @@ export declare class TalaDbNode {
    */
   static open(path: string, configJson?: string | undefined | null, passphrase?: string | undefined | null): TalaDbNode
   /**
+   * Force any batched (eventual-durability) writes to disk. No-op under the
+   * default immediate durability. Backs `db.flush()`.
+   */
+  flush(): void
+  /**
    * Compact the underlying storage file, reclaiming space freed by deletes
    * and updates. Call during idle periods after large bulk deletes or
    * tombstone compaction. Returns the number of bytes reclaimed (may be 0).

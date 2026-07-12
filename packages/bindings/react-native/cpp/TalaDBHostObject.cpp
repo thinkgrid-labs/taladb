@@ -249,6 +249,7 @@ std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
         "exportChanges", "importChanges", "listCollectionNames",
         "importChangesValidated", "quarantined",
         "userVersion", "setUserVersion",
+        "flush",
         "createIndex", "dropIndex",
         "createCompoundIndex", "dropCompoundIndex",
         "createFtsIndex", "dropFtsIndex",
@@ -548,6 +549,15 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 uint32_t version = static_cast<uint32_t>(args[0].getNumber());
                 if (taladb_set_user_version(db_, version) < 0)
                     throw JSError(rt, "taladb_set_user_version failed");
+                return Value::undefined();
+            });
+    }
+
+    if (name == "flush") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "flush"), 0,
+            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                if (taladb_flush(db_) < 0) throw JSError(rt, "taladb_flush failed");
                 return Value::undefined();
             });
     }
