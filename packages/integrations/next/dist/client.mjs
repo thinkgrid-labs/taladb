@@ -16,26 +16,38 @@ function SyncProvider({
   const db = useTalaDB();
   const latest = useRef({ headers, options, onSync, onError });
   latest.current = { headers, options, onSync, onError };
+  const activePass = useRef(null);
   useEffect(() => {
     let stopped = false;
-    let inFlight = false;
+    let waitingForActive = false;
     const sync = async () => {
-      if (stopped || inFlight) return;
-      inFlight = true;
-      try {
-        const { HttpSyncAdapter } = await import("taladb");
-        const h = latest.current.headers;
-        const adapter = new HttpSyncAdapter({
-          endpoint,
-          headers: typeof h === "function" ? h() : h
-        });
-        const result = await db.sync(adapter, latest.current.options ?? {});
-        if (!stopped) latest.current.onSync?.(result);
-      } catch (e) {
-        if (!stopped) latest.current.onError?.(e);
-      } finally {
-        inFlight = false;
+      if (stopped) return;
+      if (activePass.current) {
+        if (waitingForActive) return;
+        waitingForActive = true;
+        await activePass.current;
+        waitingForActive = false;
+        if (!stopped) void sync();
+        return;
       }
+      const pass = Promise.resolve().then(async () => {
+        try {
+          const { HttpSyncAdapter } = await import("taladb");
+          const h = latest.current.headers;
+          const adapter = new HttpSyncAdapter({
+            endpoint,
+            headers: typeof h === "function" ? h() : h
+          });
+          const result = await db.sync(adapter, latest.current.options ?? {});
+          if (!stopped) latest.current.onSync?.(result);
+        } catch (e) {
+          if (!stopped) latest.current.onError?.(e);
+        }
+      });
+      activePass.current = pass;
+      await pass.finally(() => {
+        if (activePass.current === pass) activePass.current = null;
+      });
     };
     void sync();
     const tick = intervalMs > 0 ? setInterval(sync, intervalMs) : void 0;

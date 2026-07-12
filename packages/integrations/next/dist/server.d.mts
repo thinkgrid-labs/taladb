@@ -24,6 +24,10 @@ interface SyncStore {
 }
 interface CreateSyncHandlersOptions {
     store: SyncStore;
+    /** Maximum accepted push body size in bytes. Default 1 MiB. */
+    maxBodyBytes?: number;
+    /** Maximum records accepted in one push. Default 10,000. */
+    maxRecords?: number;
     /**
      * Identify and authorize the caller, returning a scope key (e.g. the user
      * id) — this is your security boundary. Return `null`/`undefined` to reject
@@ -72,9 +76,9 @@ declare function memorySyncStore(): SyncStore;
  * export const { POST, GET } = createSyncHandlers({ store: taladbSyncStore(serverDb) })
  * ```
  *
- * One document per synced client document per scope, holding the latest
- * change (LWW) — the same layout as `@taladb/sync-mongodb`, so any number of
- * clients converge through it.
+ * Stores the greatest timestamp per synced document and preserves distinct
+ * equal-timestamp candidates so TalaDB core can apply its exact deterministic
+ * tie-break when clients import them.
  */
 declare function taladbSyncStore(db: TalaDB, collectionName?: string): SyncStore;
 

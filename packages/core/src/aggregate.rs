@@ -39,7 +39,7 @@ use std::collections::HashMap;
 
 use crate::document::{Document, Value};
 use crate::error::TalaDbError;
-use crate::query::options::{SortSpec, sort_documents};
+use crate::query::options::{SortSpec, partial_sort_documents, sort_documents};
 
 // ---------------------------------------------------------------------------
 // Pipeline types
@@ -95,10 +95,20 @@ pub enum Stage {
     Skip(u64),
     /// Keep only the first N documents.
     Limit(u64),
-    /// Keep only the listed fields (plus `_id` for Group results).
-    Project(Vec<String>),
-    /// Inclusion projection with the logical `_id` explicitly excluded.
-    ProjectExcludeId(Vec<String>),
+    /// Reshape each document by keeping or dropping fields.
+    ///
+    /// MongoDB semantics: a projection is either an **inclusion** (`{a: 1}` —
+    /// keep only the listed fields) or an **exclusion** (`{a: 0}` — keep
+    /// everything *except* the listed fields). The two cannot be mixed, with the
+    /// one exception that `_id` may be excluded alongside an inclusion
+    /// (`{a: 1, _id: 0}`).
+    Project {
+        fields: Vec<String>,
+        /// `true` → keep only `fields`. `false` → drop `fields`, keep the rest.
+        include: bool,
+        /// Whether the `_id` key survives (only ever present on `$group` output).
+        keep_id: bool,
+    },
 }
 
 /// A pipeline is an ordered list of stages.
@@ -153,12 +163,12 @@ pub fn parse_pipeline(
                 as_u64(body).ok_or_else(|| format!("pipeline[{i}] $limit must be a u64"))?,
             ),
             "$project" => {
-                let (fields, include_id) =
+                let (fields, include, keep_id) =
                     parse_project(body).map_err(|e| format!("pipeline[{i}] $project: {e}"))?;
-                if include_id {
-                    Stage::Project(fields)
-                } else {
-                    Stage::ProjectExcludeId(fields)
+                Stage::Project {
+                    fields,
+                    include,
+                    keep_id,
                 }
             }
             other => return Err(format!("pipeline[{i}]: unsupported stage '{other}'")),
@@ -264,39 +274,137 @@ fn parse_sort(body: &Json) -> Result<Vec<SortSpec>, String> {
     Ok(specs)
 }
 
-/// `{ field: 1, ... }` — keep the listed fields (value must be truthy/1).
-fn parse_project(body: &Json) -> Result<(Vec<String>, bool), String> {
+/// Parse a `$project` body into `(fields, include, keep_id)`.
+///
+/// Inclusion (`{a: 1}`) keeps only the listed fields; exclusion (`{a: 0}`) drops
+/// them and keeps the rest. Mixing the two is rejected rather than silently
+/// resolved — previously an all-zero body parsed to an empty *inclusion* list,
+/// which returned documents stripped of every field but `_id` with no error.
+/// `_id: 0` is the one exclusion allowed to accompany an inclusion.
+///
+/// Values are booleans or numbers, read for truthiness as MongoDB reads them:
+/// zero excludes, every other number includes. Truthiness is evaluated on the
+/// number itself, *not* on a cast to `i64` — a cast silently floors `0.5` to `0`
+/// and flips it from inclusion to exclusion, which then trips the mixing check
+/// in `{a: 0.5, b: 1}` and errors out on a body that names no exclusion at all.
+fn parse_project(body: &Json) -> Result<(Vec<String>, bool, bool), String> {
     let obj = body.as_object().ok_or("$project must be an object")?;
-    let mut fields = Vec::new();
-    let mut include_id = true;
-    for (field, keep) in obj {
-        let included = matches!(keep, Json::Number(n) if n.as_i64() != Some(0))
-            || matches!(keep, Json::Bool(true));
-        if included {
-            fields.push(field.clone());
-        } else if field == "_id" {
-            include_id = false;
-        } else if !matches!(keep, Json::Number(_) | Json::Bool(false)) {
-            return Err(format!("$project value for '{field}' must be 0 or 1"));
+    if obj.is_empty() {
+        return Err("$project must name at least one field".into());
+    }
+
+    let mut included = Vec::new();
+    let mut excluded = Vec::new();
+    let mut keep_id = true;
+
+    for (field, spec) in obj {
+        let keep = match spec {
+            Json::Bool(b) => *b,
+            Json::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
+            _ => {
+                return Err(format!(
+                    "$project value for '{field}' must be a number or boolean"
+                ));
+            }
+        };
+        if field == "_id" {
+            keep_id = keep;
+            // `_id` participates in neither list: it is controlled by `keep_id`
+            // alone, so `{a: 1, _id: 0}` stays a pure inclusion.
+            continue;
+        }
+        if keep {
+            included.push(field.clone());
+        } else {
+            excluded.push(field.clone());
         }
     }
-    Ok((fields, include_id))
+
+    match (included.is_empty(), excluded.is_empty()) {
+        (false, false) => Err(format!(
+            "$project cannot mix inclusion ({}) and exclusion ({}) — \
+             use one or the other (`_id: 0` is the sole exception)",
+            included.join(", "),
+            excluded.join(", "),
+        )),
+        // Pure exclusion, e.g. `{description: 0}`.
+        (true, false) => Ok((excluded, false, keep_id)),
+        // Pure inclusion, e.g. `{name: 1}`.
+        (false, true) => Ok((included, true, keep_id)),
+        // Only `_id` was named. `{_id: 0}` = drop `_id`, keep everything else;
+        // `{_id: 1}` = keep only `_id`.
+        (true, true) => Ok((Vec::new(), keep_id, keep_id)),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Execution
 // ---------------------------------------------------------------------------
 
+/// How many of a sorted stream's leading documents can actually be reached by
+/// the `$skip`/`$limit` stages that immediately follow a `$sort`.
+///
+/// Tracks the surviving window `[start, end)` over the sorted list. `$skip(s)`
+/// shifts the window forward; `$limit(l)` caps it. `end` is the answer: nothing
+/// past it can ever be observed, so the sort never needs to order it.
+///
+/// Returns `None` when the reachable set is unbounded (no `$limit`), or when a
+/// stage that changes the document set (`$match`, `$group`) intervenes — in
+/// which case we must sort everything, as before.
+pub(crate) fn reachable_after_sort(rest: &[Stage]) -> Option<usize> {
+    let mut start: usize = 0;
+    let mut end: Option<usize> = None; // None = unbounded
+
+    for stage in rest {
+        match stage {
+            Stage::Skip(n) => {
+                let n = *n as usize;
+                start = start.saturating_add(n);
+                if let Some(e) = end {
+                    end = Some(e.saturating_add(n));
+                }
+            }
+            Stage::Limit(n) => {
+                let cap = start.saturating_add(*n as usize);
+                end = Some(end.map_or(cap, |e| e.min(cap)));
+            }
+            // `$project` reshapes documents but preserves both their count and
+            // their order, so it cannot bring more of the sorted list into view.
+            Stage::Project { .. } => continue,
+            // Anything else changes the document set; stop reasoning here.
+            _ => break,
+        }
+    }
+    end
+}
+
 /// Execute a pipeline starting from `input` documents.
 ///
 /// `input` is the full collection scan (or index-filtered results from the
 /// first `$match` stage — handled by `Collection::aggregate`).
+///
+/// A `$sort` followed by a bounded `$skip`/`$limit` run is executed as a
+/// **bounded** sort: only the `skip + limit` documents that can actually be
+/// returned are ordered (O(n + k log k)), instead of ordering the whole matched
+/// set and then throwing nearly all of it away (O(n log n)). Paging a 10k
+/// catalog for 24 rows no longer pays to sort 10k.
 pub fn execute_pipeline(
     mut docs: Vec<Document>,
     pipeline: &[Stage],
 ) -> Result<Vec<Document>, TalaDbError> {
-    for stage in pipeline {
-        docs = apply_stage(docs, stage)?;
+    let mut i = 0;
+    while i < pipeline.len() {
+        if let Stage::Sort(specs) = &pipeline[i]
+            && let Some(keep) = reachable_after_sort(&pipeline[i + 1..])
+        {
+            // The trailing $skip/$limit stages still run below; this only
+            // discards the tail that provably cannot be reached.
+            partial_sort_documents(&mut docs, specs, keep);
+            i += 1;
+            continue;
+        }
+        docs = apply_stage(docs, &pipeline[i])?;
+        i += 1;
     }
     Ok(docs)
 }
@@ -324,18 +432,22 @@ fn apply_stage(docs: Vec<Document>, stage: &Stage) -> Result<Vec<Document>, Tala
 
         Stage::Limit(n) => Ok(docs.into_iter().take(*n as usize).collect()),
 
-        Stage::Project(fields) => Ok(docs
+        Stage::Project {
+            fields,
+            include,
+            keep_id,
+        } => Ok(docs
             .into_iter()
             .map(|mut d| {
-                d.fields
-                    .retain(|(k, _)| k == "_id" || fields.iter().any(|f| f == k));
-                d
-            })
-            .collect()),
-        Stage::ProjectExcludeId(fields) => Ok(docs
-            .into_iter()
-            .map(|mut d| {
-                d.fields.retain(|(k, _)| fields.iter().any(|f| f == k));
+                d.fields.retain(|(k, _)| {
+                    if k == "_id" {
+                        // `_id` is governed solely by `keep_id`, in both modes.
+                        return *keep_id;
+                    }
+                    let named = fields.iter().any(|f| f == k);
+                    // Inclusion keeps what is named; exclusion keeps what is not.
+                    if *include { named } else { !named }
+                });
                 d
             })
             .collect()),
@@ -582,7 +694,7 @@ mod parse_tests {
     #[test]
     fn project_can_explicitly_exclude_group_id() {
         let pl = parse(r#"[{"$project":{"_id":0,"total":1}}]"#).unwrap();
-        assert!(matches!(&pl[0], Stage::ProjectExcludeId(f) if f == &vec!["total".to_string()]));
+        assert!(matches!(&pl[0], Stage::Project { fields, include: true, keep_id: false } if fields == &vec!["total".to_string()]));
     }
 
     #[test]
@@ -635,7 +747,7 @@ mod parse_tests {
                 ..
             }
         ));
-        assert!(matches!(&pl[1], Stage::Project(f) if f == &vec!["total".to_string()]));
+        assert!(matches!(&pl[1], Stage::Project { fields, include: true, keep_id: true } if fields == &vec!["total".to_string()]));
     }
 
     #[test]

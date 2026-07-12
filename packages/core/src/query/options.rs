@@ -1,5 +1,7 @@
 //! Query options — sort, pagination, and projection for `find_with_options`.
 
+use std::cmp::Ordering;
+
 use crate::document::{Document, Value};
 
 // ---------------------------------------------------------------------------
@@ -118,63 +120,105 @@ pub(crate) fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
-/// Multi-key comparator that follows the `sort` spec list.
-fn cmp_by_spec(a: &Document, b: &Document, sort: &[SortSpec]) -> std::cmp::Ordering {
-    for spec in sort {
-        let av = a.get(&spec.field);
-        let bv = b.get(&spec.field);
-        let ord = match (av, bv) {
+/// One document's sort keys, lifted out ahead of the sort.
+///
+/// Sorting `Document`s directly is deceptively expensive: every comparison
+/// re-resolves each sort field by scanning the document's field list and
+/// comparing key strings, and every swap moves the whole struct. Both costs are
+/// paid O(n log n) times. Extracting the keys once (decorate-sort-undecorate)
+/// turns each comparison into a couple of `Value` compares over a small, cheap
+/// row, and the sort then shuffles these rows instead of the documents.
+struct KeyRow {
+    /// Values of the sort fields, in spec order. `None` = field absent.
+    keys: Vec<Option<Value>>,
+    /// Tiebreaker, so the ordering is total (see `cmp_rows`).
+    id: ulid::Ulid,
+    /// Position of the source document in the input vector.
+    idx: usize,
+}
+
+fn key_rows(docs: &[Document], sort: &[SortSpec]) -> Vec<KeyRow> {
+    docs.iter()
+        .enumerate()
+        .map(|(idx, d)| KeyRow {
+            keys: sort.iter().map(|s| d.get(&s.field).cloned()).collect(),
+            id: d.id,
+            idx,
+        })
+        .collect()
+}
+
+/// Total order over pre-extracted keys. Mirrors `cmp_by_spec`, including the
+/// `_id` tiebreak that makes a bounded sort agree with a full one.
+fn cmp_rows(a: &KeyRow, b: &KeyRow, sort: &[SortSpec]) -> Ordering {
+    for (i, spec) in sort.iter().enumerate() {
+        let ord = match (&a.keys[i], &b.keys[i]) {
             (Some(x), Some(y)) => cmp_values(x, y),
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
         };
         let ord = if spec.direction == SortDirection::Desc {
             ord.reverse()
         } else {
             ord
         };
-        if ord != std::cmp::Ordering::Equal {
+        if ord != Ordering::Equal {
             return ord;
         }
     }
-    std::cmp::Ordering::Equal
+    a.id.cmp(&b.id)
 }
 
-/// Sort `docs` in-place according to the given `sort` specs.
-pub fn sort_documents(docs: &mut [Document], sort: &[SortSpec]) {
-    if sort.is_empty() {
+/// Rebuild `docs` in the order given by `rows`, moving (never cloning) each
+/// document into its new slot.
+fn gather(docs: &mut Vec<Document>, rows: &[KeyRow]) {
+    let mut slots: Vec<Option<Document>> = std::mem::take(docs).into_iter().map(Some).collect();
+    *docs = rows
+        .iter()
+        .map(|r| slots[r.idx].take().expect("each index is visited once"))
+        .collect();
+}
+
+pub fn sort_documents(docs: &mut Vec<Document>, sort: &[SortSpec]) {
+    if sort.is_empty() || docs.len() < 2 {
         return;
     }
-    docs.sort_by(|a, b| cmp_by_spec(a, b, sort));
+    let mut rows = key_rows(docs, sort);
+    rows.sort_by(|a, b| cmp_rows(a, b, sort));
+    gather(docs, &rows);
 }
 
 /// Sort only the first `keep` documents — the rest are discarded.
 ///
-/// Complexity: O(n + k log k) where n = docs.len() and k = keep. Use when
-/// the caller only needs the smallest/first `keep` documents (e.g. `find`
-/// with sort + limit), instead of paying for a full O(n log n) sort.
+/// Complexity: O(n + k log k) rather than O(n log n), where n = docs.len() and
+/// k = keep. Use when the caller can only ever observe the leading `keep`
+/// documents (`find` with sort + limit; `$sort` followed by `$skip`/`$limit`),
+/// instead of ordering the whole set and throwing nearly all of it away.
 ///
-/// Returns with `docs.len() == min(keep, docs.len())` and the first `keep`
-/// elements sorted according to `sort`.
+/// Because `cmp_rows` is a **total** order (ties broken on the unique `_id`),
+/// the result is exactly the first `keep` documents of a full sort — so paging
+/// with a growing `keep` stays consistent and never repeats or drops a document.
+///
+/// Returns with `docs.len() == min(keep, docs.len())`.
 pub fn partial_sort_documents(docs: &mut Vec<Document>, sort: &[SortSpec], keep: usize) {
-    if sort.is_empty() {
-        docs.truncate(keep);
-        return;
-    }
-    if keep >= docs.len() {
-        docs.sort_by(|a, b| cmp_by_spec(a, b, sort));
-        return;
-    }
     if keep == 0 {
         docs.clear();
         return;
     }
-    // Partition so the first `keep` slots contain the `keep` smallest docs
-    // (in arbitrary order), then sort just those.
-    docs.select_nth_unstable_by(keep - 1, |a, b| cmp_by_spec(a, b, sort));
-    docs.truncate(keep);
-    docs.sort_by(|a, b| cmp_by_spec(a, b, sort));
+    if sort.is_empty() {
+        docs.truncate(keep);
+        return;
+    }
+    let mut rows = key_rows(docs, sort);
+    if keep < rows.len() {
+        // Partition so the first `keep` rows are the `keep` smallest (in
+        // arbitrary order among themselves), discard the rest, then order those.
+        rows.select_nth_unstable_by(keep - 1, |a, b| cmp_rows(a, b, sort));
+        rows.truncate(keep);
+    }
+    rows.sort_by(|a, b| cmp_rows(a, b, sort));
+    gather(docs, &rows);
 }
 
 // ---------------------------------------------------------------------------

@@ -59,22 +59,35 @@ export type Document = { _id?: string; [key: string]: Value | undefined };
 
 // --------------- Filter DSL ---------------
 
-type FieldOps<T> = T extends null | undefined
-  ? { $exists?: boolean }
-  : {
-      $eq?: T;
-      $ne?: T;
-      $gt?: T;
-      $gte?: T;
-      $lt?: T;
-      $lte?: T;
-      $in?: T[];
-      $nin?: T[];
-      $exists?: boolean;
-      /** Full-text search: matches documents where this string field contains the given token. */
+/**
+ * The operators available on a single field.
+ *
+ * Deliberately **not** a conditional type. `T extends null | undefined ? … : …`
+ * is *distributive*, so for a union-typed field (`type: 'Cabin' | 'Villa' | …`)
+ * it spreads over every member and infers `$in?: 'Cabin'[] | 'Villa'[] | …`
+ * instead of `$in?: ('Cabin' | 'Villa' | …)[]` — making `$in` unusable on any
+ * union field without a cast.
+ *
+ * Tuple-wrapping the check (`[T] extends [null | undefined]`) stops the
+ * distribution but then strips `$exists` from optional fields, which is the one
+ * thing the conditional existed for. So there is no conditional at all: `$exists`
+ * is always available (it is meaningful on every field), and the value operators
+ * use `NonNullable<T>` so an optional field still compares against its real type.
+ */
+type FieldOps<T> = {
+  $eq?: NonNullable<T>;
+  $ne?: NonNullable<T>;
+  $gt?: NonNullable<T>;
+  $gte?: NonNullable<T>;
+  $lt?: NonNullable<T>;
+  $lte?: NonNullable<T>;
+  $in?: NonNullable<T>[];
+  $nin?: NonNullable<T>[];
+  $exists?: boolean;
+  /** Full-text search: matches documents where this string field contains the given token. */
   $contains?: string;
   $regex?: string;
-    };
+};
 
 export type Filter<T extends Document = Document> = {
   [K in keyof T]?: T[K] | FieldOps<T[K]>;
@@ -244,6 +257,12 @@ export type AggregateStage<T extends Document = Document> =
   | { $sort: Record<string, 1 | -1> }
   | { $skip: number }
   | { $limit: number }
+  /**
+   * Reshape each document. Either an **inclusion** (`{ name: 1, city: 1 }` —
+   * keep only these) or an **exclusion** (`{ description: 0 }` — keep everything
+   * else). The two cannot be mixed and doing so throws; `_id: 0` is the one
+   * exclusion allowed alongside an inclusion.
+   */
   | { $project: Record<string, 0 | 1> };
 
 /** An ordered aggregation pipeline. */

@@ -1,5 +1,5 @@
-export { TalaDBProvider, useTalaDB } from './context'
-export type { TalaDBProviderProps } from './context'
+export { TalaDBProvider, useTalaDB, useCollectionOptions } from './context'
+export type { TalaDBProviderProps, CollectionRegistry, CollectionResolver } from './context'
 
 export { useCollection } from './useCollection'
 

@@ -34,6 +34,7 @@ __export(index_exports, {
   ReplicationProvider: () => ReplicationProvider,
   TalaDBProvider: () => TalaDBProvider,
   useCollection: () => useCollection,
+  useCollectionOptions: () => useCollectionOptions,
   useFind: () => useFind,
   useFindOne: () => useFindOne,
   useMutation: () => useMutation,
@@ -48,9 +49,29 @@ module.exports = __toCommonJS(index_exports);
 var import_react = require("react");
 var import_jsx_runtime = require("react/jsx-runtime");
 var TalaDBContext = (0, import_react.createContext)(null);
+var CollectionOptionsContext = (0, import_react.createContext)({
+  get: () => void 0
+});
+function useCollectionOptions() {
+  return (0, import_react.useContext)(CollectionOptionsContext);
+}
+function CollectionOptionsProvider({
+  collections,
+  children
+}) {
+  const latest = (0, import_react.useRef)(collections);
+  latest.current = collections;
+  const resolver = (0, import_react.useMemo)(
+    () => ({
+      get: (name) => latest.current?.[name]
+    }),
+    []
+  );
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CollectionOptionsContext.Provider, { value: resolver, children });
+}
 function TalaDBProvider(props) {
   if ("db" in props && props.db) {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TalaDBContext.Provider, { value: props.db, children: props.children });
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TalaDBContext.Provider, { value: props.db, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CollectionOptionsProvider, { collections: props.collections, children: props.children }) });
   }
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(NamedProvider, { ...props });
 }
@@ -58,6 +79,7 @@ function NamedProvider({
   name,
   options,
   fallback = null,
+  collections,
   children
 }) {
   const [db, setDb] = (0, import_react.useState)(null);
@@ -85,7 +107,7 @@ function NamedProvider({
   }, [name, optionsKey]);
   if (error !== null) throw error;
   if (db === null) return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_jsx_runtime.Fragment, { children: fallback });
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TalaDBContext.Provider, { value: db, children });
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TalaDBContext.Provider, { value: db, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CollectionOptionsProvider, { collections, children }) });
 }
 function useTalaDB() {
   const db = (0, import_react.useContext)(TalaDBContext);
@@ -97,9 +119,15 @@ function useTalaDB() {
 
 // src/useCollection.ts
 var import_react2 = require("react");
-function useCollection(name) {
+function useCollection(name, options) {
   const db = useTalaDB();
-  return (0, import_react2.useMemo)(() => db.collection(name), [db, name]);
+  const registry = useCollectionOptions();
+  const explicit = (0, import_react2.useRef)(options);
+  explicit.current = options;
+  return (0, import_react2.useMemo)(
+    () => db.collection(name, explicit.current ?? registry.get(name)),
+    [db, name, registry]
+  );
 }
 
 // src/useFind.ts
@@ -541,6 +569,7 @@ function useMutation(options) {
   ReplicationProvider,
   TalaDBProvider,
   useCollection,
+  useCollectionOptions,
   useFind,
   useFindOne,
   useMutation,

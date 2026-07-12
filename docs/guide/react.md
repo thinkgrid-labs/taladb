@@ -60,6 +60,29 @@ root.render(
 >
 > **Next.js**: the package ships the `'use client'` directive, so importing hooks never trips the RSC boundary — use the name form and see the dedicated [Next.js guide](/guide/nextjs).
 
+### Registering collection options
+
+Hooks resolve their collection by name, so they need to know how that collection is configured. Register each collection's options — `schema`, `syncSchema`, `migrateDocument` — once on the provider:
+
+```tsx
+<TalaDBProvider
+  name="myapp.db"
+  fallback={<Splash />}
+  collections={{
+    bookings: { schema: Booking, syncSchema: { version: 1, required: ['listingId'] } },
+    reviews: { schema: Review, syncSchema: { version: 1 } },
+  }}
+>
+  <App />
+</TalaDBProvider>
+```
+
+Every hook below it — `useCollection`, `useFind`, `useQuery`, `useMutation` — now opens a **configured** collection: a local write hard-fails validation, and the engine stamps the document's `_v` shape version. `useCollection(name, options)` overrides the registry for a single call.
+
+::: warning Changed in 0.9.3
+Before 0.9.3 there was no way to give the hooks these options: `useCollection(name)` called `db.collection(name)` bare, so a write through `useMutation` **silently skipped** the strict `schema` and the `_v` stamp that `db.collection(name, { … })` applies. An app that followed both this guide and the [Schema & Sync Standards](/guide/schema-and-sync-standards) lost local validation without any warning. Register `collections` and that gap is closed.
+:::
+
 ---
 
 ## Quick example
