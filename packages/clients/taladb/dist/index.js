@@ -30,10 +30,21 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/index.ts
 var index_exports = {};
 __export(index_exports, {
+  COVERAGE_COLLECTION: () => COVERAGE_COLLECTION,
+  CoverageStore: () => CoverageStore,
   HttpSyncAdapter: () => HttpSyncAdapter,
+  REPLICA_REVISION_FIELD: () => REPLICA_REVISION_FIELD,
+  REPLICA_SCOPE_FIELD: () => REPLICA_SCOPE_FIELD,
+  ReplicationCoordinator: () => ReplicationCoordinator,
   TalaDbValidationError: () => TalaDbValidationError,
   applySchema: () => applySchema,
+  coverageKey: () => coverageKey,
+  createRestSource: () => createRestSource,
+  deriveDocId: () => deriveDocId,
+  isAuthoritative: () => isAuthoritative,
   openDB: () => openDB,
+  progress: () => progress,
+  rowsApplied: () => rowsApplied,
   runMigrations: () => runMigrations
 });
 module.exports = __toCommonJS(index_exports);
@@ -137,7 +148,11 @@ function unsupportedSync(runtime) {
 }
 async function readCursor(cursorCol, target) {
   const doc = await cursorCol.findOne({ target });
-  return { pushMs: doc?.pushMs ?? 0, pullMs: doc?.pullMs ?? 0 };
+  return {
+    pushMs: doc?.pushMs ?? 0,
+    pullMs: doc?.pullMs ?? 0,
+    pullCursor: doc?.pullCursor
+  };
 }
 async function writeCursor(cursorCol, target, cursor) {
   const updated = await cursorCol.updateOne({ target }, { $set: { ...cursor } });
@@ -145,13 +160,19 @@ async function writeCursor(cursorCol, target, cursor) {
     await cursorCol.insert({ target, ...cursor });
   }
 }
+function isCursorAdapter(adapter) {
+  return typeof adapter.pullWithCursor === "function";
+}
+var MAX_PULL_PAGES = 1e4;
 async function runSync(handle, adapter, options, syncSchemas = {}) {
   const direction = options.direction ?? "both";
   const target = options.target ?? "default";
   const doPush = direction === "push" || direction === "both";
   const doPull = direction === "pull" || direction === "both";
-  if (doPull && !adapter.pull) {
-    throw new Error(`sync direction '${direction}' requires adapter.pull()`);
+  if (doPull && !adapter.pull && !isCursorAdapter(adapter)) {
+    throw new Error(
+      `sync direction '${direction}' requires adapter.pull() or adapter.pullWithCursor()`
+    );
   }
   if (doPush && !adapter.push) {
     throw new Error(`sync direction '${direction}' requires adapter.push()`);
@@ -168,17 +189,35 @@ async function runSync(handle, adapter, options, syncSchemas = {}) {
   let pulled = 0;
   let skipped = 0;
   let quarantined = 0;
+  let pullCursor = cursor.pullCursor;
+  async function importOne(changeset) {
+    if (!changeset || changeset === "[]") return;
+    if (useValidated) {
+      const report = await handle.importChangesValidated(changeset, JSON.stringify(scopedSchemas));
+      pulled += report.applied;
+      skipped += report.skipped;
+      quarantined += report.quarantined;
+    } else {
+      pulled += await handle.importChanges(changeset);
+    }
+  }
   if (doPull) {
-    const remote = await adapter.pull(0);
-    if (remote && remote !== "[]") {
-      if (useValidated) {
-        const report = await handle.importChangesValidated(remote, JSON.stringify(scopedSchemas));
-        pulled = report.applied;
-        skipped = report.skipped;
-        quarantined = report.quarantined;
-      } else {
-        pulled = await handle.importChanges(remote);
+    if (isCursorAdapter(adapter)) {
+      let pages = 0;
+      for (; ; ) {
+        const result = await adapter.pullWithCursor(pullCursor ?? null);
+        await importOne(result.changeset);
+        pullCursor = result.cursor;
+        await writeCursor(cursorCol, target, { ...cursor, pullCursor });
+        if (!result.hasMore) break;
+        if (++pages >= MAX_PULL_PAGES) {
+          throw new Error(
+            `sync: origin returned hasMore after ${MAX_PULL_PAGES} pages for target '${target}' \u2014 it is probably not advancing its cursor.`
+          );
+        }
       }
+    } else {
+      await importOne(await adapter.pull(0));
     }
   }
   let pushed = 0;
@@ -188,7 +227,8 @@ async function runSync(handle, adapter, options, syncSchemas = {}) {
   }
   await writeCursor(cursorCol, target, {
     pushMs: cursor.pushMs,
-    pullMs: cursor.pullMs
+    pullMs: cursor.pullMs,
+    ...pullCursor !== void 0 ? { pullCursor } : {}
   });
   return { pushed, pulled, skipped, quarantined, cursor: 0 };
 }
@@ -228,6 +268,478 @@ var HttpSyncAdapter = class {
     return body.length === 0 ? "[]" : body;
   }
 };
+
+// src/derive-id.ts
+var FNV1A128_OFFSET_BASIS = 0x6c62272e07bb014262b821756295c58dn;
+var FNV1A128_PRIME = 0x0000000001000000000000000000013bn;
+var MASK_128 = (1n << 128n) - 1n;
+var CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+var UTF8 = new TextEncoder();
+function encodeUlid(value) {
+  let out = "";
+  for (let i = 25; i >= 0; i--) {
+    out += CROCKFORD[Number(value >> BigInt(i * 5) & 31n)];
+  }
+  return out;
+}
+function deriveDocId(collection, key) {
+  const bytes = [...UTF8.encode(collection), 0, ...UTF8.encode(key)];
+  let hash = FNV1A128_OFFSET_BASIS;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = hash * FNV1A128_PRIME & MASK_128;
+  }
+  return encodeUlid(hash);
+}
+
+// src/replication/coverage.ts
+var COVERAGE_COLLECTION = "__taladb_replica";
+function coverageKey(key) {
+  return [
+    key.origin,
+    key.collection,
+    key.scope,
+    `p${key.projectionVersion}`,
+    `s${key.schemaVersion}`
+  ].map(encodeURIComponent).join("|");
+}
+var CoverageStore = class {
+  constructor(db) {
+    this.col = db.collection(COVERAGE_COLLECTION);
+  }
+  async read(key) {
+    const doc = await this.col.findOne({ key: coverageKey(key) });
+    if (!doc?.state) return { status: "empty" };
+    try {
+      return JSON.parse(doc.state);
+    } catch {
+      return { status: "empty" };
+    }
+  }
+  async write(key, state) {
+    const k = coverageKey(key);
+    const state_json = JSON.stringify(state);
+    await this.col.replaceManyWithIds(
+      [{ _id: deriveDocId(COVERAGE_COLLECTION, k), key: k, state: state_json }],
+      "local"
+    );
+  }
+  /** Drop a scope's coverage, forcing a fresh bootstrap on next use. */
+  async clear(key) {
+    const k = coverageKey(key);
+    await this.col.deleteManyWithIds([deriveDocId(COVERAGE_COLLECTION, k)], "local");
+  }
+};
+function isAuthoritative(state) {
+  return state.status === "complete";
+}
+function rowsApplied(state) {
+  switch (state.status) {
+    case "hydrating":
+    case "complete":
+    case "best-effort":
+      return state.rowsApplied;
+    default:
+      return 0;
+  }
+}
+function progress(state) {
+  if (state.status === "complete") return 1;
+  if (state.status !== "hydrating" || !state.total) return void 0;
+  return Math.min(1, state.rowsApplied / state.total);
+}
+
+// src/replication/coordinator.ts
+var DEFAULT_PAGE_SIZE = 500;
+var defaultYield = () => new Promise((resolve) => setTimeout(resolve, 0));
+var MAX_BOOTSTRAP_PAGES = 1e5;
+var inflightByDatabase = /* @__PURE__ */ new WeakMap();
+var REPLICA_SCOPE_FIELD = "_replica_scope";
+var REPLICA_REVISION_FIELD = "_remote_rev";
+var ReplicationCoordinator = class {
+  constructor(db, source, options = {}) {
+    this.db = db;
+    this.source = source;
+    this.coverage = new CoverageStore(db);
+    this.key = {
+      origin: source.origin,
+      collection: source.collection,
+      scope: source.scope,
+      projectionVersion: source.projectionVersion,
+      schemaVersion: source.schemaVersion
+    };
+    this.pageSize = options.pageSize ?? DEFAULT_PAGE_SIZE;
+    this.yieldFn = options.yieldFn ?? defaultYield;
+    this.onProgress = options.onProgress;
+    this.collectionOptions = options.collectionOptions;
+    let shared = inflightByDatabase.get(db);
+    if (!shared) {
+      shared = /* @__PURE__ */ new Map();
+      inflightByDatabase.set(db, shared);
+    }
+    this.inflight = shared;
+  }
+  get replicaScope() {
+    return coverageKey(this.key);
+  }
+  get identityNamespace() {
+    return `${this.source.origin}\0${this.source.scope}\0${this.source.collection}`;
+  }
+  getCoverage() {
+    return this.coverage.read(this.key);
+  }
+  /** Whether a purely local read is authorized right now. */
+  async isReady() {
+    return isAuthoritative(await this.getCoverage());
+  }
+  /** Dedup by intent: identical concurrent work joins rather than duplicating. */
+  dedup(key, run) {
+    const existing = this.inflight.get(key);
+    if (existing) return existing;
+    const pass = run().finally(() => this.inflight.delete(key));
+    this.inflight.set(key, pass);
+    return pass;
+  }
+  /**
+   * Write a batch of remote rows into the local collection.
+   *
+   * One commit for the whole batch, ids derived from the origin's primary key, and
+   * `origin: 'remote'` so the rows can never replicate back out at the origin they
+   * came from. This is the *only* write path in the coordinator — bootstrap, delta
+   * and bridge all funnel through it, which is precisely why they converge instead
+   * of conflicting.
+   */
+  async applyRows(rows) {
+    if (rows.length === 0) return [];
+    const col = this.db.collection(this.source.collection, this.collectionOptions);
+    const docs = rows.map(
+      (row) => {
+        const revision = this.source.revisionOf(row);
+        return {
+          ...this.source.mapRow(row),
+          _id: deriveDocId(this.identityNamespace, String(this.source.keyOf(row))),
+          [REPLICA_SCOPE_FIELD]: this.replicaScope,
+          [REPLICA_REVISION_FIELD]: revision
+        };
+      }
+    );
+    await col.replaceManyWithIds(docs, "remote");
+    return docs.map((doc) => doc._id);
+  }
+  /**
+   * Hydrate the scope: walk the origin page by page until the whole collection is
+   * local, then mark it complete.
+   *
+   * Resumable and idempotent. If the walk is interrupted — a reload, a crash, a
+   * dead network — the next call picks up from the last committed page, and
+   * re-applying a page it already wrote is a no-op because the ids are derived.
+   */
+  hydrate() {
+    return this.dedup(`${this.replicaScope}:hydrate`, () => this.runHydrate());
+  }
+  async runHydrate() {
+    let state = await this.coverage.read(this.key);
+    if (state.status === "complete") return state;
+    let page = null;
+    let snapshot = null;
+    let rowsApplied2 = 0;
+    let total;
+    let deltaCursor;
+    if (state.status === "hydrating") {
+      page = state.nextPage;
+      snapshot = state.snapshot;
+      rowsApplied2 = state.rowsApplied;
+      total = state.total;
+      deltaCursor = state.deltaCursor;
+    } else if (state.status === "error" && state.snapshot) {
+      page = state.resumeFrom;
+      snapshot = state.snapshot;
+      rowsApplied2 = state.rowsApplied ?? 0;
+      total = state.total;
+      deltaCursor = state.deltaCursor;
+    }
+    let snapshotSupported = true;
+    let pages = 0;
+    try {
+      for (; ; ) {
+        const result = await this.source.bootstrap({ page, snapshot, limit: this.pageSize });
+        if (snapshot !== null && result.snapshot !== void 0 && result.snapshot !== snapshot) {
+          throw new Error(
+            `replication: origin '${this.source.origin}' changed snapshot token mid-walk`
+          );
+        }
+        if (snapshot === null && result.snapshot) snapshot = result.snapshot;
+        if (result.snapshot === void 0 && page === null) snapshotSupported = false;
+        if (result.deltaCursor && !deltaCursor) deltaCursor = result.deltaCursor;
+        if (result.total !== void 0) total = result.total;
+        rowsApplied2 += (await this.applyRows(result.rows)).length;
+        page = result.nextPage;
+        if (page !== null) {
+          const next = {
+            status: "hydrating",
+            snapshot: snapshot ?? "",
+            nextPage: page,
+            rowsApplied: rowsApplied2,
+            ...deltaCursor !== void 0 ? { deltaCursor } : {},
+            ...total !== void 0 ? { total } : {}
+          };
+          await this.coverage.write(this.key, next);
+          this.onProgress?.(next);
+          if (++pages >= MAX_BOOTSTRAP_PAGES) {
+            throw new Error(
+              `replication: origin '${this.source.origin}' offered more than ${MAX_BOOTSTRAP_PAGES} bootstrap pages for '${this.source.collection}' \u2014 it is probably not advancing nextPage.`
+            );
+          }
+          await this.yieldFn();
+          continue;
+        }
+        if (snapshotSupported && this.source.delta && deltaCursor === void 0) {
+          throw new Error(
+            `replication: origin '${this.source.origin}' supports delta refresh but did not issue deltaCursor on the first bootstrap page`
+          );
+        }
+        state = snapshotSupported ? {
+          status: "complete",
+          cursor: deltaCursor ?? "",
+          completedAt: Date.now(),
+          rowsApplied: rowsApplied2,
+          ...total !== void 0 ? { total } : {}
+        } : {
+          // Every row the origin offered was applied — but without a snapshot
+          // we cannot prove we saw a consistent view of it, so we must not
+          // claim completeness. Reads keep going to the network.
+          status: "best-effort",
+          cursor: deltaCursor ?? "",
+          reason: "the origin did not return a snapshot token, so a row that moved between pages during the walk may have been missed",
+          rowsApplied: rowsApplied2,
+          ...total !== void 0 ? { total } : {}
+        };
+        await this.coverage.write(this.key, state);
+        this.onProgress?.(state);
+        return state;
+      }
+    } catch (error) {
+      const failed = {
+        status: "error",
+        resumeFrom: page ?? 0,
+        ...snapshot ? { snapshot } : {},
+        ...deltaCursor !== void 0 ? { deltaCursor } : {},
+        rowsApplied: rowsApplied2,
+        ...total !== void 0 ? { total } : {},
+        error: error instanceof Error ? error.message : String(error)
+      };
+      await this.coverage.write(this.key, failed);
+      this.onProgress?.(failed);
+      throw error;
+    }
+  }
+  /**
+   * Apply incremental changes since the stored cursor.
+   *
+   * Deletions are applied by mapping the origin's primary keys through the same
+   * `deriveDocId`, and are written with `origin: 'remote'` so they leave no
+   * tombstone — the origin already knows it deleted these, and a tombstone would
+   * push its own deletion back at it.
+   */
+  refresh() {
+    return this.dedup(`${this.replicaScope}:refresh`, () => this.runRefresh());
+  }
+  async runRefresh() {
+    const state = await this.coverage.read(this.key);
+    if (state.status !== "complete") return state;
+    if (!this.source.delta) return state;
+    const col = this.db.collection(this.source.collection);
+    let cursor = state.cursor;
+    let rowsApplied2 = state.rowsApplied;
+    for (; ; ) {
+      const page = await this.source.delta(cursor);
+      rowsApplied2 += (await this.applyRows(page.changed)).length;
+      if (page.deleted.length > 0) {
+        const ids = page.deleted.map(
+          (k) => deriveDocId(this.identityNamespace, String(k))
+        );
+        await col.deleteManyWithIds(ids, "remote");
+      }
+      cursor = page.cursor;
+      const next = { ...state, cursor, rowsApplied: rowsApplied2 };
+      await this.coverage.write(this.key, next);
+      if (!page.hasMore) {
+        this.onProgress?.(next);
+        return next;
+      }
+      await this.yieldFn();
+    }
+  }
+  /**
+   * Cold-start bridge: fetch exactly the rows one query needs, right now.
+   *
+   * Needed because a SPA or React Native app has no server render to paint behind
+   * while the replica fills. The rows land in the same collection under the same
+   * derived ids as the walk's, so this is not a cache — it is the replica, arriving
+   * early.
+   *
+   * **Does not advance coverage.** These rows did not come from the bootstrap
+   * snapshot and prove nothing about completeness; treating them as progress would
+   * let a page-1 fetch masquerade as a hydrated catalog.
+   */
+  bridge(query) {
+    if (!this.source.fetchQuery) return Promise.resolve({ count: 0, ids: [] });
+    const key = `bridge:${coverageKey(this.key)}:${JSON.stringify(query)}`;
+    return this.dedup(key, async () => {
+      const rows = await this.source.fetchQuery(query);
+      const ids = await this.applyRows(rows);
+      return { count: ids.length, ids };
+    });
+  }
+  /** Drop coverage and force a fresh bootstrap. Local rows are left alone. */
+  async reset() {
+    await this.coverage.clear(this.key);
+  }
+};
+
+// src/replication/rest.ts
+function parseRows(body, endpoint) {
+  if (Array.isArray(body)) return body;
+  if (body && typeof body === "object") {
+    const env = body;
+    for (const field of ["data", "items", "rows"]) {
+      const value = env[field];
+      if (Array.isArray(value)) return value;
+    }
+    throw new Error(
+      `taladb: could not find a row array in the response from ${endpoint}. Expected a bare array or a { data | items | rows } envelope, but got an object with keys: ${Object.keys(env).join(", ") || "(none)"}. Pass { parse } to extract them yourself.`
+    );
+  }
+  throw new Error(
+    `taladb: expected an array or object from ${endpoint}, got ${typeof body}.`
+  );
+}
+function pick(body, names) {
+  if (!body || typeof body !== "object") return void 0;
+  const rec = body;
+  for (const n of names) {
+    if (rec[n] !== void 0) return rec[n];
+    const meta = rec.meta;
+    if (meta && meta[n] !== void 0) return meta[n];
+  }
+  return void 0;
+}
+function createRestSource(options) {
+  const {
+    endpoint,
+    collection,
+    origin = endpoint,
+    scope = "global",
+    projectionVersion = 1,
+    schemaVersion = 1,
+    key = "id",
+    revision = "rev",
+    mapRow,
+    getAuth,
+    paths,
+    toParams,
+    parse,
+    pagination = "page"
+  } = options;
+  const doFetch = options.fetch ?? globalThis.fetch;
+  async function get(path, params) {
+    const url = new URL(path, globalThis.location?.origin ?? "http://localhost");
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    const headers = getAuth ? await getAuth() : void 0;
+    const response = await doFetch(url.href, { headers });
+    if (!response.ok) {
+      throw new Error(
+        `taladb: ${path} responded ${response.status} ${response.statusText}`
+      );
+    }
+    return response.json();
+  }
+  const rowsFrom = (body) => parse ? parse(body) : parseRows(body, endpoint);
+  return {
+    origin,
+    collection,
+    scope,
+    projectionVersion,
+    schemaVersion,
+    keyOf: (row) => {
+      const value = row[key];
+      if (value === void 0 || value === null) {
+        throw new Error(
+          `taladb: row from ${endpoint} has no '${key}' field to use as its primary key. Pass { key } to name the right one. Without a stable key, repeated fetches of the same row cannot be recognized as the same row.`
+        );
+      }
+      return String(value);
+    },
+    revisionOf: (row) => {
+      const value = typeof revision === "function" ? revision(row) : row[revision];
+      if (value === void 0 || value === null) {
+        throw new Error(
+          `taladb: row from ${endpoint} has no authoritative revision. Pass { revision } to name the monotonic revision field.`
+        );
+      }
+      const n = Number(value);
+      if (!Number.isSafeInteger(n)) {
+        throw new Error(`taladb: authoritative revision must be a safe integer, got ${String(value)}`);
+      }
+      return n;
+    },
+    mapRow: (row) => {
+      if (mapRow) return mapRow(row);
+      const { _id, ...rest } = row;
+      void _id;
+      return rest;
+    },
+    bootstrap: async (request) => {
+      const params = { limit: String(request.limit) };
+      if (request.page !== null) params.page = String(request.page);
+      if (request.snapshot !== null) params.snapshot = request.snapshot;
+      const body = await get(endpoint + (paths?.bootstrap ?? ""), params);
+      const rows = rowsFrom(body);
+      const nextPage = pick(body, ["nextPage", "next_page", "next"]);
+      const snapshot = pick(body, ["snapshot"]);
+      const deltaCursor = pick(body, ["deltaCursor", "delta_cursor", "cursor"]);
+      const total = pick(body, ["total", "totalCount", "count"]);
+      return {
+        rows,
+        // An origin that reports no explicit `nextPage` is treated as exhausted
+        // once it returns a short page — the conventional REST behavior.
+        nextPage: nextPage !== void 0 ? nextPage : rows.length < request.limit ? null : pagination === "offset" ? Number(request.page ?? 0) + request.limit : Number(request.page ?? 1) + 1,
+        ...snapshot !== void 0 ? { snapshot } : {},
+        ...deltaCursor !== void 0 ? { deltaCursor } : {},
+        ...total !== void 0 ? { total } : {}
+      };
+    },
+    ...options.delta === true || paths?.delta ? { delta: async (cursor) => {
+      const body = await get(endpoint + (paths?.delta ?? ""), { since: cursor });
+      const changed = rowsFrom(body);
+      const deleted = pick(body, ["deleted", "removed"]) ?? [];
+      const next = pick(body, ["cursor", "now", "nextCursor"]);
+      return {
+        changed,
+        deleted: deleted.map(String),
+        cursor: next ?? cursor,
+        hasMore: Boolean(pick(body, ["hasMore", "has_more"]))
+      };
+    } } : {},
+    fetchQuery: async (query) => {
+      if (!toParams && Object.values(query.filter ?? {}).some((v) => typeof v === "object" && v !== null)) {
+        throw new Error(
+          "taladb: bridge filters with operators require RestSourceOptions.toParams; the default translator only supports scalar equality fields."
+        );
+      }
+      const sortEntry = Object.entries(query.sort ?? {})[0];
+      const params = toParams ? toParams(query) : {
+        ...query.page !== void 0 ? { page: String(query.page) } : {},
+        ...query.limit !== void 0 ? { limit: String(query.limit) } : {},
+        ...Object.fromEntries(
+          Object.entries(query.filter ?? {}).map(([k, v]) => [k, String(v)])
+        ),
+        ...sortEntry ? { sort: sortEntry[0], order: sortEntry[1] === -1 ? "desc" : "asc" } : {}
+      };
+      return rowsFrom(await get(endpoint, params));
+    }
+  };
+}
 
 // src/index.ts
 var import_meta = {};
@@ -276,6 +788,10 @@ function applySchema(col, options) {
     }
   }
   function stamp(doc) {
+    if (!stampVersion || doc._v !== void 0) return doc;
+    return { ...doc, _v: targetVersion };
+  }
+  function stampDoc(doc) {
     if (!stampVersion || doc._v !== void 0) return doc;
     return { ...doc, _v: targetVersion };
   }
@@ -333,6 +849,19 @@ function applySchema(col, options) {
       if (schema) docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
       return col.insertMany(docs.map(stamp));
     } : col.insertMany.bind(col),
+    // Rows arriving from a remote origin are validated like any other write. This
+    // is the "parse, don't assert" boundary: the compile-time generic and the
+    // runtime schema check have to be the same seam, or a malformed server
+    // response walks straight into a typed collection.
+    replaceManyWithIds: wrapWrites ? async (docs, origin) => {
+      if (schema) docs.forEach((doc, i) => {
+        const { _replica_scope, _remote_rev, ...schemaDoc } = doc;
+        void _replica_scope;
+        void _remote_rev;
+        parseWrite(schemaDoc, `replaceManyWithIds[${i}]`);
+      });
+      return col.replaceManyWithIds(docs.map((d) => stampDoc(d)), origin);
+    } : col.replaceManyWithIds.bind(col),
     find: wrapReads ? async (filter) => {
       const docs = await col.find(filter);
       const migrated = docs.map(migrateRead);
@@ -490,6 +1019,19 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         });
         return JSON.parse(json);
       },
+      replaceManyWithIds: async (docs, origin = "local") => {
+        const json = await proxy.send("replaceManyWithIds", {
+          collection: name,
+          docsJson: s(docs),
+          origin
+        });
+        return JSON.parse(json);
+      },
+      deleteManyWithIds: (ids, origin = "local") => proxy.send("deleteManyWithIds", {
+        collection: name,
+        idsJson: s(ids),
+        origin
+      }),
       find: async (filter) => {
         const json = await proxy.send("find", {
           collection: name,
@@ -561,58 +1103,71 @@ async function createBrowserDB(dbName, config, passphrase, migrations) {
         });
         return JSON.parse(json);
       },
-      subscribe: (filter, callback, onError) => {
-        let active = true;
-        let lastJson = "";
-        let timer = null;
-        let running = false;
-        let rerun = false;
-        const poll = async () => {
-          if (!active) return;
-          if (running) {
-            rerun = true;
-            return;
-          }
-          running = true;
-          if (timer !== null) {
-            clearTimeout(timer);
-            timer = null;
-          }
-          try {
-            const json = await proxy.send("find", {
-              collection: name,
-              filterJson: filter ? s(filter) : "null"
-            });
-            if (!active) return;
-            if (json !== lastJson) {
-              lastJson = json;
-              callback(JSON.parse(json));
-            }
-          } catch (error) {
-            if (active) onError?.(error);
-          } finally {
-            running = false;
-          }
-          if (active) {
-            if (rerun) {
-              rerun = false;
-              void poll();
-            } else timer = setTimeout(poll, 300);
-          }
-        };
-        nudgeCallbacks.add(poll);
-        poll();
-        return () => {
-          active = false;
-          nudgeCallbacks.delete(poll);
-          if (timer !== null) {
-            clearTimeout(timer);
-            timer = null;
-          }
-        };
-      }
+      subscribe: (filter, callback, onError) => nudgedPoller(
+        () => proxy.send("find", {
+          collection: name,
+          filterJson: filter ? s(filter) : "null"
+        }),
+        callback,
+        onError
+      ),
+      subscribeAggregate: (pipeline, callback, onError) => nudgedPoller(
+        () => proxy.send("aggregate", {
+          collection: name,
+          pipelineJson: s(pipeline)
+        }),
+        callback,
+        onError
+      )
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
+  }
+  function nudgedPoller(fetchJson, callback, onError) {
+    let active = true;
+    let lastJson = "";
+    let timer = null;
+    let running = false;
+    let rerun = false;
+    const poll = async () => {
+      if (!active) return;
+      if (running) {
+        rerun = true;
+        return;
+      }
+      running = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      try {
+        const json = await fetchJson();
+        if (!active) return;
+        if (json !== lastJson) {
+          lastJson = json;
+          callback(JSON.parse(json));
+        }
+      } catch (error) {
+        if (active) onError?.(error);
+      } finally {
+        running = false;
+      }
+      if (active) {
+        if (rerun) {
+          rerun = false;
+          void poll();
+        } else timer = setTimeout(poll, 300);
+      }
+    };
+    nudgeCallbacks.add(poll);
+    poll();
+    return () => {
+      active = false;
+      nudgeCallbacks.delete(poll);
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
   }
   const handle = {
     collection: (name, opts) => wrapCollection(name, opts),
@@ -665,6 +1220,8 @@ async function createNodeDB(dbName, config, passphrase, migrations) {
     const wrapped = {
       insert: async (doc) => col.insertAsync ? col.insertAsync(doc) : col.insert(doc),
       insertMany: async (docs) => col.insertManyAsync ? col.insertManyAsync(docs) : col.insertMany(docs),
+      replaceManyWithIds: async (docs, origin = "local") => col.replaceManyWithIdsAsync ? col.replaceManyWithIdsAsync(docs, origin) : col.replaceManyWithIds(docs, origin),
+      deleteManyWithIds: async (ids, origin = "local") => col.deleteManyWithIdsAsync ? col.deleteManyWithIdsAsync(ids, origin) : col.deleteManyWithIds(ids, origin),
       find: async (filter) => col.findAsync ? col.findAsync(filter ?? null) : col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
       updateOne: async (filter, update) => col.updateOneAsync ? col.updateOneAsync(filter, update) : col.updateOne(filter, update),
@@ -690,7 +1247,8 @@ async function createNodeDB(dbName, config, passphrase, migrations) {
         const raw = await col.findNearest(field, vector, topK, filter ?? null);
         return raw;
       },
-      subscribe: (filter, callback, onError) => makePoller(async () => col.find(filter ?? null), callback, onError)
+      subscribe: (filter, callback, onError) => makePoller(async () => col.find(filter ?? null), callback, onError),
+      subscribeAggregate: (pipeline, callback, onError) => makePoller(async () => wrapped.aggregate(pipeline), callback, onError)
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -738,6 +1296,8 @@ async function createNativeDB(_dbName, migrations) {
     const wrapped = {
       insert: async (doc) => native.insert(name, doc),
       insertMany: async (docs) => native.insertMany(name, docs),
+      replaceManyWithIds: async (docs, origin = "local") => native.replaceManyWithIds(name, docs, origin),
+      deleteManyWithIds: async (ids, origin = "local") => native.deleteManyWithIds(name, ids, origin),
       find: async (filter) => native.find(name, filter ?? {}),
       findOne: async (filter) => native.findOne(name, filter ?? {}),
       updateOne: async (filter, update) => native.updateOne(name, filter, update),
@@ -769,7 +1329,8 @@ async function createNativeDB(_dbName, migrations) {
         const raw = native.findNearest(name, field, vector, topK, filter ?? null);
         return raw;
       },
-      subscribe: (filter, callback, onError) => makePoller(async () => native.find(name, filter ?? {}), callback, onError)
+      subscribe: (filter, callback, onError) => makePoller(async () => native.find(name, filter ?? {}), callback, onError),
+      subscribeAggregate: (pipeline, callback, onError) => makePoller(async () => native.aggregate(name, pipeline), callback, onError)
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -866,9 +1427,20 @@ async function openDB(dbName = "taladb.db", options) {
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  COVERAGE_COLLECTION,
+  CoverageStore,
   HttpSyncAdapter,
+  REPLICA_REVISION_FIELD,
+  REPLICA_SCOPE_FIELD,
+  ReplicationCoordinator,
   TalaDbValidationError,
   applySchema,
+  coverageKey,
+  createRestSource,
+  deriveDocId,
+  isAuthoritative,
   openDB,
+  progress,
+  rowsApplied,
   runMigrations
 });

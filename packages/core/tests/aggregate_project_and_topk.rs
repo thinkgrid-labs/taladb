@@ -1,10 +1,10 @@
 //! `$project` inclusion/exclusion semantics, and the bounded (top-K) `$sort`.
+use serde_json::json;
 use taladb_core::Database;
 use taladb_core::aggregate::{Stage, parse_pipeline};
 use taladb_core::document::{Document, Value};
 use taladb_core::query::Filter;
 use taladb_core::query::options::{SortDirection, SortSpec};
-use serde_json::json;
 
 fn parse(src: serde_json::Value) -> Result<Vec<Stage>, String> {
     parse_pipeline(&src, &|_| Ok(Filter::All))
@@ -180,9 +180,7 @@ fn bounded_sort_matches_full_sort() {
     let col = db.collection("items").unwrap();
 
     // Ground truth: sort everything, then slice in the caller.
-    let full = col
-        .aggregate(vec![Stage::Sort(sort_desc_score())])
-        .unwrap();
+    let full = col.aggregate(vec![Stage::Sort(sort_desc_score())]).unwrap();
     assert_eq!(full.len(), 500);
 
     // Bounded: the engine gets to stop early.
@@ -220,10 +218,18 @@ fn bounded_sort_pages_do_not_overlap_or_drop() {
         paged.extend(names(&out));
     }
 
-    assert_eq!(paged, names(&full[0..240]), "paging diverged from full sort");
+    assert_eq!(
+        paged,
+        names(&full[0..240]),
+        "paging diverged from full sort"
+    );
 
     let unique: std::collections::HashSet<_> = paged.iter().collect();
-    assert_eq!(unique.len(), paged.len(), "a document appeared on two pages");
+    assert_eq!(
+        unique.len(),
+        paged.len(),
+        "a document appeared on two pages"
+    );
 }
 
 #[test]

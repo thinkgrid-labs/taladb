@@ -432,6 +432,18 @@ async function dispatch(op, args) {
       return result;
     }
 
+    case 'replaceManyWithIds': {
+      const result = db.replaceManyWithIds(args.collection, args.docsJson, args.origin);
+      onWriteCommitted();
+      return result;
+    }
+
+    case 'deleteManyWithIds': {
+      const result = db.deleteManyWithIds(args.collection, args.idsJson, args.origin);
+      onWriteCommitted();
+      return result;
+    }
+
     case 'find':
       return db.find(args.collection, args.filterJson ?? 'null');
 

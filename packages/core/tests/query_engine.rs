@@ -939,7 +939,11 @@ fn aggregate_project_stage() {
     .unwrap();
 
     let results = col
-        .aggregate(vec![Stage::Project { fields: vec!["name".into(), "score".into()], include: true, keep_id: true }])
+        .aggregate(vec![Stage::Project {
+            fields: vec!["name".into(), "score".into()],
+            include: true,
+            keep_id: true,
+        }])
         .unwrap();
 
     assert_eq!(results.len(), 1);
@@ -1201,7 +1205,11 @@ fn aggregate_full_pipeline() {
             },
             Stage::Sort(vec![SortSpec::desc("total")]),
             Stage::Limit(1),
-            Stage::Project { fields: vec!["total".into()], include: true, keep_id: true },
+            Stage::Project {
+                fields: vec!["total".into()],
+                include: true,
+                keep_id: true,
+            },
         ])
         .unwrap();
 

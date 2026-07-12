@@ -57,6 +57,17 @@ export type Value =
 
 export type Document = { _id?: string; [key: string]: Value | undefined };
 
+/**
+ * Who authored a write, and therefore whether it replicates outward.
+ *
+ * - `'local'` *(default)* — an ordinary user write. Replicates to peers as usual.
+ * - `'remote'` — a row replicated **in** from an authoritative origin. The origin
+ *   already has it, so it must never go back out: rows written this way fire no
+ *   sync events and never appear in `exportChanges()`, and deletes made this way
+ *   leave no tombstone. Enforced in the engine, not by convention.
+ */
+export type WriteOrigin = 'local' | 'remote';
+
 // --------------- Filter DSL ---------------
 
 /**
@@ -273,6 +284,39 @@ export type AggregatePipeline<T extends Document = Document> = AggregateStage<T>
 export interface Collection<T extends Document = Document> {
   insert(doc: Omit<T, '_id'>): Promise<string>;
   insertMany(docs: Omit<T, '_id'>[]): Promise<string[]>;
+  /**
+   * Upsert many documents **by `_id`**, in a single commit. Existing rows are
+   * replaced in place, absent rows are created, and rows not named in `docs` are
+   * left alone — so writing page 2 never disturbs page 1.
+   *
+   * Unlike {@link insertMany}, which discards `_id` and mints a fresh ULID, this
+   * *honours* the id you supply. That is the whole point: for a row replicated
+   * from a remote origin, pass `_id: deriveDocId(collection, remoteKey)` and every
+   * later fetch of that row converges on the same document instead of duplicating
+   * it. Idempotent, and safe to run concurrently from a background hydration walk
+   * and an on-demand fetch.
+   *
+   * `origin: 'remote'` marks the rows as replicated in from an authoritative
+   * origin, which means they are **never replicated back out** — they will not
+   * fire sync events and will not appear in `exportChanges()`. Use it for anything
+   * the origin already knows about. Defaults to `'local'`.
+   *
+   * @example
+   * await products.replaceManyWithIds(
+   *   rows.map((r) => ({ ...r, _id: deriveDocId('products', r.id) })),
+   *   'remote',
+   * );
+   */
+  replaceManyWithIds(docs: T[], origin?: WriteOrigin): Promise<string[]>;
+  /**
+   * Delete many documents by `_id`, in a single commit. Returns how many were
+   * present and removed; unknown ids are skipped.
+   *
+   * `origin: 'remote'` deletes **without a tombstone**, so the deletion is not
+   * replicated outward — correct when the origin is the one that told you the row
+   * was deleted. Defaults to `'local'`, which tombstones as usual.
+   */
+  deleteManyWithIds(ids: string[], origin?: WriteOrigin): Promise<number>;
   find(filter?: Filter<T>): Promise<T[]>;
   findOne(filter: Filter<T>): Promise<T | null>;
   updateOne(filter: Filter<T>, update: Update<T>): Promise<boolean>;
@@ -283,7 +327,12 @@ export interface Collection<T extends Document = Document> {
   /**
    * Run a MongoDB-style aggregation pipeline (`$match`, `$group`, `$sort`,
    * `$skip`, `$limit`, `$project`) inside the engine. Returns the resulting
-   * documents. Currently available on Node.js and the in-memory browser build.
+   * documents. Available on every runtime: Node, the OPFS worker, the in-memory
+   * browser build, and React Native.
+   *
+   * This is also how you page a collection locally — `find()` has no sort/skip/
+   * limit — but note it returns a **snapshot**. For a paged read that stays live
+   * as rows land, use {@link subscribeAggregate}.
    *
    * @example
    * const byStatus = await orders.aggregate([
@@ -393,6 +442,32 @@ export interface Collection<T extends Document = Document> {
     callback: (docs: T[]) => void,
     onError?: (error: unknown) => void,
   ): () => void;
+  /**
+   * Subscribe to a live **aggregation** — the same as {@link subscribe}, but the
+   * result set is produced by a pipeline rather than a filter.
+   *
+   * This exists because {@link aggregate} is the only way to sort/skip/limit, and
+   * on its own it returns a dead snapshot: a paged read built on it would never
+   * re-run when new rows land, so a page would sit frozen while a background
+   * hydration filled the collection underneath it. Anything that pages locally
+   * should subscribe here instead of calling `aggregate` in an effect.
+   *
+   * The callback receives a snapshot immediately and again after every write that
+   * could affect the result.
+   *
+   * @returns An unsubscribe function.
+   *
+   * @example
+   * const unsub = products.subscribeAggregate(
+   *   [{ $match: { category: 'kitchen' } }, { $sort: { price: 1 } }, { $limit: 20 }],
+   *   (page) => render(page),
+   * );
+   */
+  subscribeAggregate<R extends Document = Document>(
+    pipeline: AggregatePipeline<T>,
+    callback: (docs: R[]) => void,
+    onError?: (error: unknown) => void,
+  ): () => void;
 }
 
 // --------------- Sync ---------------
@@ -419,8 +494,59 @@ export interface SyncAdapter {
    * Fetch remote changes with `changed_at` after `sinceMs` (ms epoch), as a
    * serialized changeset. Return `'[]'` when there is nothing new. Required for
    * `'pull'` / `'both'`.
+   *
+   * @deprecated in spirit, not in support — wall-clock timestamps are not safe
+   * cursors (see {@link CursorSyncAdapter}), which is why every pass built on this
+   * method replays the whole collection from zero. Implement
+   * {@link CursorSyncAdapter.pullWithCursor} instead when your origin can issue a
+   * cursor. Adapters that only implement `pull` keep working unchanged.
    */
   pull?(sinceMs: number): Promise<SerializedChangeset>;
+}
+
+/** One page of remote changes, plus where to resume from. */
+export interface PullResult {
+  /** The changes themselves. `'[]'` when there is nothing new. */
+  changeset: SerializedChangeset;
+  /**
+   * Opaque resume token, issued by the origin. **Never parse this.** It may be a
+   * timestamp, a sequence number, an LSN, a snapshot id — that is the origin's
+   * business, and treating it as a number is how clients reintroduce the
+   * clock-skew bug this type exists to kill.
+   */
+  cursor: string;
+  /** `true` when more pages remain; call again with the returned `cursor`. */
+  hasMore: boolean;
+}
+
+/**
+ * A {@link SyncAdapter} whose origin can issue a resume cursor.
+ *
+ * ## Why this exists
+ *
+ * The original contract is `pull(sinceMs)`, and it cannot be made correct. Author
+ * wall-clock timestamps are not safe cursors: a write can commit *after* an export
+ * yet carry an *earlier* timestamp, so resuming from "the newest timestamp I saw"
+ * silently drops rows. TalaDB's answer was to give up on cursors entirely and
+ * replay from zero on every pass — correct, but it re-downloads the whole
+ * collection forever, which makes a full local replica of a real catalog
+ * unaffordable.
+ *
+ * The fix is to stop inventing the cursor on the client. The origin issues an
+ * opaque token; we store it and hand it back. Whatever ordering guarantee the
+ * origin has (a sequence, an LSN, a snapshot) travels with the token, and the
+ * client never has to reason about clocks at all.
+ *
+ * `runSync` feature-detects `pullWithCursor` and prefers it. Adapters that only
+ * implement `pull(sinceMs)` are untouched and keep their replay-from-zero
+ * behavior.
+ */
+export interface CursorSyncAdapter extends SyncAdapter {
+  /**
+   * Fetch changes after `cursor`, or from the beginning when it is `null`.
+   * Returns the changes plus the token to resume from next time.
+   */
+  pullWithCursor(cursor: string | null): Promise<PullResult>;
 }
 
 export interface SyncOptions {

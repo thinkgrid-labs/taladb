@@ -5,6 +5,91 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-07-13
+
+`useQuery` is rebuilt around **coverage**: once a collection is fully replicated for
+its scope, filtering, sorting and paging run entirely on-device and touch the network
+**zero times**. Pagination stops being a network concern.
+
+The previous design — cache each API page and reuse it — is deliberately *not* what
+shipped. A replica assembled from whichever pages a user happened to visit is an
+arbitrary partial subset: it cannot answer a query nobody has asked yet ("products
+under ₱500" may live on page 43), so every new filter still goes to the network and
+the local database buys almost nothing.
+
+### Added
+
+- **`Collection.replaceManyWithIds(docs, origin?)`** — batched upsert **by
+  caller-supplied `_id`**, one commit per batch. The first write path that honours an
+  id you chose; every other one discards it and mints a ULID.
+- **`Collection.deleteManyWithIds(ids, origin?)`** — batched delete by id.
+- **`Collection.subscribeAggregate(pipeline, cb)`** — a **live** aggregation. Needed
+  because `aggregate()` alone returns a dead snapshot, so a paged read built on it
+  would sit frozen while rows landed underneath it.
+- **`deriveDocId(collection, key)`** — a stable `_id` derived from an origin's primary
+  key, so repeated fetches of the same row converge on one document. Implemented
+  identically in Rust and TypeScript, with shared test vectors.
+- **`CursorSyncAdapter.pullWithCursor(cursor)`** — an **opaque, origin-issued** resume
+  cursor. `runSync` feature-detects it. Author wall-clock timestamps are not safe
+  cursors (a write can commit after an export yet carry an earlier timestamp), which
+  is why the old `pull(sinceMs)` path replays from zero on every pass; letting the
+  origin issue the token sidesteps the clock entirely.
+- **`ReplicationCoordinator`, `CoverageStore`, `createRestSource`** — snapshot-
+  consistent bootstrap, resumable walks, delta refresh, and a cold-start bridge.
+- **`@taladb/react`: `useCoverage`, `useAggregate`**, and
+  `<ReplicationProvider replicate={…}>`.
+- **`@taladb/next/server`: `createReplicationHandlers`** — bootstrap + delta endpoints
+  for an ordinary REST origin (framework-neutral `Request` → `Response`).
+- New system collection `__taladb_replica` for coverage state.
+
+### Fixed
+
+- **Replicated rows were pushed back at the origin they came from.** `exportChanges`
+  scans the collection directly, and when the cursor is `0` — which it always is
+  today, since cursors were stubbed — it exported **everything** via
+  `find(Filter::All)`. A hydrated 100k-row catalog would have been pushed straight
+  back to the server on the next `db.sync()`, as though the user had typed it all in.
+  Suppressing the sync hook was not sufficient; there were three escape routes
+  (the push hook, the export scan, and tombstones). Rows written with
+  `origin: 'remote'` are now marked in the engine, skipped by `export_changes`, and
+  deleted without a tombstone — so "remote rows never replicate outward" is an
+  invariant of the storage layer rather than something a caller must remember.
+- **`docs/api/collection.md` documented `findWithOptions`, which exists in no
+  binding.** It is Rust-only and unreachable from JavaScript. The section now
+  documents `aggregate` / `subscribeAggregate`, which is how you actually sort, page
+  and project.
+- **`useQueries` resolved collections without the registry**, silently skipping schema
+  validation and migrations for every query it ran.
+- Coverage rows are now isolated by origin and authorization scope, including in
+  their derived ids and every local query, so switching tenants cannot expose or
+  overwrite the previous tenant's replica.
+- Cold-start page bridges no longer apply the remote page offset a second time
+  locally; page 2 now renders the page that was fetched instead of an empty set.
+- Authoritative writes compare the server's monotonic row revision inside the
+  write transaction, preventing a delayed stale response from replacing newer data.
+- Bootstrap checkpoints persist the first-page delta cursor, so crash/resume cannot
+  finish with an empty cursor and miss changes made during the walk.
+- REST sources preserve absolute origins, distinguish page-number from offset
+  pagination, honor explicit `nextPage: null`, and only advertise delta support
+  when it is configured.
+
+### Changed — breaking
+
+- **`useQuery` adds** `{ sort, page, limit, skip, enabled }` and returns coverage,
+  bridge progress, total count, and bridge errors. The existing sync-contract
+  `{ endpoint, source: 'local-first' | … }`, `syncing`, and `syncError` surface is
+  retained for compatibility; coverage-first replication can instead be declared
+  once on `<ReplicationProvider replicate>`.
+- **Documents written by replication get a *derived* `_id`**, which is a hash — so its
+  ULID timestamp prefix is not chronological and such rows do **not** come back in
+  insertion order from an unsorted `find()`. Always pass an explicit `$sort` when
+  reading a replicated collection. Rows written via `insert`/`insertMany` are
+  unaffected and keep their monotonic ULIDs.
+
+Everything else is additive: `find`, `insert`, `aggregate`, indexes, encryption,
+migrations, `db.sync()` with existing adapters, `useFind`, `useFindOne`,
+`useMutation` and the existing `prefetch` config are unchanged.
+
 ## [0.9.3] - 2026-07-12
 
 Paging a large collection stops being a full-collection operation, and three

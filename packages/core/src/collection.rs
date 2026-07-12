@@ -61,6 +61,34 @@ pub struct CollectionIndexInfo {
     pub vector: Vec<String>,
 }
 
+/// Provenance marker stamped on every [`WriteOrigin::AuthoritativeRemote`] write.
+///
+/// A document carrying this field came *from* an authoritative origin, so it must
+/// never be replicated back out. `export_changes` skips it. Engine-owned: callers
+/// cannot set it, and it is stripped from local writes.
+pub const REMOTE_ORIGIN_FIELD: &str = "_remote";
+/// Monotonic revision supplied by an authoritative origin. When both the stored
+/// and incoming documents carry integer revisions, stale/equal replacements are
+/// ignored atomically inside the write transaction.
+pub const REMOTE_REVISION_FIELD: &str = "_remote_rev";
+
+/// Who authored a write, and therefore whether it is replicated outward.
+///
+/// This is the *write-authority* axis. It exists because a document pulled from
+/// a remote origin is **not** a local edit, and treating it as one corrupts
+/// replication in two distinct ways — see [`Collection::replace_many_with_ids`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOrigin {
+    /// A local, user-authored write. Stamps `_changed_at` from the wall clock and
+    /// emits outbound [`SyncEvent`]s, so the change replicates to peers. This is
+    /// what every existing write path does.
+    Local,
+    /// A write replicated *in* from an authoritative remote origin (e.g. a REST
+    /// hydration or delta refresh). The origin already knows about these rows, so
+    /// they must never be replicated back out.
+    AuthoritativeRemote,
+}
+
 #[derive(Clone)]
 pub enum Update {
     /// Apply multiple update operators atomically, in document order.
@@ -262,7 +290,11 @@ impl Collection {
 /// - `__taladb_sync` — bidirectional-sync cursor store, one document per sync
 ///   target. The JS `db.sync()` orchestration reads and advances cursors
 ///   through the ordinary collection API, so the name must pass validation.
-const ADDRESSABLE_SYSTEM_COLLECTIONS: &[&str] = &["__taladb_sync"];
+/// - `__taladb_replica` — replication coverage store, one document per
+///   replicated scope: how far a bootstrap walk got, and whether the local copy
+///   is complete enough to answer queries without the network. Read and written
+///   by the JS replication coordinator through the ordinary collection API.
+const ADDRESSABLE_SYSTEM_COLLECTIONS: &[&str] = &["__taladb_sync", "__taladb_replica"];
 
 /// Validate a collection name.
 ///
@@ -1100,7 +1132,9 @@ impl Collection {
 
     pub fn insert(&self, mut fields: Vec<(String, Value)>) -> Result<Ulid, TalaDbError> {
         // Auto-stamp _changed_at so LWW merge works correctly without manual calls.
-        fields.retain(|(k, _)| k != "_changed_at");
+        fields.retain(|(k, _)| {
+            k != "_changed_at" && k != REMOTE_ORIGIN_FIELD && k != REMOTE_REVISION_FIELD
+        });
         fields.push(("_changed_at".into(), Value::Int(now_ms() as i64)));
         let mut doc = Document::new(fields);
         // Encrypt nominated fields before writing indexes or the doc body.
@@ -1139,7 +1173,9 @@ impl Collection {
         let mut docs: Vec<Document> = items
             .into_iter()
             .map(|mut fields| {
-                fields.retain(|(k, _)| k != "_changed_at");
+                fields.retain(|(k, _)| {
+                    k != "_changed_at" && k != REMOTE_ORIGIN_FIELD && k != REMOTE_REVISION_FIELD
+                });
                 fields.push(("_changed_at".into(), Value::Int(ts)));
                 Document::new(fields)
             })
@@ -1455,6 +1491,201 @@ impl Collection {
         Ok(id)
     }
 
+    /// Upsert many documents **by caller-supplied id**, in a single commit.
+    ///
+    /// This is the write primitive behind replication from a remote origin. It is
+    /// [`Self::replace_with_id`]'s semantics (idempotent upsert, indexes maintained
+    /// against the *old* version, tombstone cleared) batched into `insert_many`'s
+    /// single-transaction shape. Existing rows are replaced in place; absent rows
+    /// are created. Rows not named in `docs` are untouched — so hydrating page 2
+    /// never disturbs page 1.
+    ///
+    /// # Why the origin matters
+    ///
+    /// Writing remote rows as if they were local edits corrupts replication two
+    /// separate ways, and [`WriteOrigin::AuthoritativeRemote`] closes both:
+    ///
+    /// 1. **The push hook.** [`Self::replace_with_id`] emits a [`SyncEvent`], which
+    ///    the HTTP sync hook fires at the server. Replaying the origin's own rows
+    ///    back at it is at best wasted traffic and at worst a write loop.
+    /// 2. **The export scan.** `export_changes` does *not* consult the sync hook —
+    ///    it scans the collection directly, and when the cursor is `0` (which is
+    ///    every pass today, since cursors are stubbed) it exports **everything**
+    ///    via `find(Filter::All)`. Suppressing events is therefore not enough on
+    ///    its own. Remote rows are stamped [`REMOTE_ORIGIN_FIELD`] and
+    ///    `export_changes` skips them, which makes "remote rows never replicate
+    ///    outward" an invariant of the storage layer rather than a property some
+    ///    caller has to remember. (See [`Self::delete_many_with_ids`] for the
+    ///    matching guard on deletions.)
+    ///
+    /// Row *version* for a remote write is the origin's business: the caller keeps
+    /// whatever revision field the origin supplied (`_rev`, say). We deliberately
+    /// do not invent one from the local clock — ordering two responses by the time
+    /// they happened to arrive is exactly the bug that lets a stale fetch overwrite
+    /// a fresh one. `_changed_at` is stripped for the same reason.
+    ///
+    /// Fires **one** watch notification for the whole batch: a 500-row hydration
+    /// page must not wake every live query 500 times.
+    pub fn replace_many_with_ids(
+        &self,
+        docs: Vec<Document>,
+        origin: WriteOrigin,
+    ) -> Result<Vec<Ulid>, TalaDbError> {
+        if docs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ts = now_ms() as i64;
+        let mut docs: Vec<Document> = docs
+            .into_iter()
+            .map(|mut doc| {
+                // Both fields are engine-owned provenance: never let a caller (or a
+                // remote payload that happens to carry these keys) set them.
+                doc.fields
+                    .retain(|(k, _)| k != "_changed_at" && k != REMOTE_ORIGIN_FIELD);
+                match origin {
+                    WriteOrigin::Local => {
+                        doc.remove(REMOTE_REVISION_FIELD);
+                        doc.fields.push(("_changed_at".into(), Value::Int(ts)));
+                    }
+                    WriteOrigin::AuthoritativeRemote => {
+                        doc.fields
+                            .push((REMOTE_ORIGIN_FIELD.into(), Value::Bool(true)));
+                    }
+                }
+                doc
+            })
+            .collect();
+        // Symmetric with the find/find_by_id read paths, which decrypt.
+        for doc in &mut docs {
+            self.encrypt_doc(doc)?;
+        }
+        if origin == WriteOrigin::Local {
+            self.ensure_changed_at_index()?;
+        }
+        let cache = self.load_indexes_cached()?;
+        let docs_table = docs_table_name(&self.name);
+        let tomb_table = tomb_table_name(&self.name);
+
+        let mut wtxn = self.backend.begin_write()?;
+        let mut ids = Vec::with_capacity(docs.len());
+        for doc in &docs {
+            let id = doc.id;
+            // Read the previous version inside the write txn so old index entries
+            // are computed from the bytes actually being replaced.
+            let old_doc: Option<Document> = match wtxn.get(&docs_table, &id.to_bytes())? {
+                Some(bytes) => Some(postcard::from_bytes(&bytes)?),
+                None => None,
+            };
+            if origin == WriteOrigin::AuthoritativeRemote
+                && let (Some(Value::Int(incoming)), Some(Value::Int(stored))) = (
+                    doc.get(REMOTE_REVISION_FIELD),
+                    old_doc.as_ref().and_then(|d| d.get(REMOTE_REVISION_FIELD)),
+                )
+                && incoming <= stored
+            {
+                continue;
+            }
+            self.write_doc_and_indexes_with_compound(doc, old_doc.as_ref(), &cache, wtxn.as_mut())?;
+            // Clear any tombstone: this id is alive again. Without this, a replace
+            // would leave a tombstone newer than the document, and the next export
+            // would delete it on peers.
+            wtxn.delete(&tomb_table, &id.to_bytes())?;
+            // Audit rows commit atomically with the batch.
+            if let Some(caller) = &self.audit_caller {
+                write_audit_entry(
+                    wtxn.as_mut(),
+                    &self.name,
+                    AuditOp::Insert,
+                    &id.to_string(),
+                    caller,
+                )?;
+            }
+            ids.push(id);
+        }
+        wtxn.commit()?;
+        crate::watch::notify(&self.watch_registry);
+
+        if origin == WriteOrigin::Local
+            && let Some(hook) = &self.sync_hook
+        {
+            for doc in docs {
+                hook.on_event(SyncEvent::Insert {
+                    collection: self.name.clone(),
+                    id: doc.id.to_string(),
+                    document: doc,
+                });
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Delete many documents **by id**, in a single commit. Returns how many were
+    /// actually present and removed; unknown ids are silently skipped.
+    ///
+    /// This is the delete half of remote replication: a delta refresh reports the
+    /// origin's deleted primary keys, which the caller maps through
+    /// [`crate::derive_doc_id`] to reach the local rows.
+    ///
+    /// [`WriteOrigin::AuthoritativeRemote`] deletes write **no tombstone** and emit
+    /// no sync events, for the same reason remote upserts are marked
+    /// [`REMOTE_ORIGIN_FIELD`]: `export_changes` scans the tombstone table directly
+    /// and cannot filter it by provenance (the document is gone), so a tombstone
+    /// here would push the origin's own deletion straight back at it.
+    ///
+    /// Fires one watch notification for the whole batch.
+    pub fn delete_many_with_ids(
+        &self,
+        ids: &[Ulid],
+        origin: WriteOrigin,
+    ) -> Result<usize, TalaDbError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let cache = self.load_indexes_cached()?;
+        let docs_table = docs_table_name(&self.name);
+        let deleted_at = match origin {
+            WriteOrigin::Local => Some(now_ms()),
+            WriteOrigin::AuthoritativeRemote => None,
+        };
+
+        let mut wtxn = self.backend.begin_write()?;
+        let mut removed = Vec::new();
+        for &id in ids {
+            // Read inside the write txn so index cleanup is computed from the bytes
+            // actually being removed.
+            let doc: Option<Document> = match wtxn.get(&docs_table, &id.to_bytes())? {
+                Some(bytes) => Some(postcard::from_bytes(&bytes)?),
+                None => None,
+            };
+            let Some(doc) = doc else { continue };
+            self.delete_doc_and_indexes_inner(&doc, &cache, wtxn.as_mut(), deleted_at)?;
+            if let Some(caller) = &self.audit_caller {
+                write_audit_entry(
+                    wtxn.as_mut(),
+                    &self.name,
+                    AuditOp::Delete,
+                    &id.to_string(),
+                    caller,
+                )?;
+            }
+            removed.push(id);
+        }
+        wtxn.commit()?;
+        crate::watch::notify(&self.watch_registry);
+
+        if origin == WriteOrigin::Local
+            && let Some(hook) = &self.sync_hook
+        {
+            for id in &removed {
+                hook.on_event(SyncEvent::Delete {
+                    collection: self.name.clone(),
+                    id: id.to_string(),
+                });
+            }
+        }
+        Ok(removed.len())
+    }
+
     pub fn find_by_id(&self, id: Ulid) -> Result<Option<Document>, TalaDbError> {
         let docs_table = docs_table_name(&self.name);
         let rtxn = self.backend.begin_read()?;
@@ -1544,6 +1775,10 @@ impl Collection {
             self.decrypt_doc(&mut old_doc)?;
             let mut new_doc = old_doc.clone();
             apply_update(&mut new_doc, update.clone())?;
+            // A user edit makes this a local document again. Leaving `_remote`
+            // behind would make export_changes silently suppress the edit.
+            new_doc.remove(REMOTE_ORIGIN_FIELD);
+            new_doc.remove(REMOTE_REVISION_FIELD);
             let (changes, removed) = if self.sync_hook.is_some() {
                 diff_documents(&old_doc, &new_doc)
             } else {
@@ -1619,6 +1854,8 @@ impl Collection {
             self.decrypt_doc(&mut plain_old)?;
             let mut new_doc = plain_old.clone();
             apply_update(&mut new_doc, update.clone())?;
+            new_doc.remove(REMOTE_ORIGIN_FIELD);
+            new_doc.remove(REMOTE_REVISION_FIELD);
             if has_hook {
                 let (changes, removed) = diff_documents(&plain_old, &new_doc);
                 events.push(SyncEvent::Update {
@@ -1854,18 +2091,37 @@ impl Collection {
         wtxn: &mut dyn crate::engine::WriteTxn,
         deleted_at: u64,
     ) -> Result<(), TalaDbError> {
+        self.delete_doc_and_indexes_inner(doc, cache, wtxn, Some(deleted_at))
+    }
+
+    /// `deleted_at: None` deletes the document **without** writing a tombstone.
+    ///
+    /// Only [`WriteOrigin::AuthoritativeRemote`] deletes do this. A tombstone
+    /// exists to tell peers about a *local* deletion; the origin already knows it
+    /// deleted the row, and `export_changes` scans the tombstone table directly
+    /// (it cannot filter by document provenance, because the document is gone).
+    /// So writing one here would push the origin's own deletion back at it.
+    fn delete_doc_and_indexes_inner(
+        &self,
+        doc: &Document,
+        cache: &CachedIndexes,
+        wtxn: &mut dyn crate::engine::WriteTxn,
+        deleted_at: Option<u64>,
+    ) -> Result<(), TalaDbError> {
         let docs_table = docs_table_name(&self.name);
         wtxn.delete(&docs_table, &doc.id.to_bytes())?;
 
         // Write a tombstone so this deletion can be exported via SyncAdapter
         // and propagated to remote replicas that may not have received the
         // HTTP push event.
-        let tomb_table = tomb_table_name(&self.name);
-        let deleted_at = i64::try_from(deleted_at).map_err(|_| {
-            TalaDbError::InvalidOperation("deletion timestamp exceeds i64::MAX".into())
-        })?;
-        let ts_bytes = postcard::to_allocvec(&deleted_at)?;
-        wtxn.put(&tomb_table, &doc.id.to_bytes(), &ts_bytes)?;
+        if let Some(deleted_at) = deleted_at {
+            let tomb_table = tomb_table_name(&self.name);
+            let deleted_at = i64::try_from(deleted_at).map_err(|_| {
+                TalaDbError::InvalidOperation("deletion timestamp exceeds i64::MAX".into())
+            })?;
+            let ts_bytes = postcard::to_allocvec(&deleted_at)?;
+            wtxn.put(&tomb_table, &doc.id.to_bytes(), &ts_bytes)?;
+        }
 
         for idx in cache.indexes.iter() {
             let idx_table = index_table_name(&self.name, &idx.field);

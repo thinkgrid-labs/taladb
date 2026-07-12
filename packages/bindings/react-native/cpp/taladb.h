@@ -80,6 +80,39 @@ char *taladb_insert_many(TalaDbHandle *handle,
                          const char   *docs_json);
 
 /* -------------------------------------------------------------------------
+ * Replication writes — id-addressed upsert / delete
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Upsert many documents by caller-supplied `_id`, in one commit.
+ *
+ * Unlike taladb_insert_many(), which discards `_id` and mints a fresh ULID, this
+ * honours the id on each document — which is what makes a replication upsert
+ * idempotent across repeated fetches of the same remote row.
+ *
+ * `origin` is "remote" (authoritative rows replicated in from an origin) or
+ * "local" (ordinary user writes). Remote rows are marked so they never replicate
+ * back out.
+ *
+ * Returns a JSON array of ULID strings, or NULL on error.
+ * Caller must free with taladb_free_string().
+ */
+char *taladb_replace_many_with_ids(TalaDbHandle *handle,
+                                   const char   *collection,
+                                   const char   *docs_json,
+                                   const char   *origin);
+
+/**
+ * Delete many documents by id, in one commit.
+ * Returns a JSON number (the count removed), or NULL on error.
+ * Caller must free with taladb_free_string().
+ */
+char *taladb_delete_many_with_ids(TalaDbHandle *handle,
+                                  const char   *collection,
+                                  const char   *ids_json,
+                                  const char   *origin);
+
+/* -------------------------------------------------------------------------
  * Find
  * ---------------------------------------------------------------------- */
 

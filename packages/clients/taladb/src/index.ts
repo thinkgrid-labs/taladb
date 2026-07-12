@@ -11,6 +11,7 @@ import type {
   AggregatePipeline,
   Update,
   Filter,
+  WriteOrigin,
 } from './types';
 import { loadConfig, validateConfig } from './config';
 import type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
@@ -37,9 +38,41 @@ export type {
   SyncResult,
   SyncDirection,
   SerializedChangeset,
+  WriteOrigin,
+  CursorSyncAdapter,
+  PullResult,
 } from './types';
 
 export { HttpSyncAdapter } from './http-adapter';
+export { deriveDocId } from './derive-id';
+
+// --------------- Replication (coverage-first) ---------------
+export {
+  ReplicationCoordinator,
+  REPLICA_SCOPE_FIELD,
+  REPLICA_REVISION_FIELD,
+  type CoordinatorOptions,
+  type BridgeResult,
+} from './replication/coordinator';
+export {
+  CoverageStore,
+  COVERAGE_COLLECTION,
+  coverageKey,
+  isAuthoritative,
+  progress,
+  rowsApplied,
+  type CoverageKey,
+  type CoverageState,
+} from './replication/coverage';
+export { createRestSource, type RestSourceOptions } from './replication/rest';
+export type {
+  BootstrapPage,
+  BootstrapRequest,
+  BridgeQuery,
+  DeltaPage,
+  RemoteKey,
+  ReplicationSource,
+} from './replication/source';
 
 // ============================================================
 // Validation
@@ -135,6 +168,12 @@ export function applySchema<T extends Document>(
     return { ...doc, _v: targetVersion };
   }
 
+  /** As {@link stamp}, but for writes that carry their own `_id` (replication). */
+  function stampDoc(doc: T): T {
+    if (!stampVersion || (doc as Document)._v !== undefined) return doc;
+    return { ...doc, _v: targetVersion };
+  }
+
   /** `$set`/`$unset` that turns `original` into `migrated` (ignoring `_id`). */
   function diffUpdate(original: T, migrated: T): Update<T> | null {
     const $set: Record<string, unknown> = {};
@@ -214,6 +253,24 @@ export function applySchema<T extends Document>(
           return col.insertMany(docs.map(stamp));
         }
       : col.insertMany.bind(col),
+    // Rows arriving from a remote origin are validated like any other write. This
+    // is the "parse, don't assert" boundary: the compile-time generic and the
+    // runtime schema check have to be the same seam, or a malformed server
+    // response walks straight into a typed collection.
+    replaceManyWithIds: wrapWrites
+      ? async (docs, origin) => {
+          if (schema) docs.forEach((doc, i) => {
+            const { _replica_scope, _remote_rev, ...schemaDoc } = doc as T & {
+              _replica_scope?: unknown;
+              _remote_rev?: unknown;
+            };
+            void _replica_scope;
+            void _remote_rev;
+            parseWrite(schemaDoc, `replaceManyWithIds[${i}]`);
+          });
+          return col.replaceManyWithIds(docs.map((d) => stampDoc(d)), origin);
+        }
+      : col.replaceManyWithIds.bind(col),
     find: wrapReads
       ? async (filter?) => {
           const docs = await col.find(filter);
@@ -404,6 +461,8 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
     const wrapped: Collection<T> = {
       insert: async (doc) => col.insert(doc),
       insertMany: async (docs) => col.insertMany(docs),
+      replaceManyWithIds: async (docs, origin = 'local') => col.replaceManyWithIds(docs, origin),
+      deleteManyWithIds: async (ids, origin = 'local') => col.deleteManyWithIds(ids, origin),
       find: async (filter?) => col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
       updateOne: async (filter, update) => col.updateOne(filter, update),
@@ -437,6 +496,11 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
       },
       subscribe: (filter, callback, onError) =>
         makePoller(async () => col.find(filter ?? null) as T[], callback, onError),
+      subscribeAggregate: <R extends Document = Document>(
+        pipeline: AggregatePipeline<T>,
+        callback: (docs: R[]) => void,
+        onError?: (error: unknown) => void,
+      ) => makePoller(async () => wrapped.aggregate<R>(pipeline), callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -521,6 +585,18 @@ async function createBrowserDB(
         });
         return JSON.parse(json) as string[];
       },
+
+      replaceManyWithIds: async (docs, origin = 'local') => {
+        const json = await proxy.send<string>('replaceManyWithIds', {
+          collection: name, docsJson: s(docs), origin,
+        });
+        return JSON.parse(json) as string[];
+      },
+
+      deleteManyWithIds: (ids, origin = 'local') =>
+        proxy.send<number>('deleteManyWithIds', {
+          collection: name, idsJson: s(ids), origin,
+        }),
 
       find: async (filter?) => {
         const json = await proxy.send<string>('find', {
@@ -617,56 +693,88 @@ async function createBrowserDB(
         return JSON.parse(json) as { document: T; score: number }[];
       },
 
-      subscribe: (filter, callback, onError) => {
-        let active = true;
-        // Must start empty (not '[]') so the first snapshot is always
-        // delivered — otherwise an initially-empty collection never fires the
-        // callback and useFind stays in loading state forever.
-        let lastJson = '';
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        let running = false;
-        let rerun = false;
+      subscribe: (filter, callback, onError) =>
+        nudgedPoller<T>(
+          () => proxy.send<string>('find', {
+            collection: name, filterJson: filter ? s(filter) : 'null',
+          }),
+          callback,
+          onError,
+        ),
 
-        const poll = async () => {
-          if (!active) return;
-          if (running) { rerun = true; return; }
-          running = true;
-          // Cancel any pending tick — we're running now (either nudged or ticked).
-          if (timer !== null) { clearTimeout(timer); timer = null; }
-          try {
-            const json = await proxy.send<string>('find', {
-              collection: name, filterJson: filter ? s(filter) : 'null',
-            });
-            if (!active) return;
-            if (json !== lastJson) {
-              lastJson = json;
-              callback(JSON.parse(json) as T[]);
-            }
-          } catch (error) {
-            if (active) onError?.(error);
-          } finally {
-            running = false;
-          }
-          // Schedule the next polling tick (fallback when BroadcastChannel
-          // is unavailable or for same-tab writes).
-          if (active) {
-            if (rerun) { rerun = false; void poll(); }
-            else timer = setTimeout(poll, 300);
-          }
-        };
-
-        // Register with the BroadcastChannel nudge set so cross-tab writes
-        // immediately re-trigger this poller.
-        nudgeCallbacks.add(poll);
-        poll();
-        return () => {
-          active = false;
-          nudgeCallbacks.delete(poll);
-          if (timer !== null) { clearTimeout(timer); timer = null; }
-        };
-      },
+      subscribeAggregate: <R extends Document = Document>(
+        pipeline: AggregatePipeline<T>,
+        callback: (docs: R[]) => void,
+        onError?: (error: unknown) => void,
+      ) =>
+        nudgedPoller<R>(
+          () => proxy.send<string>('aggregate', {
+            collection: name, pipelineJson: s(pipeline),
+          }),
+          callback,
+          onError,
+        ),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
+  }
+
+  /**
+   * The worker adapter's live-query poller: a 300 ms tick, plus a BroadcastChannel
+   * "nudge" so a write in another tab re-runs the query immediately rather than
+   * waiting out the tick.
+   *
+   * Shared by `subscribe` (a filter) and `subscribeAggregate` (a pipeline) — they
+   * differ only in which worker op produces the JSON, so `fetchJson` is the seam.
+   */
+  function nudgedPoller<R extends Document>(
+    fetchJson: () => Promise<string>,
+    callback: (docs: R[]) => void,
+    onError?: (error: unknown) => void,
+  ): () => void {
+    let active = true;
+    // Must start empty (not '[]') so the first snapshot is always delivered —
+    // otherwise an initially-empty collection never fires the callback and
+    // useFind stays in loading state forever.
+    let lastJson = '';
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let running = false;
+    let rerun = false;
+
+    const poll = async () => {
+      if (!active) return;
+      if (running) { rerun = true; return; }
+      running = true;
+      // Cancel any pending tick — we're running now (either nudged or ticked).
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+      try {
+        const json = await fetchJson();
+        if (!active) return;
+        if (json !== lastJson) {
+          lastJson = json;
+          callback(JSON.parse(json) as R[]);
+        }
+      } catch (error) {
+        if (active) onError?.(error);
+      } finally {
+        running = false;
+      }
+      // Schedule the next polling tick (fallback when BroadcastChannel is
+      // unavailable, and for same-tab writes).
+      if (active) {
+        if (rerun) { rerun = false; void poll(); }
+        else timer = setTimeout(poll, 300);
+      }
+    };
+
+    // Register with the BroadcastChannel nudge set so cross-tab writes
+    // immediately re-trigger this poller.
+    nudgeCallbacks.add(poll);
+    poll();
+    return () => {
+      active = false;
+      nudgeCallbacks.delete(poll);
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+    };
   }
 
   // Not annotated `: TalaDB` so the extra `listCollectionNames` (needed by the
@@ -757,6 +865,14 @@ async function createNodeDB(
         col.insertAsync ? col.insertAsync(doc as Record<string, unknown>) : col.insert(doc as Record<string, unknown>),
       insertMany: async (docs) =>
         col.insertManyAsync ? col.insertManyAsync(docs as Record<string, unknown>[]) : col.insertMany(docs as Record<string, unknown>[]),
+      replaceManyWithIds: async (docs, origin = 'local') =>
+        col.replaceManyWithIdsAsync
+          ? col.replaceManyWithIdsAsync(docs as Record<string, unknown>[], origin)
+          : col.replaceManyWithIds(docs as Record<string, unknown>[], origin),
+      deleteManyWithIds: async (ids, origin = 'local') =>
+        col.deleteManyWithIdsAsync
+          ? col.deleteManyWithIdsAsync(ids, origin)
+          : col.deleteManyWithIds(ids, origin),
       find: async (filter?) =>
         col.findAsync ? col.findAsync(filter ?? null) : col.find(filter ?? null),
       findOne: async (filter) => col.findOne(filter) ?? null,
@@ -791,6 +907,11 @@ async function createNodeDB(
       },
       subscribe: (filter, callback, onError) =>
         makePoller(async () => col.find(filter ?? null) as T[], callback, onError),
+      subscribeAggregate: <R extends Document = Document>(
+        pipeline: AggregatePipeline<T>,
+        callback: (docs: R[]) => void,
+        onError?: (error: unknown) => void,
+      ) => makePoller(async () => wrapped.aggregate<R>(pipeline), callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }
@@ -845,6 +966,8 @@ async function createNodeDB(
 interface NativeDB {
   insert(collection: string, doc: Record<string, unknown>): string;
   insertMany(collection: string, docs: Record<string, unknown>[]): string[];
+  replaceManyWithIds(collection: string, docs: Record<string, unknown>[], origin: WriteOrigin): string[];
+  deleteManyWithIds(collection: string, ids: string[], origin: WriteOrigin): number;
   find(collection: string, filter: Record<string, unknown>): Record<string, unknown>[];
   findOne(collection: string, filter: Record<string, unknown>): Record<string, unknown> | null;
   updateOne(collection: string, filter: Record<string, unknown>, update: Record<string, unknown>): boolean;
@@ -911,6 +1034,10 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
     const wrapped: Collection<T> = {
       insert: async (doc) => native.insert(name, doc as Record<string, unknown>),
       insertMany: async (docs) => native.insertMany(name, docs as Record<string, unknown>[]),
+      replaceManyWithIds: async (docs, origin = 'local') =>
+        native.replaceManyWithIds(name, docs as Record<string, unknown>[], origin),
+      deleteManyWithIds: async (ids, origin = 'local') =>
+        native.deleteManyWithIds(name, ids, origin),
       find: async (filter?) => native.find(name, filter ?? {}) as T[],
       findOne: async (filter) => native.findOne(name, filter ?? {}) as T | null,
       updateOne: async (filter, update) => native.updateOne(name, filter, update),
@@ -945,6 +1072,11 @@ async function createNativeDB(_dbName: string, migrations?: Migration[]): Promis
       },
       subscribe: (filter, callback, onError) =>
         makePoller(async () => native.find(name, filter ?? {}) as T[], callback, onError),
+      subscribeAggregate: <R extends Document = Document>(
+        pipeline: AggregatePipeline<T>,
+        callback: (docs: R[]) => void,
+        onError?: (error: unknown) => void,
+      ) => makePoller(async () => native.aggregate(name, pipeline as unknown[]) as R[], callback, onError),
     };
     return opts ? applySchema(wrapped, opts) : wrapped;
   }

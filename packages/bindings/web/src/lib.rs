@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use serde_wasm_bindgen::{from_value, to_value};
 use taladb_core::{
-    Collection, Database, FieldType, Filter, HnswOptions, StructuralSchema, TalaDbError, Update,
-    Value, VectorMetric,
+    Collection, Database, Document, FieldType, Filter, HnswOptions, StructuralSchema, TalaDbError,
+    Update, Value, VectorMetric,
 };
 use wasm_bindgen::prelude::*;
 
@@ -188,6 +188,40 @@ impl CollectionWasm {
         let ids = self.inner.insert_many(items?).map_err(err_to_js)?;
         let id_strings: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
         to_value(&id_strings).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Upsert many documents **by caller-supplied `_id`**, in one commit.
+    ///
+    /// Unlike [`Self::insert_many`] — which mints a fresh ULID and discards `_id` —
+    /// this honours the id on each document, which is what lets replication address
+    /// a remote row by a *derived* id so repeated fetches converge on one document
+    /// instead of duplicating it.
+    ///
+    /// `origin` is `"remote"` for authoritative rows replicated in from an origin,
+    /// or `"local"` for ordinary user writes.
+    #[wasm_bindgen(js_name = replaceManyWithIds)]
+    pub fn replace_many_with_ids(&self, docs: JsValue, origin: &str) -> Result<JsValue, JsValue> {
+        let arr = js_sys::Array::from(&docs);
+        let items: Result<Vec<Document>, JsValue> = arr.iter().map(js_object_to_doc).collect();
+        let ids = self
+            .inner
+            .replace_many_with_ids(items?, parse_write_origin(origin)?)
+            .map_err(err_to_js)?;
+        let id_strings: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        to_value(&id_strings).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Delete many documents by id, in one commit. Returns the number removed.
+    #[wasm_bindgen(js_name = deleteManyWithIds)]
+    pub fn delete_many_with_ids(&self, ids: JsValue, origin: &str) -> Result<u32, JsValue> {
+        let ids: Vec<String> = from_value(ids).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let ids: Result<Vec<taladb_core::Ulid>, JsValue> =
+            ids.iter().map(|s| parse_ulid(s.as_str())).collect();
+        let n = self
+            .inner
+            .delete_many_with_ids(&ids?, parse_write_origin(origin)?)
+            .map_err(err_to_js)?;
+        Ok(n as u32)
     }
 
     /// Find documents matching the filter. Returns a JS array of plain objects.
@@ -381,6 +415,52 @@ fn js_object_to_fields(val: JsValue) -> Result<Vec<(String, Value)>, JsValue> {
             .collect()),
         _ => Err(JsValue::from_str("document must be a plain object")),
     }
+}
+
+fn parse_ulid(s: &str) -> Result<taladb_core::Ulid, JsValue> {
+    taladb_core::Ulid::from_string(s).map_err(|_| {
+        JsValue::from_str(&format!(
+            "\"{s}\" is not a valid ULID. Ids for replicated rows come from \
+             deriveDocId(collection, remoteKey)."
+        ))
+    })
+}
+
+fn parse_write_origin(origin: &str) -> Result<taladb_core::WriteOrigin, JsValue> {
+    match origin {
+        "local" => Ok(taladb_core::WriteOrigin::Local),
+        "remote" => Ok(taladb_core::WriteOrigin::AuthoritativeRemote),
+        other => Err(JsValue::from_str(&format!(
+            "unknown write origin \"{other}\"; expected \"local\" or \"remote\""
+        ))),
+    }
+}
+
+/// Parse a JS object into a [`Document`], **honouring `_id`**.
+///
+/// [`js_object_to_fields`] keeps `_id` only as an ordinary field (the engine mints
+/// its own ULID on insert). Replication needs the id to *be* the primary key —
+/// that is what makes an upsert idempotent — so a missing or malformed `_id` is a
+/// hard error here rather than a silently-generated new row.
+fn js_object_to_doc(val: JsValue) -> Result<Document, JsValue> {
+    let json: serde_json::Value = from_value(val).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let serde_json::Value::Object(map) = json else {
+        return Err(JsValue::from_str("document must be a plain object"));
+    };
+    let id = match map.get("_id") {
+        Some(serde_json::Value::String(s)) => parse_ulid(s)?,
+        _ => {
+            return Err(JsValue::from_str(
+                "replaceManyWithIds requires a string `_id` on every document",
+            ));
+        }
+    };
+    let fields = map
+        .into_iter()
+        .filter(|(k, _)| k.as_str() != "_id")
+        .map(|(k, v)| (k, json_to_value(v)))
+        .collect();
+    Ok(Document::with_id(id, fields))
 }
 
 fn json_to_value(j: serde_json::Value) -> Value {

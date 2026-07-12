@@ -694,7 +694,9 @@ mod parse_tests {
     #[test]
     fn project_can_explicitly_exclude_group_id() {
         let pl = parse(r#"[{"$project":{"_id":0,"total":1}}]"#).unwrap();
-        assert!(matches!(&pl[0], Stage::Project { fields, include: true, keep_id: false } if fields == &vec!["total".to_string()]));
+        assert!(
+            matches!(&pl[0], Stage::Project { fields, include: true, keep_id: false } if fields == &vec!["total".to_string()])
+        );
     }
 
     #[test]
@@ -747,7 +749,9 @@ mod parse_tests {
                 ..
             }
         ));
-        assert!(matches!(&pl[1], Stage::Project { fields, include: true, keep_id: true } if fields == &vec!["total".to_string()]));
+        assert!(
+            matches!(&pl[1], Stage::Project { fields, include: true, keep_id: true } if fields == &vec!["total".to_string()])
+        );
     }
 
     #[test]

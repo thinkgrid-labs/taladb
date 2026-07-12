@@ -1,6 +1,6 @@
 ---
 title: Collection API
-description: Full reference for TalaDB's Collection interface — insert, find, findWithOptions, findOne, updateOne, updateMany, deleteOne, deleteMany, count, createIndex, createCompoundIndex, aggregate, createVectorIndex, findNearest, and watch.
+description: Full reference for TalaDB's Collection interface — insert, find, findOne, updateOne, updateMany, deleteOne, deleteMany, count, createIndex, createCompoundIndex, aggregate, createVectorIndex, findNearest, and watch.
 ---
 
 # Collection API
@@ -37,6 +37,79 @@ const ids = await users.insertMany([
 ])
 ```
 
+## `replaceManyWithIds(docs, origin?)`
+
+Upsert many documents **by `_id`**, in a single commit. Existing rows are replaced in
+place, absent rows are created, and rows not named in `docs` are left alone.
+
+```ts
+replaceManyWithIds(docs: T[], origin?: 'local' | 'remote'): Promise<string[]>
+```
+
+Unlike [`insertMany`](#insertmanydocs), which **discards** `_id` and mints a fresh
+ULID, this *honours* the id you supply. That is the point: for a row replicated from
+a remote origin, derive a stable id from the origin's primary key and every later
+fetch of that row converges on the same document instead of duplicating it.
+
+```ts
+import { deriveDocId } from 'taladb';
+
+await products.replaceManyWithIds(
+  rows.map((r) => ({ ...r, _id: deriveDocId('products', r.id) })),
+  'remote',
+);
+```
+
+`origin: 'remote'` marks the rows as replicated **in** from an authoritative origin.
+Such rows are **never replicated back out** — they fire no sync events and never
+appear in `exportChanges()`. Without this, the next `db.sync()` would push the
+origin's own catalog straight back at it, as though the user had authored it.
+Defaults to `'local'`.
+
+::: warning `_id` is normally ignored
+Every *other* write path discards a caller-supplied `_id` and assigns a ULID. This
+method and [`deleteManyWithIds`](#deletemanywithidsids-origin) are the only two that
+address documents by an id you chose.
+:::
+
+## `deleteManyWithIds(ids, origin?)`
+
+Delete many documents by `_id`, in a single commit. Returns how many were present and
+removed; unknown ids are skipped.
+
+```ts
+deleteManyWithIds(ids: string[], origin?: 'local' | 'remote'): Promise<number>
+```
+
+`origin: 'remote'` deletes **without writing a tombstone**, so the deletion is not
+replicated outward — correct when the origin is the one that told you the row was
+deleted. Defaults to `'local'`, which tombstones as usual so peers learn about it.
+
+## `subscribeAggregate(pipeline, callback, onError?)`
+
+Subscribe to a live **aggregation**. The callback receives a snapshot immediately and
+again after every write that could affect the result.
+
+```ts
+subscribeAggregate<R>(
+  pipeline: AggregatePipeline<T>,
+  callback: (docs: R[]) => void,
+  onError?: (error: unknown) => void,
+): () => void
+```
+
+Use this rather than [`aggregate`](#aggregatepipeline) whenever the result is
+rendered. `aggregate` runs once and returns a dead snapshot — a page built on it sits
+frozen while rows land underneath it.
+
+```ts
+const unsub = products.subscribeAggregate(
+  [{ $match: { category: 'kitchen' } }, { $sort: { price: 1 } }, { $limit: 20 }],
+  (page) => render(page),
+);
+```
+
+
 ## `find(filter?)`
 
 Returns all documents matching the filter. If no filter is provided, returns all documents in the collection.
@@ -50,99 +123,45 @@ const all   = await users.find()
 const young = await users.find({ age: { $lt: 30 } })
 ```
 
-Documents are returned in ULID insertion order (ascending). For sorting, pagination, or field projection, use [`findWithOptions`](#findwithoptionsfilter-options).
+Documents are returned in ULID insertion order (ascending). For sorting, pagination, or field projection, see [Sorting, pagination and projection](#sorting-pagination-and-projection) below.
 
-## `findWithOptions(filter, options)`
+## Sorting, pagination and projection
 
-Returns documents matching the filter, with support for sorting, pagination, and field projection.
-
-```ts
-findWithOptions(filter: Filter<T>, options: FindOptions<T>): Promise<T[]>
-```
-
-`FindOptions<T>`:
-
-| Property | Type | Default | Description |
-|---|---|---|---|
-| `sort` | `SortSpec[]` | `[]` | Sort order. Applied before `skip` and `limit`. |
-| `skip` | `number` | `0` | Number of documents to skip after sorting. |
-| `limit` | `number \| null` | `null` | Maximum number of documents to return. `null` returns all. |
-| `fields` | `(keyof T)[] \| null` | `null` | Fields to include in results. `null` returns all fields. |
-
-`SortSpec`:
-
-| Property | Type | Description |
-|---|---|---|
-| `field` | `string` | Field name to sort on. |
-| `direction` | `'asc' \| 'desc'` | Sort direction. |
-
-**Sorting**
-
-Multiple sort specs are applied in order — the second acts as a tiebreaker for the first, and so on.
+`find()` returns documents in ULID insertion order and has **no** `sort`, `skip`,
+`limit` or `fields`. To sort, page, or project, use [`aggregate`](./aggregation.md):
 
 ```ts
-// Newest first
-const recent = await posts.findWithOptions({}, {
-  sort: [{ field: 'createdAt', direction: 'desc' }],
-})
-
-// By department ascending, then salary descending within each department
-const ranked = await employees.findWithOptions({}, {
-  sort: [
-    { field: 'department', direction: 'asc' },
-    { field: 'salary',     direction: 'desc' },
-  ],
-})
+const page2 = await products.aggregate([
+  { $match: { category: 'kitchen' } },
+  { $sort:  { price: 1 } },
+  { $skip:  100 },
+  { $limit: 100 },
+]);
 ```
 
-**Pagination**
-
-`skip` and `limit` are applied after sorting, making them suitable for stable cursor-style pagination when combined with a deterministic sort field.
+::: warning `aggregate()` returns a snapshot, not a live result
+It runs once. If rows land afterwards — a background replication, a write in another
+tab — the result you already have does **not** update. For a page that stays live,
+subscribe instead:
 
 ```ts
-const PAGE_SIZE = 20
-
-// Page 1
-const page1 = await posts.findWithOptions({ published: true }, {
-  sort:  [{ field: 'createdAt', direction: 'desc' }],
-  skip:  0,
-  limit: PAGE_SIZE,
-})
-
-// Page 2
-const page2 = await posts.findWithOptions({ published: true }, {
-  sort:  [{ field: 'createdAt', direction: 'desc' }],
-  skip:  PAGE_SIZE,
-  limit: PAGE_SIZE,
-})
+const unsub = products.subscribeAggregate(
+  [{ $sort: { price: 1 } }, { $skip: 100 }, { $limit: 100 }],
+  (page) => render(page),
+);
 ```
 
-**Projection**
+In React, [`useQuery`](../guide/rest-replication.md) and `useAggregate` do this for
+you.
+:::
 
-Return only the listed fields. The `_id` field is always returned unless explicitly omitted from the list.
+::: tip Ordering caveat for replicated rows
+Documents written by replication get a **derived** `_id` (a hash of the origin's
+primary key), so their ULID prefix is not chronological and they do **not** come back
+in insertion order from an unsorted `find()`. Always pass an explicit `$sort` when
+reading a replicated collection.
+:::
 
-```ts
-// Return name and email only — `secret` is excluded from the response
-const names = await users.findWithOptions({}, {
-  fields: ['name', 'email'],
-})
-```
-
-**Combining all options**
-
-```ts
-const results = await orders.findWithOptions(
-  { status: 'shipped' },
-  {
-    sort:   [{ field: 'shippedAt', direction: 'desc' }],
-    skip:   0,
-    limit:  10,
-    fields: ['_id', 'customerId', 'total', 'shippedAt'],
-  },
-)
-```
-
-The filter is applied first (using any available index), then sort, then skip and limit, and finally projection.
 
 ## `findOne(filter)`
 

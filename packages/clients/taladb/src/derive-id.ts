@@ -1,0 +1,82 @@
+/**
+ * Deterministic document ids for replicated rows.
+ *
+ * The engine assigns ULIDs and **ignores a caller-supplied `_id`** — it silently
+ * becomes an ordinary field, so `find({ _id: 'sku-1' })` then matches nothing.
+ * That leaves a document replicated from a remote origin with no stable local
+ * identity to merge on: re-fetching the same row would insert a duplicate.
+ *
+ * Hashing the origin's primary key into the ULID gives that identity back. The
+ * same `(collection, key)` always maps to the same document, which is what makes
+ * replication upserts **idempotent** (re-applying a page is a no-op), **resumable**
+ * (a bootstrap walk can restart mid-way), and **safe to run concurrently** (an
+ * on-demand fetch and the background walk can touch the same row and converge on
+ * one document rather than two).
+ *
+ * ## This must stay byte-identical to the Rust `derive_doc_id`
+ *
+ * The same rows are addressed from both sides. If the two implementations ever
+ * disagree, two clients assign different `_id`s to the same remote row and the
+ * replica silently forks into duplicates — with no error anywhere. The shared
+ * test vectors in `derive-id.test.ts` and `packages/core/src/document.rs` exist to
+ * make that impossible to do by accident; keep them in lockstep.
+ *
+ * FNV-1a is used over a stronger hash precisely *because* it is short enough to
+ * port between the two languages without ambiguity. It is non-cryptographic, which
+ * is fine here: the input is a primary key from an origin the client already
+ * trusts, not adversarial input.
+ */
+
+/** FNV-1a (128-bit) parameters, per the reference specification. */
+const FNV1A128_OFFSET_BASIS = 0x6c62272e07bb014262b821756295c58dn
+const FNV1A128_PRIME = 0x0000000001000000000000000000013bn
+const MASK_128 = (1n << 128n) - 1n
+
+/** Crockford base32 — the ULID alphabet. */
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+
+/** Shared across calls; a bootstrap walk derives one id per row over 100k rows. */
+const UTF8 = new TextEncoder()
+
+/**
+ * Encode a 128-bit value as a 26-character Crockford-base32 ULID string.
+ *
+ * 26 × 5 = 130 bits, so the leading character carries only the top 3 bits (and is
+ * therefore always `0`–`7`); the remaining 25 characters carry 5 bits each.
+ */
+function encodeUlid(value: bigint): string {
+  let out = ''
+  for (let i = 25; i >= 0; i--) {
+    out += CROCKFORD[Number((value >> BigInt(i * 5)) & 31n)]
+  }
+  return out
+}
+
+/**
+ * Derive a stable `_id` for a row replicated from a remote origin.
+ *
+ * `collection` is part of the preimage, so the same remote id in two different
+ * collections cannot collide.
+ *
+ * @example
+ * deriveDocId('products', 'sku-123')  // → '56GC678DQYWW1Z98HPYJ90WVKH', always
+ *
+ * ## Ordering caveat
+ *
+ * The result is a hash, so its ULID timestamp prefix is **not** chronological.
+ * Documents written with a derived id do not come back in insertion order from an
+ * unsorted `find()`; reads over replicated collections must carry an explicit
+ * sort. Documents written via `insert`/`insertMany` are unaffected — they still
+ * get monotonic ULIDs.
+ */
+export function deriveDocId(collection: string, key: string): string {
+  // A 0x00 separator keeps the preimage unambiguous: without it, ('ab', 'c') and
+  // ('a', 'bc') would hash identically.
+  const bytes = [...UTF8.encode(collection), 0, ...UTF8.encode(key)]
+  let hash = FNV1A128_OFFSET_BASIS
+  for (const byte of bytes) {
+    hash ^= BigInt(byte)
+    hash = (hash * FNV1A128_PRIME) & MASK_128
+  }
+  return encodeUlid(hash)
+}

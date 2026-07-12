@@ -5,8 +5,9 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 use taladb_core::{
-    Collection, Database, FieldType, Filter, HnswOptions, HttpSyncHook, SchemaValidator,
-    StructuralSchema, TalaDbConfig, TalaDbError, Update, Value, VectorMetric, VectorSearchResult,
+    Collection, Database, Document, FieldType, Filter, HnswOptions, HttpSyncHook, SchemaValidator,
+    StructuralSchema, TalaDbConfig, TalaDbError, Ulid, Update, Value, VectorMetric,
+    VectorSearchResult, WriteOrigin,
 };
 
 fn err_to_napi(e: TalaDbError) -> napi::Error {
@@ -95,6 +96,56 @@ fn obj_to_fields(json: JsonValue) -> napi::Result<Vec<(String, Value)>> {
             .collect()),
         _ => Err(napi::Error::from_reason("document must be a plain object")),
     }
+}
+
+fn parse_ulid(s: &str) -> napi::Result<Ulid> {
+    Ulid::from_string(s).map_err(|_| {
+        napi::Error::from_reason(format!(
+            "\"{s}\" is not a valid ULID. Ids for replicated rows come from \
+             deriveDocId(collection, remoteKey)."
+        ))
+    })
+}
+
+fn parse_write_origin(origin: &str) -> napi::Result<WriteOrigin> {
+    match origin {
+        "local" => Ok(WriteOrigin::Local),
+        "remote" => Ok(WriteOrigin::AuthoritativeRemote),
+        other => Err(napi::Error::from_reason(format!(
+            "unknown write origin \"{other}\"; expected \"local\" or \"remote\""
+        ))),
+    }
+}
+
+/// Parse a JS object into a [`Document`], **honouring `_id`**.
+///
+/// [`obj_to_fields`] keeps `_id` only as an ordinary field — the engine mints its
+/// own ULID on insert. Replication needs the id to *be* the primary key, since that
+/// is what makes an upsert idempotent across a bootstrap walk and an on-demand
+/// fetch. A missing or malformed `_id` is therefore a hard error here, not a
+/// silently-generated new row.
+fn obj_to_doc(json: JsonValue) -> napi::Result<Document> {
+    let JsonValue::Object(map) = json else {
+        return Err(napi::Error::from_reason("document must be a plain object"));
+    };
+    let id = match map.get("_id") {
+        Some(JsonValue::String(s)) => parse_ulid(s)?,
+        _ => {
+            return Err(napi::Error::from_reason(
+                "replaceManyWithIds requires a string `_id` on every document",
+            ));
+        }
+    };
+    let fields = map
+        .into_iter()
+        .filter(|(k, _)| k.as_str() != "_id")
+        .map(|(k, v)| (k, json_to_value(v)))
+        .collect();
+    Ok(Document::with_id(id, fields))
+}
+
+fn parse_ulids(ids: Vec<String>) -> napi::Result<Vec<Ulid>> {
+    ids.iter().map(|s| parse_ulid(s)).collect()
 }
 
 fn json_to_filter(json: &JsonValue) -> napi::Result<Filter> {
@@ -627,6 +678,40 @@ impl CollectionNode {
         Ok(ids.iter().map(|id| id.to_string()).collect())
     }
 
+    /// Upsert many documents **by caller-supplied `_id`**, in one commit.
+    ///
+    /// Unlike `insertMany` — which discards `_id` and mints a fresh ULID — this
+    /// honours the id on each document, which is what lets replication address a
+    /// remote row by a *derived* id so repeated fetches converge on one document
+    /// rather than duplicating it.
+    ///
+    /// `origin` is `"remote"` for authoritative rows replicated in from an origin,
+    /// or `"local"` for ordinary user writes. Remote rows are marked so they can
+    /// never replicate back out.
+    #[napi]
+    pub fn replace_many_with_ids(
+        &self,
+        docs: Vec<JsonValue>,
+        origin: String,
+    ) -> napi::Result<Vec<String>> {
+        let items: napi::Result<Vec<Document>> = docs.into_iter().map(obj_to_doc).collect();
+        let ids = self
+            .inner
+            .replace_many_with_ids(items?, parse_write_origin(&origin)?)
+            .map_err(err_to_napi)?;
+        Ok(ids.iter().map(|id| id.to_string()).collect())
+    }
+
+    /// Delete many documents by id, in one commit. Returns the number removed.
+    #[napi]
+    pub fn delete_many_with_ids(&self, ids: Vec<String>, origin: String) -> napi::Result<u32> {
+        let n = self
+            .inner
+            .delete_many_with_ids(&parse_ulids(ids)?, parse_write_origin(&origin)?)
+            .map_err(err_to_napi)?;
+        Ok(n as u32)
+    }
+
     /// Find documents matching the filter.
     #[napi]
     pub fn find(&self, filter: JsonValue) -> napi::Result<Vec<JsonValue>> {
@@ -870,6 +955,38 @@ impl CollectionNode {
         }))
     }
 
+    /// `replaceManyWithIds` on the libuv thread pool.
+    ///
+    /// The bulk path: a hydration page is hundreds of rows in one commit, and with
+    /// fsync-per-commit durability that is long enough to stall the event loop.
+    #[napi]
+    pub fn replace_many_with_ids_async(
+        &self,
+        docs: Vec<JsonValue>,
+        origin: String,
+    ) -> napi::Result<AsyncTask<ReplaceManyWithIdsTask>> {
+        let items: napi::Result<Vec<Document>> = docs.into_iter().map(obj_to_doc).collect();
+        Ok(AsyncTask::new(ReplaceManyWithIdsTask {
+            collection: Arc::clone(&self.inner),
+            docs: Some(items?),
+            origin: parse_write_origin(&origin)?,
+        }))
+    }
+
+    /// `deleteManyWithIds` on the libuv thread pool.
+    #[napi]
+    pub fn delete_many_with_ids_async(
+        &self,
+        ids: Vec<String>,
+        origin: String,
+    ) -> napi::Result<AsyncTask<DeleteManyWithIdsTask>> {
+        Ok(AsyncTask::new(DeleteManyWithIdsTask {
+            collection: Arc::clone(&self.inner),
+            ids: Some(parse_ulids(ids)?),
+            origin: parse_write_origin(&origin)?,
+        }))
+    }
+
     /// Async variant of `updateOne`.
     #[napi(js_name = "updateOneAsync", ts_return_type = "Promise<boolean>")]
     pub fn update_one_async(
@@ -1011,6 +1128,60 @@ impl Task for InsertManyTask {
             .ok_or_else(|| napi::Error::from_reason("insertMany task already consumed"))?;
         let ids = self.collection.insert_many(items).map_err(err_to_napi)?;
         Ok(ids.iter().map(|id| id.to_string()).collect())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct ReplaceManyWithIdsTask {
+    collection: Arc<Collection>,
+    docs: Option<Vec<Document>>,
+    origin: WriteOrigin,
+}
+
+impl Task for ReplaceManyWithIdsTask {
+    type Output = Vec<String>;
+    type JsValue = Vec<String>;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let docs = self
+            .docs
+            .take()
+            .ok_or_else(|| napi::Error::from_reason("replaceManyWithIds task already consumed"))?;
+        let ids = self
+            .collection
+            .replace_many_with_ids(docs, self.origin)
+            .map_err(err_to_napi)?;
+        Ok(ids.iter().map(|id| id.to_string()).collect())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+pub struct DeleteManyWithIdsTask {
+    collection: Arc<Collection>,
+    ids: Option<Vec<Ulid>>,
+    origin: WriteOrigin,
+}
+
+impl Task for DeleteManyWithIdsTask {
+    type Output = u32;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let ids = self
+            .ids
+            .take()
+            .ok_or_else(|| napi::Error::from_reason("deleteManyWithIds task already consumed"))?;
+        let n = self
+            .collection
+            .delete_many_with_ids(&ids, self.origin)
+            .map_err(err_to_napi)?;
+        Ok(n as u32)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

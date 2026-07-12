@@ -1,0 +1,80 @@
+:root {
+  --bg: #0b0d10;
+  --panel: #14171c;
+  --line: #232830;
+  --text: #e7eaee;
+  --dim: #8b95a3;
+  --ok: #3ddc84;
+  --warn: #ffb454;
+  --accent: #5aa9ff;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto; padding: 2rem 1.5rem 4rem;
+  background: var(--bg); color: var(--text);
+  max-width: 1100px;
+}
+header {
+  display: flex; flex-wrap: wrap; gap: 1rem;
+  align-items: center; justify-content: space-between;
+  padding-bottom: 1.25rem; border-bottom: 1px solid var(--line);
+}
+h1 { margin: 0 0 .3rem; font-size: 1.5rem; letter-spacing: -.01em; }
+.sub { margin: 0; color: var(--dim); font-size: .875rem; max-width: 56ch; line-height: 1.5; }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+
+.counter {
+  display: flex; flex-direction: column; align-items: flex-end;
+  padding: .75rem 1rem; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--panel); min-width: 190px;
+}
+.counter-num { font-size: 2rem; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; }
+.counter-label { font-size: .7rem; color: var(--dim); text-align: right; margin-top: .35rem; }
+
+.controls {
+  display: flex; flex-wrap: wrap; gap: .5rem;
+  align-items: center; justify-content: space-between; margin: 1.25rem 0;
+}
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.chip {
+  padding: .4rem .8rem; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel);
+  color: var(--dim); font-size: .8rem; transition: .12s;
+}
+.chip:hover { color: var(--text); border-color: #36404d; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 600; }
+
+.grid {
+  display: grid; gap: .85rem;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+.card {
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: .85rem; background: var(--panel);
+}
+.thumb {
+  aspect-ratio: 4/3; border-radius: 8px; margin-bottom: .65rem;
+  background: linear-gradient(135deg, #1c2129, #262d38);
+}
+.card h3 { margin: 0 0 .2rem; font-size: .9rem; font-weight: 600; }
+.cat { margin: 0; font-size: .72rem; color: var(--dim); }
+.price { margin: .4rem 0 0; font-size: 1rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+.pager {
+  display: flex; gap: 1rem; align-items: center;
+  justify-content: center; margin-top: 2rem; color: var(--dim);
+}
+.pager button {
+  padding: .45rem 1rem; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+}
+.pager button:disabled { opacity: .35; cursor: not-allowed; }
+
+.empty { color: var(--dim); padding: 3rem 0; text-align: center; }
+footer {
+  margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
+  color: var(--dim); font-size: .8rem; line-height: 1.6;
+}
+footer strong { color: var(--text); }

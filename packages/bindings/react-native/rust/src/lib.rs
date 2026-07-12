@@ -37,8 +37,8 @@ use std::thread::{self, JoinHandle};
 
 use std::collections::HashMap;
 use taladb_core::{
-    Database, FieldType, Filter, HnswOptions, HttpSyncHook, SchemaValidator, StructuralSchema,
-    SyncHook, TalaDbConfig, Update, Value, VectorMetric,
+    Database, Document, FieldType, Filter, HnswOptions, HttpSyncHook, SchemaValidator,
+    StructuralSchema, SyncHook, TalaDbConfig, Ulid, Update, Value, VectorMetric, WriteOrigin,
 };
 
 thread_local! {
@@ -321,6 +321,146 @@ pub unsafe extern "C" fn taladb_insert_many(
             let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
             to_cstring(serde_json::to_string(&id_strs).unwrap_or_default())
         }
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Replication writes — id-addressed upsert / delete
+// ---------------------------------------------------------------------------
+
+/// Upsert many documents **by caller-supplied `_id`**, in one commit.
+///
+/// Unlike `taladb_insert_many` — which discards `_id` and mints a fresh ULID —
+/// this honours the id on each document. That is what lets replication address a
+/// remote row by a *derived* id, so repeated fetches converge on one document
+/// instead of duplicating it.
+///
+/// `origin` is `"remote"` (authoritative rows replicated in from an origin) or
+/// `"local"` (ordinary user writes). Remote rows are marked so they can never
+/// replicate back out.
+///
+/// # Safety
+/// All pointers must be valid, null-terminated C strings (or null); `handle` must
+/// be a live handle from `taladb_open`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_replace_many_with_ids(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    docs_json: *const c_char,
+    origin: *const c_char,
+) -> *mut c_char {
+    let (h, col_name, json) = match parse_handle_args(handle, collection, docs_json) {
+        Some(t) => t,
+        None => return std::ptr::null_mut(),
+    };
+    let origin = match cstr_to_string(origin)
+        .as_deref()
+        .and_then(parse_write_origin)
+    {
+        Some(o) => o,
+        None => {
+            set_last_error("unknown write origin; expected \"local\" or \"remote\"".into());
+            return std::ptr::null_mut();
+        }
+    };
+    let arr = match serde_json::from_str::<Vec<serde_json::Value>>(&json) {
+        Ok(v) => v,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    // Unlike insert_many's `filter_map`, a document that fails to parse must be a
+    // hard error, not silently dropped: a missing `_id` means we would otherwise
+    // skip a row and still report the page as fully replicated.
+    let mut docs = Vec::with_capacity(arr.len());
+    for v in &arr {
+        match json_to_doc(v) {
+            Some(doc) => docs.push(doc),
+            None => {
+                set_last_error(
+                    "replaceManyWithIds requires a string `_id` (a valid ULID) on every document"
+                        .into(),
+                );
+                return std::ptr::null_mut();
+            }
+        }
+    }
+    let col = match h.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    match col.replace_many_with_ids(docs, origin) {
+        Ok(ids) => {
+            let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
+            to_cstring(serde_json::to_string(&id_strs).unwrap_or_default())
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Delete many documents by id, in one commit. Returns a JSON number (the count
+/// removed), or NULL on error.
+///
+/// # Safety
+/// See [`taladb_replace_many_with_ids`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_delete_many_with_ids(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+    ids_json: *const c_char,
+    origin: *const c_char,
+) -> *mut c_char {
+    let (h, col_name, json) = match parse_handle_args(handle, collection, ids_json) {
+        Some(t) => t,
+        None => return std::ptr::null_mut(),
+    };
+    let origin = match cstr_to_string(origin)
+        .as_deref()
+        .and_then(parse_write_origin)
+    {
+        Some(o) => o,
+        None => {
+            set_last_error("unknown write origin; expected \"local\" or \"remote\"".into());
+            return std::ptr::null_mut();
+        }
+    };
+    let raw: Vec<String> = match serde_json::from_str(&json) {
+        Ok(v) => v,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let mut ids = Vec::with_capacity(raw.len());
+    for s in &raw {
+        match Ulid::from_string(s) {
+            Ok(id) => ids.push(id),
+            Err(_) => {
+                set_last_error(format!("\"{s}\" is not a valid ULID"));
+                return std::ptr::null_mut();
+            }
+        }
+    }
+    let col = match h.collection(&col_name) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    match col.delete_many_with_ids(&ids, origin) {
+        Ok(n) => to_cstring(n.to_string()),
         Err(e) => {
             set_last_error(e.to_string());
             std::ptr::null_mut()
@@ -1216,6 +1356,31 @@ fn doc_to_json(doc: &taladb_core::Document) -> serde_json::Value {
         map.insert(k.clone(), value_to_json(v));
     }
     serde_json::Value::Object(map)
+}
+
+fn parse_write_origin(origin: &str) -> Option<WriteOrigin> {
+    match origin {
+        "local" => Some(WriteOrigin::Local),
+        "remote" => Some(WriteOrigin::AuthoritativeRemote),
+        _ => None,
+    }
+}
+
+/// Parse a JSON object into a [`Document`], **honouring `_id`**.
+///
+/// [`json_to_fields`] deliberately drops `_id` (the engine mints its own ULID on
+/// insert). Replication needs the opposite: the id *is* the primary key, and it is
+/// what makes an upsert idempotent. Returns `None` if `_id` is absent or not a
+/// valid ULID — callers must treat that as an error, never skip the row.
+fn json_to_doc(v: &serde_json::Value) -> Option<Document> {
+    let obj = v.as_object()?;
+    let id = Ulid::from_string(obj.get("_id")?.as_str()?).ok()?;
+    let fields = obj
+        .iter()
+        .filter(|(k, _)| k.as_str() != "_id")
+        .map(|(k, v)| (k.clone(), json_to_value(v)))
+        .collect();
+    Some(Document::with_id(id, fields))
 }
 
 fn json_to_fields(json: &str) -> Option<Vec<(String, Value)>> {
