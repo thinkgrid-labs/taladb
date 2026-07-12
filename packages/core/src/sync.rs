@@ -308,6 +308,12 @@ pub struct StructuralSchema {
     /// Values applied to missing fields when upgrading a below-version document.
     #[serde(default)]
     pub defaults: Vec<(String, Value)>,
+    /// Field renames `(from, to)` applied when upgrading a below-version
+    /// document: if `from` is present and `to` is absent, the value moves from
+    /// `from` to `to`. Applied before [`defaults`](Self::defaults), so a rename
+    /// takes precedence over a default for the same target field.
+    #[serde(default)]
+    pub renames: Vec<(String, String)>,
 }
 
 impl StructuralSchema {
@@ -320,9 +326,17 @@ impl StructuralSchema {
             return ImportDecision::Accept;
         }
 
-        // Below current version: additive upgrade (fill defaults, stamp `_v`).
+        // Below current version: additive upgrade (rename, fill defaults, stamp `_v`).
         let coerced = if self.version != 0 && doc_v < self.version {
             let mut up = doc.clone();
+            for (from, to) in &self.renames {
+                if up.contains_key(from)
+                    && !up.contains_key(to)
+                    && let Some(v) = up.remove(from)
+                {
+                    up.set(to.clone(), v);
+                }
+            }
             for (k, def) in &self.defaults {
                 if !up.contains_key(k) {
                     up.set(k.clone(), def.clone());

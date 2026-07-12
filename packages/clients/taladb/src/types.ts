@@ -150,6 +150,14 @@ export interface SyncSchema {
   types?: Record<string, SyncFieldType>;
   /** Values applied to missing fields when upgrading a below-`version` document. */
   defaults?: Record<string, Value>;
+  /**
+   * Field renames applied when upgrading a below-`version` document, as
+   * `{ oldName: newName }`. If the old field is present and the new one absent,
+   * the value moves. Applied before {@link defaults}. Structural (runs in the
+   * engine at import) — for renames that need computation, use
+   * {@link CollectionOptions.migrateDocument}.
+   */
+  renames?: Record<string, string>;
 }
 
 /** Options passed to `db.collection()`. */
@@ -177,6 +185,29 @@ export interface CollectionOptions<T extends Document = Document> {
    * unvalidated import until its binding carries the plumbing.
    */
   syncSchema?: SyncSchema;
+  /**
+   * Lazy, read-time document migration — the arbitrary-JS complement to the
+   * structural {@link SyncSchema}. When set, every document returned by `find`
+   * / `findOne` whose `_v` is **below** `syncSchema.version` is passed through
+   * `migrateDocument(doc, fromVersion)` and stamped to the current version
+   * before you see it, so application code always reads the current shape even
+   * for documents that predate the schema (renames, computed/derived fields,
+   * splits/merges). Runs on **every runtime** (it's a pure read transform in
+   * the client — no binding support needed).
+   *
+   * Requires `syncSchema.version` (the migration target). The transform is
+   * applied to the returned value only; it is not persisted back to storage —
+   * pair with `openDB({ migrations })` or a `syncSchema` rename to rewrite
+   * stored documents eagerly. Must be pure and deterministic.
+   *
+   * @example
+   * const users = db.collection<User>('users', {
+   *   syncSchema: { version: 2 },
+   *   migrateDocument: (doc, from) =>
+   *     from < 2 ? { ...doc, fullName: `${doc.first} ${doc.last}` } : doc,
+   * });
+   */
+  migrateDocument?: (doc: T, fromVersion: number) => T;
 }
 
 // --------------- Aggregation ---------------

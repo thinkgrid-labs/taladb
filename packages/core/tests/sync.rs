@@ -916,6 +916,7 @@ fn structural_schema_accepts_valid_and_quarantines_bad_type() {
         required: vec!["name".into()],
         types,
         defaults: vec![],
+        renames: vec![],
     };
     let v = schema_validator("users", schema);
 
@@ -956,6 +957,7 @@ fn structural_schema_upgrades_below_version_with_defaults() {
         required: vec![],
         types: HashMap::new(),
         defaults: vec![("locale".into(), s("en"))],
+        renames: vec![],
     };
     let v = schema_validator("posts", schema);
 
@@ -977,6 +979,7 @@ fn structural_schema_accepts_newer_peer_shape_untouched() {
         required: vec!["name".into()],
         types: HashMap::new(),
         defaults: vec![],
+        renames: vec![],
     };
     let v = schema_validator("users", schema);
 
@@ -1000,4 +1003,33 @@ fn structural_schema_unregistered_collection_passes_through() {
     let report = db.import_changes_validated(changeset, v).unwrap();
     assert_eq!(report.applied, 1);
     assert_eq!(report.skipped, 0);
+}
+
+#[test]
+fn structural_schema_renames_field_on_upgrade() {
+    let db = Database::open_in_memory().unwrap();
+    let schema = StructuralSchema {
+        version: 2,
+        required: vec!["email".into()],
+        types: HashMap::new(),
+        defaults: vec![],
+        renames: vec![("mail".into(), "email".into())],
+    };
+    let v = schema_validator("users", schema);
+
+    // A v0 doc using the old field name `mail` — renamed to `email` on import,
+    // so the required-check on `email` passes.
+    let changeset = vec![upsert("users", vec![("mail".into(), s("a@b.c"))], 1000)];
+    let report = db.import_changes_validated(changeset, v).unwrap();
+
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.quarantined, 0);
+    let stored = db.collection("users").unwrap().find(Filter::All).unwrap();
+    assert_eq!(stored[0].get("email"), Some(&Value::Str("a@b.c".into())));
+    assert_eq!(
+        stored[0].get("mail"),
+        None,
+        "old field removed after rename"
+    );
+    assert_eq!(stored[0].get("_v"), Some(&Value::Int(2)));
 }

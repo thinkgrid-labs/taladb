@@ -354,11 +354,21 @@ fn parse_schema_desc(desc: &JsonValue) -> napi::Result<StructuralSchema> {
                 .collect()
         })
         .unwrap_or_default();
+    let renames = desc
+        .get("renames")
+        .and_then(JsonValue::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(from, to)| to.as_str().map(|t| (from.clone(), t.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(StructuralSchema {
         version,
         required,
         types,
         defaults,
+        renames,
     })
 }
 

@@ -470,6 +470,15 @@ pub(crate) fn build_schemas(
                     .collect()
             })
             .unwrap_or_default();
+        let renames = desc
+            .get("renames")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(from, to)| to.as_str().map(|t| (from.clone(), t.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
         out.insert(
             col.clone(),
             StructuralSchema {
@@ -477,6 +486,7 @@ pub(crate) fn build_schemas(
                 required,
                 types,
                 defaults,
+                renames,
             },
         );
     }

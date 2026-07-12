@@ -131,7 +131,7 @@ The validator **must be deterministic and side-effect free** — the same
 document must reach the same decision on every replica, or you reintroduce
 divergence. This is the same contract LWW already relies on.
 
-### From JavaScript — `syncSchema` (Node.js)
+### From JavaScript — `syncSchema` (browser + Node)
 
 App developers don't implement the Rust trait directly. Attach a tolerant
 `syncSchema` to the collection; `db.sync()` then validates every pulled document
@@ -142,10 +142,11 @@ docs — "validate, never cast" inside `db.sync()`, not only in the React hooks:
 const users = db.collection<User>('users', {
   schema: User,                       // strict, on local insert (Zod/Valibot)
   syncSchema: {                       // tolerant, on sync import
-    version: 1,
-    required: ['name'],
-    types: { name: 'str', age: 'int' },
-    defaults: { age: 0 },             // filled when upgrading a below-v1 doc
+    version: 2,
+    required: ['email'],
+    types: { email: 'str', age: 'int' },
+    defaults: { age: 0 },             // filled when upgrading a below-v2 doc
+    renames: { mail: 'email' },       // structural rename on upgrade
   },
 });
 
@@ -157,8 +158,36 @@ const bad = await db.quarantined!('users'); // [{ document, reason, changedAt }]
 > **Standard:** sync import validates but never hard-rejects. Unknown shapes are
 > coerced or quarantined, never dropped or thrown. `db.import_changes` /
 > `importChanges` (no validator) remains the unvalidated fast path and is
-> unchanged. Browser/React-Native bindings do not yet carry `syncSchema` — they
-> fall back to unvalidated import.
+> unchanged. Wired on browser + Node; React Native falls back to unvalidated
+> import until its binding carries the plumbing.
+
+### Read-time normalization — `migrateDocument`
+
+`syncSchema` is *structural* and runs at the *import* boundary. For evolution
+that needs computation (derived fields, splits/merges) or that must cover
+documents already stored locally, add a lazy **read-time** `migrateDocument` —
+the arbitrary-JS complement, applied to what `find`/`findOne` return. Because
+reads hand back decoded documents, this is a pure client transform and runs on
+**every runtime** with no binding support:
+
+```ts
+const users = db.collection<User>('users', {
+  syncSchema: { version: 2 },        // supplies the migration target
+  migrateDocument: (doc, fromVersion) =>
+    fromVersion < 2
+      ? { ...doc, fullName: `${doc.first} ${doc.last}` } // computed field
+      : doc,
+});
+// find()/findOne() upgrade any doc whose `_v` < 2 and stamp `_v = 2` before you see it.
+```
+
+> **Standard:** three layers, use the narrowest that fits. `openDB({ migrations })`
+> rewrites local docs eagerly at open; `syncSchema` (+ `renames`/`defaults`)
+> normalizes synced docs eagerly at import; `migrateDocument` normalizes lazily
+> at read as the arbitrary-JS catch-all. `migrateDocument` transforms the
+> *returned* value only — it does not persist, so filters/indexes on the new
+> shape still need an eager rewrite (migration or rename) to match stored old
+> docs.
 
 ---
 

@@ -60,15 +60,23 @@ export class TalaDbValidationError extends Error {
 }
 
 /**
- * Wraps a `Collection<T>` to intercept writes (and optionally reads) through
- * the provided schema validator. Throws `TalaDbValidationError` on failure.
+ * Wraps a `Collection<T>` to intercept writes through a schema validator
+ * (`schema`) and/or normalize reads through a lazy `migrateDocument` — either
+ * or both. Returns the collection unchanged when neither applies.
+ *
+ * @internal Exported for unit testing; not part of the public API surface.
  */
-function applySchema<T extends Document>(
+export function applySchema<T extends Document>(
   col: Collection<T>,
   options: CollectionOptions<T>,
 ): Collection<T> {
-  const { schema, validateOnRead = false } = options;
-  if (!schema) return col;
+  const { schema, validateOnRead = false, migrateDocument, syncSchema } = options;
+  if (!schema && !migrateDocument) return col;
+
+  if (migrateDocument && !(syncSchema && syncSchema.version && syncSchema.version > 0)) {
+    throw new Error('CollectionOptions.migrateDocument requires syncSchema.version (the migration target)');
+  }
+  const targetVersion = syncSchema?.version ?? 0;
 
   function parseWrite(doc: unknown, label: string): T {
     try {
@@ -78,34 +86,51 @@ function applySchema<T extends Document>(
     }
   }
 
-  function parseRead(doc: unknown): T {
+  /** Lazy read-time upgrade: migrate a below-target document, then stamp `_v`. */
+  function migrateRead(doc: T): T {
+    if (!migrateDocument) return doc;
+    const fromVersion = typeof doc._v === 'number' ? doc._v : 0;
+    if (fromVersion >= targetVersion) return doc;
+    return { ...migrateDocument(doc, fromVersion), _v: targetVersion };
+  }
+
+  function readOne(doc: T | null): T | null {
+    if (doc === null) return null;
+    const migrated = migrateRead(doc);
+    if (!validateOnRead || !schema) return migrated;
     try {
-      return schema!.parse(doc);
+      return schema.parse(migrated);
     } catch (err) {
       throw new TalaDbValidationError(err, 'read');
     }
   }
 
+  const wrapReads = Boolean(migrateDocument) || (validateOnRead && Boolean(schema));
+
   return {
     ...col,
-    insert: async (doc) => {
-      parseWrite(doc, 'insert');
-      return col.insert(doc);
-    },
-    insertMany: async (docs) => {
-      docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
-      return col.insertMany(docs);
-    },
-    find: validateOnRead
+    insert: schema
+      ? async (doc) => {
+          parseWrite(doc, 'insert');
+          return col.insert(doc);
+        }
+      : col.insert.bind(col),
+    insertMany: schema
+      ? async (docs) => {
+          docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
+          return col.insertMany(docs);
+        }
+      : col.insertMany.bind(col),
+    find: wrapReads
       ? async (filter?) => {
           const docs = await col.find(filter);
-          return docs.map((d) => parseRead(d));
+          return docs.map((d) => readOne(d) as T);
         }
       : col.find.bind(col),
-    findOne: validateOnRead
+    findOne: wrapReads
       ? async (filter) => {
           const doc = await col.findOne(filter);
-          return doc === null ? null : parseRead(doc);
+          return readOne(doc);
         }
       : col.findOne.bind(col),
   };
