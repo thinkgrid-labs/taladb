@@ -5,9 +5,12 @@ pub use worker_db::WorkerDB;
 
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
 use serde_wasm_bindgen::{from_value, to_value};
 use taladb_core::{
-    Collection, Database, Filter, HnswOptions, TalaDbError, Update, Value, VectorMetric,
+    Collection, Database, FieldType, Filter, HnswOptions, StructuralSchema, TalaDbError, Update,
+    Value, VectorMetric,
 };
 use wasm_bindgen::prelude::*;
 
@@ -141,6 +144,20 @@ impl TalaDBWasm {
     #[wasm_bindgen(js_name = listCollectionNames)]
     pub fn list_collection_names(&self) -> Result<Vec<String>, JsValue> {
         self.inner.list_collection_names().map_err(err_to_js)
+    }
+
+    /// Read the current application migration version (0 if never set). Backs
+    /// the `openDB({ migrations })` runner, which advances it per migration.
+    #[wasm_bindgen(js_name = userVersion)]
+    pub fn user_version(&self) -> Result<u32, JsValue> {
+        self.inner.user_version().map_err(err_to_js)
+    }
+
+    /// Persist the application migration version. Called after each migration's
+    /// body succeeds so a crash mid-run resumes from the last applied version.
+    #[wasm_bindgen(js_name = setUserVersion)]
+    pub fn set_user_version(&self, version: u32) -> Result<(), JsValue> {
+        self.inner.set_user_version(version).map_err(err_to_js)
     }
 }
 
@@ -385,6 +402,85 @@ fn json_to_value(j: serde_json::Value) -> Value {
                 .collect(),
         ),
     }
+}
+
+/// Parse one `FieldType` name for a sync-schema descriptor.
+pub(crate) fn parse_field_type(name: &str) -> Result<FieldType, JsValue> {
+    Ok(match name {
+        "bool" => FieldType::Bool,
+        "int" => FieldType::Int,
+        "float" => FieldType::Float,
+        "str" => FieldType::Str,
+        "bytes" => FieldType::Bytes,
+        "array" => FieldType::Array,
+        "object" => FieldType::Object,
+        "any" => FieldType::Any,
+        other => {
+            return Err(JsValue::from_str(&format!(
+                "unknown field type \"{other}\" (expected bool|int|float|str|bytes|array|object|any)"
+            )));
+        }
+    })
+}
+
+/// Parse a `{ "<collection>": { version, required, types, defaults } }` JSON
+/// object into the per-collection schema map backing the import validator.
+pub(crate) fn build_schemas(
+    schemas_json: &str,
+) -> Result<HashMap<String, StructuralSchema>, JsValue> {
+    let root: serde_json::Value = serde_json::from_str(schemas_json)
+        .map_err(|e| JsValue::from_str(&format!("schema descriptor parse failed: {e}")))?;
+    let obj = root
+        .as_object()
+        .ok_or_else(|| JsValue::from_str("schema descriptor must be a JSON object"))?;
+    let mut out = HashMap::with_capacity(obj.len());
+    for (col, desc) in obj {
+        let version = desc
+            .get("version")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let required = desc
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let types = match desc.get("types").and_then(serde_json::Value::as_object) {
+            Some(map) => {
+                let mut t = HashMap::with_capacity(map.len());
+                for (k, v) in map {
+                    let name = v
+                        .as_str()
+                        .ok_or_else(|| JsValue::from_str("schema type must be a string"))?;
+                    t.insert(k.clone(), parse_field_type(name)?);
+                }
+                t
+            }
+            None => HashMap::new(),
+        };
+        let defaults = desc
+            .get("defaults")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.insert(
+            col.clone(),
+            StructuralSchema {
+                version,
+                required,
+                types,
+                defaults,
+            },
+        );
+    }
+    Ok(out)
 }
 
 fn value_to_json(v: &Value) -> serde_json::Value {

@@ -1,20 +1,42 @@
 ---
 title: Migrations
-description: Version-based schema migrations for TalaDB. Define an ordered array of up functions — TalaDB runs pending migrations atomically at database open time.
+description: Version-based schema migrations for TalaDB. Define an ordered array of up functions — TalaDB runs pending migrations at database open time, checkpointing after each.
 ---
 
 # Migrations
 
-Migrations let you evolve your database schema as your application changes. TalaDB applies pending migrations at open time, in version order, inside a single atomic transaction.
+Migrations let you evolve your database schema as your application changes. Pass
+an ordered `migrations` array to `openDB` and TalaDB runs the pending ones at
+open time, in version order, advancing a stored version counter after each.
+
+::: tip Runtime support
+Available on **browser (WASM + OPFS worker)** and **Node.js**. On React Native
+it throws a clear error until the JSI HostObject exposes the version accessors
+(tracked on the [roadmap](/roadmap)). This is separate from TalaDB's **built-in
+storage migrations** (index-encoding format, etc.), which run automatically at
+every open with no configuration — you never write those.
+:::
 
 ## How migrations work
 
-1. TalaDB reads the current version from a `meta::db_version` table inside the database.
-2. It compares it to the highest version in your `migrations` array.
-3. Any migration whose `version` is greater than the stored version is considered pending.
-4. Pending migrations are sorted by `version` and executed in order.
-5. After all migrations succeed, the stored version is updated.
-6. If any migration throws, the entire transaction rolls back and the database is left at its previous version.
+1. TalaDB reads the current application version (`0` on a fresh database), stored separately from the engine's own storage-schema version.
+2. Every migration whose `version` is greater than the stored version is pending.
+3. Pending migrations are sorted by `version` and their `up` bodies run in order.
+4. **The stored version advances after each migration's `up` fully resolves** — a checkpoint per version.
+5. If an `up` throws, the run stops and the error propagates from `openDB`. The stored version stays at the last fully-applied migration, so the next open resumes from the one that failed.
+
+::: warning Checkpoint-per-version, not whole-batch atomic
+A migration `up` runs through the normal collection API, so it is **not** wrapped
+in a single all-or-nothing transaction: if an `up` throws halfway, the writes it
+already made persist and it re-runs from the top on the next open. **Write
+migration bodies idempotently** (guard with existence checks; `createIndex` is
+already a no-op if the index exists). Whole-batch transactional rollback would
+require a transaction primitive the high-level API does not expose yet.
+:::
+
+For evolving **synced** collections, migrations pair with additive-only schema
+changes and a per-collection `syncSchema` (import-time `_v` migration +
+validation) — see [Schema & Sync Standards](/guide/schema-and-sync-standards).
 
 ## Defining migrations
 
@@ -77,7 +99,7 @@ interface Migration {
 
 **Never modify an existing migration.** A migration runs exactly once. If you change the `up` function after it has run on a device, that device will not re-run it. Instead, add a new migration at a higher version.
 
-**Migrations are atomic.** All pending migrations run in a single write transaction. If migration 3 fails after 1 and 2 succeed, the entire batch rolls back. On the next open, all three are retried.
+**Migrations checkpoint per version — write them idempotently.** The stored version advances after each `up` succeeds, but a single `up` is not one atomic transaction. If migration 3 fails after 1 and 2 succeeded, versions 1 and 2 stay applied and only 3 re-runs on the next open. Guard writes so a partial-then-retried `up` is safe.
 
 **`createIndex` is idempotent.** Calling it for an index that already exists is safe — it does nothing.
 
@@ -87,20 +109,19 @@ On a fresh install, the stored version is `0`. All migrations run in order on fi
 
 ## Inspecting the current version
 
-You can query the current version outside of migrations using the CLI:
-
-```bash
-taladb inspect myapp.db
-```
-
-Or in code (advanced):
+In code (advanced), the native binding exposes the stored application version
+directly:
 
 ```ts
 import { TalaDBNode } from '@taladb/node'
 
 const db = TalaDBNode.open('./myapp.db')
-// The version is stored in the 'meta::db_version' redb table
+db.userVersion()      // → number (0 if no migrations have run)
 ```
+
+The application version lives in the `meta::user_version` table, kept separate
+from the engine's own `meta::db_version` storage-schema counter so the two never
+collide.
 
 ## Example: adding a new collection over time
 

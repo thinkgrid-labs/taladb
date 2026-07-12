@@ -182,10 +182,25 @@ pub fn tomb_table_name(collection: &str) -> String {
     format!("tomb::{}", collection)
 }
 
+/// Table that holds documents rejected by an import-time validator.
+///
+/// Sync import is *tolerant*: a document that fails validation is never dropped
+/// on the floor and never hard-rejects the batch — it is set aside here so an
+/// operator (or a later migration) can inspect and recover it.
+/// Key: ULID bytes (16 B).  Value: postcard-encoded [`crate::sync::QuarantineRecord`].
+pub fn quarantine_table_name(collection: &str) -> String {
+    format!("quarantine::{}", collection)
+}
+
 pub const META_INDEXES_TABLE: &str = "meta::indexes";
 pub const META_COMPOUND_TABLE: &str = "meta::compound_indexes";
 pub const META_VERSION_TABLE: &str = "meta::db_version";
 pub const META_VERSION_KEY: &[u8] = b"version";
+
+/// Stores the **application** migration version, distinct from the engine
+/// storage-schema version in [`META_VERSION_TABLE`]. User-defined `openDB`
+/// migrations advance this counter; built-in storage migrations never touch it.
+pub const META_USER_VERSION_TABLE: &str = "meta::user_version";
 
 // ---------------------------------------------------------------------------
 // Compound index metadata

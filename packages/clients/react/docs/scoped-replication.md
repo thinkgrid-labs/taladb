@@ -1,6 +1,6 @@
 # Design: Scoped Replication Hooks for `@taladb/react`
 
-**Status:** Draft / proposal — no implementation yet.
+**Status:** ✅ Implemented and shipped (v0.9.1). `useQuery`, `useQueries`, `useMutation`, and `ReplicationProvider` are exported from `@taladb/react` and covered by the unit-test suite. This document is retained as the design rationale.
 **Scope:** New react-query-shaped hooks (`useQuery`, `useQueries`, `useMutation`) that bind a component or route to a *slice* of a remote origin, backed by the local TalaDB database.
 **Relationship to existing work:** An ergonomic, per-component surface **onto the existing replication/sync layer** — not a second data system. Expands the roadmap item *HTTP sync — configurable push batching & pull interval* (`docs/roadmap.md`).
 

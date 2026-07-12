@@ -38,7 +38,11 @@ pub use http_sync::HttpSyncHook;
 pub use migration::{BUILTIN_MIGRATIONS, CURRENT_SCHEMA_VERSION, Migration, run_migrations};
 pub use query::Filter;
 pub use query::options::{FindOptions, SortDirection, SortSpec};
-pub use sync::{Changeset, LastWriteWins, NoopSyncHook, SyncAdapter, SyncEvent, SyncHook};
+pub use sync::{
+    Changeset, FieldType, ImportDecision, ImportReport, ImportValidator, LastWriteWins,
+    NoopSyncHook, QuarantineRecord, SchemaValidator, StructuralSchema, SyncAdapter, SyncEvent,
+    SyncHook,
+};
 pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 
 use std::path::Path;
@@ -299,6 +303,71 @@ impl Database {
     pub fn import_changes(&self, changeset: sync::Changeset) -> Result<u64, TalaDbError> {
         use sync::SyncAdapter;
         sync::LastWriteWins::new().import_changes(self, changeset)
+    }
+
+    /// Merge a remote changeset through a tolerant import-time `validator`,
+    /// returning the full [`sync::ImportReport`] (applied / skipped /
+    /// quarantined). Every upserted document is passed to the validator before
+    /// the Last-Write-Wins comparison; a rejected document is normalized,
+    /// skipped, or set aside in the quarantine table — never dropped silently
+    /// and never able to abort the batch. This is where the "validate, never
+    /// cast" guarantee is enforced inside core `sync`, rather than only at a
+    /// higher layer. Deletes are not validated (a tombstone has no shape).
+    pub fn import_changes_validated(
+        &self,
+        changeset: sync::Changeset,
+        validator: std::sync::Arc<dyn sync::ImportValidator>,
+    ) -> Result<sync::ImportReport, TalaDbError> {
+        sync::LastWriteWins::new()
+            .with_validator(validator)
+            .import_report(self, changeset)
+    }
+
+    /// Return every document currently held in `collection`'s quarantine table,
+    /// paired with the reason it was set aside. Empty when nothing has been
+    /// quarantined. Intended for operator inspection and recovery tooling.
+    pub fn quarantined(
+        &self,
+        collection: &str,
+    ) -> Result<Vec<sync::QuarantineRecord>, TalaDbError> {
+        let table = crate::index::quarantine_table_name(collection);
+        let rtxn = self.backend.begin_read()?;
+        let mut out = Vec::new();
+        for (_, bytes) in rtxn.scan_all(&table)? {
+            out.push(postcard::from_bytes::<sync::QuarantineRecord>(&bytes)?);
+        }
+        Ok(out)
+    }
+
+    /// Read the current **application** migration version (0 if never set).
+    ///
+    /// This is the version advanced by user-defined `openDB({ migrations })`
+    /// runners, kept separate from the engine storage-schema version so the two
+    /// never collide. See [`set_user_version`](Self::set_user_version).
+    pub fn user_version(&self) -> Result<u32, TalaDbError> {
+        let rtxn = self.backend.begin_read()?;
+        match rtxn.get(
+            crate::index::META_USER_VERSION_TABLE,
+            crate::index::META_VERSION_KEY,
+        )? {
+            Some(bytes) => Ok(postcard::from_bytes(&bytes)?),
+            None => Ok(0),
+        }
+    }
+
+    /// Persist the application migration version. A migration runner calls this
+    /// after each migration's body succeeds, so a crash mid-run leaves the
+    /// counter at the last fully-applied migration (checkpoint-per-version).
+    pub fn set_user_version(&self, version: u32) -> Result<(), TalaDbError> {
+        let bytes = postcard::to_allocvec(&version)?;
+        let mut wtxn = self.backend.begin_write()?;
+        wtxn.put(
+            crate::index::META_USER_VERSION_TABLE,
+            crate::index::META_VERSION_KEY,
+            &bytes,
+        )?;
+        wtxn.commit()?;
+        Ok(())
     }
 
     /// Serialize the entire database state to a compact binary snapshot.

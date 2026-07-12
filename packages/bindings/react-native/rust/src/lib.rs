@@ -756,6 +756,39 @@ pub unsafe extern "C" fn taladb_list_collection_names(handle: *mut TalaDbHandle)
     }
 }
 
+/// Read the current application migration version (0 if never set), or -1 on
+/// error. Backs the `openDB({ migrations })` runner.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_user_version(handle: *mut TalaDbHandle) -> i64 {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return -1,
+    };
+    match h.db.user_version() {
+        Ok(v) => v as i64,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+/// Persist the application migration version. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_set_user_version(handle: *mut TalaDbHandle, version: u32) -> i32 {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return -1,
+    };
+    match h.db.set_user_version(version) {
+        Ok(()) => 0,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Index management
 // ---------------------------------------------------------------------------

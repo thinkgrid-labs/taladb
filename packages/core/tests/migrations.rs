@@ -308,3 +308,41 @@ fn snapshot_after_migration_restores_correctly() {
         2
     );
 }
+
+// ---------------------------------------------------------------------------
+// Application migration version store (user_version / set_user_version)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn user_version_defaults_to_zero() {
+    let db = open_migrated(&[]);
+    assert_eq!(db.user_version().unwrap(), 0);
+}
+
+#[test]
+fn user_version_persists_across_reopen() {
+    // Rust drops the Database at scope end, deterministically releasing the
+    // redb file lock — so we can reopen the SAME path in-process (unlike JS,
+    // where GC timing forbids it). This proves the counter is durable.
+    let dir = std::env::temp_dir().join(format!("taladb-uv-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("uv.db");
+
+    {
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.user_version().unwrap(), 0);
+        db.set_user_version(3).unwrap();
+        assert_eq!(db.user_version().unwrap(), 3);
+    }
+    {
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.user_version().unwrap(), 3, "must survive reopen");
+        db.set_user_version(5).unwrap();
+    }
+    {
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.user_version().unwrap(), 5);
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}

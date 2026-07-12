@@ -47,6 +47,31 @@ export declare class TalaDbNode {
    */
   importChanges(changesetJson: string): number
   /**
+   * Merge a JSON changeset through a tolerant structural validator built from
+   * `schemas_json` — a `{ "<collection>": { version, required, types,
+   * defaults } }` object. Every imported upsert is normalized, skipped, or
+   * quarantined per its collection schema before Last-Write-Wins; a rejected
+   * document is set aside (see `quarantined`), never dropped, and never
+   * aborts the batch. Returns `{ applied, skipped, quarantined }`.
+   */
+  importChangesValidated(changesetJson: string, schemasJson: string): JsonValue
+  /**
+   * Return every document currently held in `collection`'s quarantine table,
+   * each as `{ document, reason, changedAt }`. Empty when nothing has been
+   * set aside. For operator inspection and recovery tooling.
+   */
+  quarantined(collection: string): Array<JsonValue>
+  /**
+   * Read the current application migration version (0 if never set). Backs
+   * the `openDB({ migrations })` runner, which advances it per migration.
+   */
+  userVersion(): number
+  /**
+   * Persist the application migration version. Called after each migration's
+   * body succeeds so a crash mid-run resumes from the last applied version.
+   */
+  setUserVersion(version: number): void
+  /**
    * Get a collection by name. If an HTTP sync hook is configured it is
    * automatically attached to the returned collection.
    */

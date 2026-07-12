@@ -5,6 +5,24 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - Unreleased
+
+Schema evolution for local-first data: tolerant **validate-on-import** and
+application **schema migrations**, both wired on **browser (OPFS worker) and
+Node.js**. Ships rebuilt `.node` and WASM binaries.
+
+### Added
+
+- **Validate-on-import — "validate, never cast" inside `db.sync()`** — attach a tolerant `syncSchema` to a collection and every document pulled by `db.sync()` is checked in the engine before the Last-Write-Wins merge, instead of being cast in blindly. The core `import_changes` path now consults an `ImportValidator` whose decision is one of *accept / coerce / skip / **quarantine*** — it **never hard-rejects** (a local-first, LWW replica that dropped or threw on a foreign-shaped document would lose a legitimately newer write or diverge peers). Rejected documents are set aside in a per-collection quarantine table, recoverable via `db.quarantined(collection)` (`{ document, reason, changedAt }`), never dropped and never aborting the batch. `SyncSchema` is structural — `{ version, required, types, defaults }` — the tolerant safety net on the boundary you don't control, distinct from the strict Zod/Valibot `schema` that still runs on the local `insert` path. Wired on **browser and Node**; React Native falls back to unvalidated import until its binding carries the plumbing. See [Schema & Sync Standards](https://taladb.dev/guide/schema-and-sync-standards).
+- **Per-document schema version (`_v`)** — a document tagged `_v` **below** its collection's `syncSchema.version` is upgraded in place on import (missing `defaults` filled, `_v` stamped) rather than rejected — additive-only migration that travels *with the data*, so peers on different app versions converge. A document `_v` **ahead** of the local version is accepted untouched (the peer is ahead, not wrong). The counter is per-document and independent of the engine's own storage-schema version.
+- **Application schema migrations — `openDB({ migrations })`** *(browser + Node)* — pass an ordered `migrations: [{ version, description?, up }]` array and TalaDB runs the pending ones (version greater than the stored counter) at open, in ascending order. The stored version — a new `meta::user_version` counter, kept separate from the engine's storage-schema version — advances **after each `up` resolves** (checkpoint per version): a migration that throws stops the run and the error propagates, and the next open resumes from the one that failed. This is checkpoint-per-version, **not** whole-batch-atomic (a single `up` runs through the normal collection API, so write bodies must be idempotent — `createIndex` already is). Node runs it via the napi binding; the browser runs it in the OPFS worker. React Native throws a clear "not available on this binary" error until its JSI HostObject exposes the version accessors (the Rust FFI is in place). See [Migrations](https://taladb.dev/api/migrations).
+- **`SyncResult.skipped` / `SyncResult.quarantined`** — a validated sync pass now reports how many pulled documents an import validator skipped (a collection this client doesn't model) or quarantined (failed structural validation). Both optional and additive — unset when no `syncSchema` applied.
+- **Native binding accessors** — `@taladb/node` and `@taladb/web` expose `userVersion()` / `setUserVersion(v)` (backing the migration runner) and `importChangesValidated(changeset, schemas)` / `quarantined(collection)` (backing validated sync). The React Native Rust FFI gains `taladb_user_version` / `taladb_set_user_version` (JSI glue pending).
+
+### Fixed
+
+- **Docs — the Migrations API page documented a feature that did not exist** — `openDB({ migrations })` was fully documented (with a false "single atomic transaction" guarantee) but never implemented; passing `migrations` was silently ignored. It is now implemented (see above) and the page rewritten to the real per-version-checkpoint semantics, with an idempotency note.
+
 ## [0.9.1] - 2026-07-12
 
 ### Added

@@ -17,57 +17,26 @@ Better DX drives adoption and reduces time-to-production.
 
 ### Sync
 
-- ✅ **Bidirectional sync** *(shipped: Node.js + browser)* — `db.sync(adapter, { collections, direction })` pulls remote changes and pushes local ones with Last-Write-Wins merge and incremental cursors. Ships with a reference `HttpSyncAdapter`; any transport plugs in via the `SyncAdapter` interface. In the browser (v0.9.0) the whole sync pass runs inside the Dedicated Worker, off the main thread. See [Bidirectional Sync](/guide/bidirectional-sync).
 - 🟡 **Bidirectional sync — React Native** *(implemented, pending on-device verification)* — the changeset primitives (`exportChanges` / `importChanges` / `listCollectionNames`) are now wired through the full stack: Rust FFI → C header → JSI HostObject (C++) → the TS adapter, which feature-detects them and enables the same `db.sync()` used on Node/web (falling back to a clear error on older binaries). The Rust FFI and TS layers are compiled/typechecked; **the JSI native glue has not yet been built or run on a device/simulator** — that verification (iOS Simulator + Android emulator) is the remaining gate before it's marked shipped. Still to follow: an `AppState`-driven sync example and background-sync integration docs (iOS BGTaskScheduler / Android WorkManager via e.g. `react-native-background-fetch`) — mobile background execution is OS-scheduled, so the guide will teach "opportunistic background catch-up, guaranteed reconciliation on launch".
-- 🟡 **Scoped replication hooks — `useQuery` / `useQueries` / `useMutation`** *(next release — v0.9.1)* — react-query-shaped hooks for `@taladb/react` that bind a component or route to a *slice* of a remote origin, on demand, instead of the global-and-imperative `db.sync()`. The defining idea: the local store is a durable **replica, not a cache** — the network write lands in the real local collection and the existing live query re-renders off it (one-way data flow, so there's no `queryKey` and no `invalidateQueries` — writing to the collection *is* the invalidation). An ergonomic surface *onto* the existing sync layer, not a second data system. Mutations write local-first, then replicate out through a durable, endpoint-tagged outbox (reusing the core push retry/backoff), never a naked POST. Inherits the database's guarantees — encryption at rest, schema validation, durability — and is strictly typed end to end: remote JSON is validated against the collection schema, never cast (`as T`) at the boundary. Read modes (`local-first` / `remote-first` / `local-only` / `remote-only`) and a `pollMs` refresh interval reuse the same replication vocabulary as the pull path below. Design doc: [`packages/clients/react/docs/scoped-replication.md`](https://github.com/thinkgrid-labs/taladb/blob/main/packages/clients/react/docs/scoped-replication.md). Decided: sync-contract transport (built on the existing `db.sync()` machinery); origin-authoritative write-authority by default, local-authoritative an explicit per-collection opt-in.
-- **Schema evolution for synced data — per-document versioning + import-time normalization** *(next — v0.9.2)* — the piece that makes [scoped replication](#scoped-replication-hooks-usequery-usequeries-usemutation) robust when users drift across app versions and documents arrive in different shapes (some fields missing, some newer). Today's tools are single-device: `openDB({ migrations })` runs **at open** over the docs present then, and `db.collection(name, { schema })` validates **only on `insert`** — so two gaps open under sync: (1) `importChanges` is pure Last-Write-Wins and never validates, so foreign-shaped or malformed docs land unchecked (the "validate, never cast" guarantee currently holds only at the React hook layer, not in `db.sync()` itself); and (2) documents pulled *after* open bypass the importing client's migrations, so a client accumulates a mix of migrated and un-migrated shapes. Planned:
-  - **Per-document schema version** — tag each doc with a `_v` so its shape is self-describing across peers, independent of the device-level `db_version`.
-  - **Import-/read-time normalization** — a per-collection `migrateDocument(doc, fromVersion)` that upgrades a below-current doc when it is imported or read (filling defaults, renaming), not only at open — the RxDB/Realm model, adapted to continuous sync.
-  - **Validate-on-import** — push the schema check down into `importChanges` with a *tolerant* policy (coerce / skip-and-quarantine, never hard-reject), so hostile data can't slip in but a merely-old-shape doc is normalized rather than dropped.
-  - Until this lands, the safe path is **additive-only** schema evolution for synced collections (only ever add optional fields; never rename/remove/retype in place) plus the origin as the canonical-shape gate — a discipline, documented alongside the scoped-replication guide.
+- **Deeper schema-evolution normalization** — beyond the shipped structural validate-on-import: a per-collection `migrateDocument(doc, fromVersion)` for renames/computed fields and *read-time* normalization, plus carrying `importChangesValidated` into the React Native JSI binding. The `migrateDocument` piece is blocked on the changeset being an opaque core-encoded form (an arbitrary JS transform can't run in the import loop) — a structural rename-map is the likely first step. *(Base validate-on-import + `_v` upgrades already ship on browser + Node — see [Schema & Sync Standards](/guide/schema-and-sync-standards); additive-only + origin-authoritative shape remains the safe path.)*
+- **Application schema migrations — React Native + optional transactional mode** — expose the `userVersion`/`setUserVersion` accessors on the React Native JSI HostObject (the Rust FFI is already in place), and add an optional whole-batch-atomic mode once a multi-write transaction primitive exists in the high-level API. *(`openDB({ migrations })` already ships on browser + Node with per-version checkpointing — see [Migrations](/api/migrations).)*
 - **Server-assigned sync sequence cursor** — pull filtering currently relies on `changed_at` timestamps (see the two-watermark design in the guide); a server-assigned monotonic sequence would make pull cursors fully robust against clock skew between peers. Requires a small `SyncAdapter` contract extension.
 - **HTTP sync — configurable push batching & pull interval** — today neither direction is coalescible. The Rust-core `SyncConfig` / `HttpSyncHook` (see [HTTP Push Sync](/guide/http-sync)) POSTs on *every* committed write with no debounce or flush window — the only existing timing knob is per-request retry backoff (200/400/800 ms × 3), which is unrelated. The JS `HttpSyncAdapter` (see [Bidirectional Sync](/guide/bidirectional-sync)) has no polling loop of its own at all; every guide example hand-rolls `setInterval(syncNow, 30_000)`, and `@taladb/next/client`'s `<SyncProvider interval={30_000}>` just wraps that same pattern one layer up rather than exposing it from core. Proposed:
   - Push: a `flushMs` option on `SyncConfig`, mirroring the existing storage-layer `durability.flushMs` knob — coalesce writes inside the window into one POST instead of one-per-write. Default `flushMs: 0` keeps today's immediate behavior so this is additive, not breaking.
   - Pull: a `pollMs` option so `db.sync()` (or a new `db.startSync()`) owns a cancellable, cron-like interval loop instead of every app re-implementing `setInterval`. No default exists anywhere today — ship one (30 s matches the guide's own example and `SyncProvider`'s default) so `pollMs` works unset.
-- Native NoSQL adapters — for **server-side** TalaDB, sync directly to a database with no intermediate API. (Browser/mobile apps still relay through your own API — a database credential must never reach a client.)
-  - ✅ **`@taladb/sync-mongodb`** *(shipped)* — Last-Write-Wins conditional upsert into a MongoDB collection; also acts as a sync hub for a fleet of peers. Server-side only. See [Bidirectional Sync → MongoDB adapter](/guide/bidirectional-sync#mongodb-adapter).
-  - `@taladb/sync-firestore`, `@taladb/sync-dynamodb` — same `SyncAdapter` interface, next up.
-- ✅ **Per-collection sync** *(shipped)* — `db.sync()` syncs all collections by default; scope with `collections` (allow-list) or `exclude` (deny-list). Reserved `_`-prefixed collections are never synced. See [Bidirectional Sync → Selecting collections](/guide/bidirectional-sync#selecting-collections).
+- Native NoSQL adapters — for **server-side** TalaDB, sync directly to a database with no intermediate API. (Browser/mobile apps still relay through your own API — a database credential must never reach a client.) `@taladb/sync-mongodb` shipped; `@taladb/sync-firestore` and `@taladb/sync-dynamodb` are next, same `SyncAdapter` interface.
 
-### Aggregation API
+### Compound indexes — remaining work
 
-✅ **Shipped (all runtimes)** — a pipeline-style aggregation API for computing summaries inside the engine without materialising every document in JavaScript. Available on Node.js, the browser (direct + OPFS worker), and React Native. See [Aggregation](/api/aggregation).
+Multi-field B-tree indexes shipped (Node.js + browser; React Native pending on-device verification). Still to do:
 
-- `collection.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }])`
-- Stages: `$match`, `$group`, `$sort`, `$skip`, `$limit`, `$project`
-- Group accumulators: `$sum`, `$count`, `$avg`, `$min`, `$max`, `$push`, `$addToSet`, `$first`, `$last`
-- Runs as a single pass over the B-tree / index; `$match` as the first stage uses an index
-
-### ✅ Compound indexes *(shipped: Node.js + browser in v0.9.0)*
-
-Multi-field B-tree indexes so a query constrained on two or more fields uses one index scan instead of a full-collection scan:
-
-- `collection.createCompoundIndex(['userId', 'status'])` — composite key, ascending. `dropCompoundIndex(fields)` to remove.
-- The query planner picks it automatically for an `$and` where **every** field of the index is constrained by equality (e.g. `find({ userId, status })`). Covered by the core test suite and a native e2e.
-- Available on Node.js and the browser (OPFS worker + in-memory). React Native is implemented (FFI + JSI) but pending on-device verification, same as bidirectional sync.
-- ⬜ Still to do: partial-prefix and trailing-range matching (use the index when only the leading field(s) are constrained, or the last is a range); per-field **descending** order (`CompoundIndexDef` has no direction yet); the `createIndex(['a','b'])` array-sugar overload.
+- Partial-prefix and trailing-range matching — use the index when only the leading field(s) are constrained, or the last is a range.
+- Per-field **descending** order (`CompoundIndexDef` has no direction yet).
+- The `createIndex(['a','b'])` array-sugar overload.
 
 ### `taladb generate` — TypeScript type generation
 
 Inspect a live database and emit TypeScript interfaces for each collection, inferred from the stored documents. Useful for projects that don't start with a schema.
-
-### ✅ `@taladb/react` — drop-in Next.js client support
-
-The build output ships the `'use client'` directive (the SWR / react-query convention), and `<TalaDBProvider name="myapp.db" fallback={…}>` owns the lazy, client-only `openDB()` lifecycle — children render only once the db is ready, so hooks never observe a missing instance. The `db`-prop form stays for React Native and plain React. One package, zero forks.
-
-### ✅ `@taladb/next` — first-party Next.js integration
-
-Next.js can never render a user's on-device data in server components — the honest server story is that **your Next API routes are the sync backend**. This package makes that one line on each side:
-
-- **`@taladb/next/server`** — `createSyncHandlers({ store, authorize })` returns `{ POST, GET }` route handlers implementing the [two-endpoint sync contract](/guide/bidirectional-sync#your-server-two-endpoints). `store` is pluggable: in-memory (dev), a server-side TalaDB via `@taladb/node` (the batteries-included default — TalaDB syncing to TalaDB), or MongoDB via `@taladb/sync-mongodb`. `authorize(req)` returns a scope key, giving per-user change partitioning — the security boundary — for free.
-- **`@taladb/next/client`** — `<SyncProvider endpoint="/api/sync" interval={30_000}>`, packaging the guide's start/interval/online/visibility cadence.
-
-Subpath exports (`/server`, `/client`) follow the next-auth convention and keep the RSC boundary explicit in the import path. Verified end-to-end (real Chrome client → handlers → TalaDB-backed store), plus `examples/nextjs-sync` in the repo — CI runs a real `next build` over it.
 
 ### Framework adapters — Svelte and Vue
 
@@ -97,15 +66,6 @@ Syntax highlighting for TalaDB filter expressions in JSON, inline document previ
 
 Driven by findings from the [benchmark suites](/benchmarks) (`pnpm bench`, `pnpm bench:web`). The goal: keep TalaDB among the fastest embedded databases on every JS runtime.
 
-### ✅ Faster flat vector search *(shipped in v0.9.x)*
-
-The brute-force `findNearest` scoring loop was rewritten and is now **~2× faster** (measured on the benchmark laptop: 100k × 384-dim from 369 ms → ~197 ms; 10k from 40 ms → ~18 ms). Four changes, all in the core scan:
-
-- **Score straight from stored bytes** — the old path decoded every stored vector into a fresh `Vec<f32>` (one heap allocation per vector per query, ~100k/query at scale) before scoring. Scoring now streams f32s directly from the raw LE bytes, so the allocation storm is gone.
-- **Hoist the query norm** — `cosine_similarity` recomputed the *query's* own L2 norm against every candidate; it's constant, so it's now computed once per query.
-- **Top-k by partial selection** — `select_nth_unstable` (O(n) average) replaces the full O(n log n) sort over all candidates; only the k results are then ordered.
-- **Filter-first for hybrid** — a pre-filter now resolves to an id set *before* the scan, so filtered-out vectors are never scored (a 10 %-selective filter skips 90 % of the work).
-
 ### Cached decoded vectors — avoid re-reading storage per query
 
 The flat path still `scan_all`s the entire vector table from redb on **every** query (150 MB of reads for 100k × 384-dim). A persistent in-memory decoded-vector cache — invalidated on writes, mirroring the existing HNSW-graph cache — would make repeated queries memory-bound instead of storage-bound. Likely the single largest remaining flat-search win.
@@ -117,11 +77,9 @@ The scoring reductions are scalar today. The WASM lever is **measured and confir
 - **WASM** — a `+simd128` build was A/B'd on the benchmark laptop and **~halves** browser vector search (50k: 172 ms → 81 ms; 10k: 35 ms → 17 ms), restoring near-native parity. The remaining work is *shipping* it safely: a single simd128 module fails to instantiate on browsers without WASM SIMD (Safari 15.2–16.3, which TalaDB otherwise supports via OPFS), so this needs either dual builds with runtime feature detection (load simd or scalar `.wasm`) or a deliberate baseline bump to simd128-capable browsers. The build itself is just `RUSTFLAGS="-C target-feature=+simd128"` — LLVM autovectorizes the v0.9.0 byte-streaming loops with no code change. (Also: the `release-wasm` profile in `Cargo.toml` sets `opt-level = "z"` but is *unused* — remove it so nobody ships size-optimized vectors by accident.)
 - **Native**: the release profile sets no `target-cpu`, so distributed binaries can't assume AVX2/NEON. An explicit `std::simd` (or chunked-FMA) dot-product kernel with runtime feature detection would vectorise the multiply-add without breaking portability of the prebuilt `.node`.
 
-### ✅ Query planner — bounded range plans *(shipped in v0.9.0)*
+### Query planner — remaining work
 
-A two-sided range (`$gte` + `$lt` on the same indexed field) is now planned as **one bounded index scan** instead of a half-open scan that post-filtered the far bound over the whole tail. Measured: a ~100-doc `publishedAt` window at 100k docs dropped from ~463 ms to **0.76 ms** (~600×). The combined plan covers both Int- and Float-typed index entries (keys are type-prefixed) and a cross-type parity test asserts it returns exactly the unindexed result.
-
-- ⬜ Still to do: extend to `$in` + range combinations on compound indexes once those land.
+Bounded two-sided range plans (`$gte` + `$lt` on one indexed field → a single bounded index scan) shipped. Still to do: extend to `$in` + range combinations on compound indexes once partial-prefix matching lands.
 
 ### Non-blocking HNSW graph builds
 

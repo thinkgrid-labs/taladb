@@ -543,6 +543,26 @@ async function dispatch(op, args) {
       return applied;
     }
 
+    case 'importChangesetValidated': {
+      // Tolerant validated import: normalize/skip/quarantine per schema, LWW.
+      // Returns a JSON string { applied, skipped, quarantined }.
+      const reportJson = db.importChangesetValidated(args.changesetJson, args.schemasJson);
+      if ((JSON.parse(reportJson).applied ?? 0) > 0) onWriteCommitted();
+      return reportJson;
+    }
+
+    case 'quarantined':
+      // JSON array of documents set aside by a validated import.
+      return db.quarantined(args.collection);
+
+    case 'userVersion':
+      // Current application migration version (backs openDB({ migrations })).
+      return db.userVersion();
+
+    case 'setUserVersion':
+      db.setUserVersion(args.version);
+      return null;
+
     case 'close':
       // Give accepted HTTP push events a bounded opportunity to finish.
       {

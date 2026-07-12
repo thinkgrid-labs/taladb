@@ -724,3 +724,280 @@ fn sync_cursor_collection_is_addressable() {
             .contains(&"__taladb_sync".to_string())
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tolerant import-time validation (ImportValidator)
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+use taladb_core::sync::{ImportDecision, ImportValidator};
+
+/// Test validator modelling the three tolerant outcomes plus coercion:
+/// - collection "ignored"        -> Skip
+/// - missing/blank "name" string -> Quarantine
+/// - doc tagged `_v = 0`         -> Coerce (stamp it up to _v = 1)
+/// - otherwise                   -> Accept
+struct DemoValidator;
+
+impl ImportValidator for DemoValidator {
+    fn check(&self, collection: &str, doc: &Document) -> ImportDecision {
+        if collection == "ignored" {
+            return ImportDecision::Skip;
+        }
+        match doc.get("name").and_then(|v| v.as_str()) {
+            Some(name) if !name.is_empty() => {}
+            _ => return ImportDecision::Quarantine("missing required `name`".into()),
+        }
+        // Below-current shape: upgrade in place (RxDB-style migrateDocument).
+        if matches!(doc.get("_v"), Some(Value::Int(0)) | None) {
+            let mut upgraded = doc.clone();
+            upgraded.set("_v", Value::Int(1));
+            return ImportDecision::Coerce(upgraded);
+        }
+        ImportDecision::Accept
+    }
+}
+
+fn upsert(collection: &str, fields: Vec<(String, Value)>, changed_at: u64) -> Change {
+    let mut fields = fields;
+    fields.push(("_changed_at".into(), i(changed_at as i64)));
+    let doc = Document::new(fields);
+    Change {
+        collection: collection.into(),
+        id: doc.id,
+        op: ChangeOp::Upsert(doc),
+        changed_at,
+    }
+}
+
+#[test]
+fn validated_import_accepts_valid_and_reports_applied() {
+    let db = Database::open_in_memory().unwrap();
+    let changeset = vec![upsert(
+        "users",
+        vec![("name".into(), s("Alice")), ("_v".into(), i(1))],
+        1000,
+    )];
+
+    let report = db
+        .import_changes_validated(changeset, Arc::new(DemoValidator))
+        .unwrap();
+
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.quarantined, 0);
+    assert_eq!(
+        db.collection("users").unwrap().count(Filter::All).unwrap(),
+        1
+    );
+}
+
+#[test]
+fn validated_import_coerces_below_current_shape() {
+    let db = Database::open_in_memory().unwrap();
+    // No _v => treated as v0 and upgraded to v1 on the way in.
+    let changeset = vec![upsert("users", vec![("name".into(), s("Bob"))], 1000)];
+
+    let report = db
+        .import_changes_validated(changeset, Arc::new(DemoValidator))
+        .unwrap();
+
+    assert_eq!(report.applied, 1);
+    let stored = db.collection("users").unwrap().find(Filter::All).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        stored[0].get("_v"),
+        Some(&Value::Int(1)),
+        "coerced doc must be stamped to v1"
+    );
+}
+
+#[test]
+fn validated_import_quarantines_invalid_without_aborting_batch() {
+    let db = Database::open_in_memory().unwrap();
+    // A bad doc sandwiched between two good ones: the batch must still apply both good docs.
+    let changeset = vec![
+        upsert(
+            "users",
+            vec![("name".into(), s("Ana")), ("_v".into(), i(1))],
+            1000,
+        ),
+        upsert(
+            "users",
+            vec![("age".into(), i(30)), ("_v".into(), i(1))],
+            1000,
+        ), // no name -> quarantine
+        upsert(
+            "users",
+            vec![("name".into(), s("Cid")), ("_v".into(), i(1))],
+            1000,
+        ),
+    ];
+
+    let report = db
+        .import_changes_validated(changeset, Arc::new(DemoValidator))
+        .unwrap();
+
+    assert_eq!(
+        report.applied, 2,
+        "both valid docs must land despite the bad one"
+    );
+    assert_eq!(report.quarantined, 1);
+    assert_eq!(
+        db.collection("users").unwrap().count(Filter::All).unwrap(),
+        2
+    );
+
+    // The rejected doc is retained, recoverable, with its reason.
+    let held = db.quarantined("users").unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].reason, "missing required `name`");
+    assert_eq!(held[0].changed_at, 1000);
+    assert_eq!(held[0].document.get("age"), Some(&Value::Int(30)));
+}
+
+#[test]
+fn validated_import_skips_unmodelled_collection() {
+    let db = Database::open_in_memory().unwrap();
+    let changeset = vec![upsert("ignored", vec![("name".into(), s("noise"))], 1000)];
+
+    let report = db
+        .import_changes_validated(changeset, Arc::new(DemoValidator))
+        .unwrap();
+
+    assert_eq!(report.skipped, 1);
+    assert_eq!(report.applied, 0);
+    assert_eq!(
+        db.collection("ignored")
+            .unwrap()
+            .count(Filter::All)
+            .unwrap(),
+        0
+    );
+    assert!(db.quarantined("ignored").unwrap().is_empty());
+}
+
+#[test]
+fn unvalidated_import_still_applies_everything() {
+    // Back-compat: import_changes (no validator) must be unchanged.
+    let db = Database::open_in_memory().unwrap();
+    let changeset = vec![
+        upsert("users", vec![("age".into(), i(30))], 1000), // would be quarantined *with* a validator
+    ];
+    let applied = db.import_changes(changeset).unwrap();
+    assert_eq!(applied, 1);
+    assert_eq!(
+        db.collection("users").unwrap().count(Filter::All).unwrap(),
+        1
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Built-in SchemaValidator / StructuralSchema
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use taladb_core::{FieldType, SchemaValidator, StructuralSchema};
+
+fn schema_validator(col: &str, schema: StructuralSchema) -> Arc<SchemaValidator> {
+    let mut m = HashMap::new();
+    m.insert(col.to_string(), schema);
+    Arc::new(SchemaValidator::new(m))
+}
+
+#[test]
+fn structural_schema_accepts_valid_and_quarantines_bad_type() {
+    let db = Database::open_in_memory().unwrap();
+    let mut types = HashMap::new();
+    types.insert("name".to_string(), FieldType::Str);
+    types.insert("age".to_string(), FieldType::Int);
+    let schema = StructuralSchema {
+        version: 1,
+        required: vec!["name".into()],
+        types,
+        defaults: vec![],
+    };
+    let v = schema_validator("users", schema);
+
+    let changeset = vec![
+        upsert(
+            "users",
+            vec![
+                ("name".into(), s("Ana")),
+                ("age".into(), i(30)),
+                ("_v".into(), i(1)),
+            ],
+            1000,
+        ),
+        upsert(
+            "users",
+            vec![("name".into(), i(42)), ("_v".into(), i(1))],
+            1000,
+        ), // name wrong type
+        upsert(
+            "users",
+            vec![("age".into(), i(9)), ("_v".into(), i(1))],
+            1000,
+        ), // missing required name
+    ];
+    let report = db.import_changes_validated(changeset, v).unwrap();
+
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.quarantined, 2);
+    let held = db.quarantined("users").unwrap();
+    assert_eq!(held.len(), 2);
+}
+
+#[test]
+fn structural_schema_upgrades_below_version_with_defaults() {
+    let db = Database::open_in_memory().unwrap();
+    let schema = StructuralSchema {
+        version: 2,
+        required: vec![],
+        types: HashMap::new(),
+        defaults: vec![("locale".into(), s("en"))],
+    };
+    let v = schema_validator("posts", schema);
+
+    // Doc has no _v (=> v0) and no locale — should be upgraded to v2 with locale.
+    let changeset = vec![upsert("posts", vec![("title".into(), s("hi"))], 1000)];
+    let report = db.import_changes_validated(changeset, v).unwrap();
+
+    assert_eq!(report.applied, 1);
+    let stored = db.collection("posts").unwrap().find(Filter::All).unwrap();
+    assert_eq!(stored[0].get("_v"), Some(&Value::Int(2)));
+    assert_eq!(stored[0].get("locale"), Some(&Value::Str("en".into())));
+}
+
+#[test]
+fn structural_schema_accepts_newer_peer_shape_untouched() {
+    let db = Database::open_in_memory().unwrap();
+    let schema = StructuralSchema {
+        version: 1,
+        required: vec!["name".into()],
+        types: HashMap::new(),
+        defaults: vec![],
+    };
+    let v = schema_validator("users", schema);
+
+    // _v = 5 is ahead of our v1: accept as-is even though it lacks `name`.
+    let changeset = vec![upsert(
+        "users",
+        vec![("future".into(), s("x")), ("_v".into(), i(5))],
+        1000,
+    )];
+    let report = db.import_changes_validated(changeset, v).unwrap();
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.quarantined, 0);
+}
+
+#[test]
+fn structural_schema_unregistered_collection_passes_through() {
+    let db = Database::open_in_memory().unwrap();
+    let v = schema_validator("users", StructuralSchema::default());
+    // "other" has no registered schema -> accepted regardless of shape.
+    let changeset = vec![upsert("other", vec![("anything".into(), i(1))], 1000)];
+    let report = db.import_changes_validated(changeset, v).unwrap();
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.skipped, 0);
+}

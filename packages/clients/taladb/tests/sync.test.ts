@@ -258,3 +258,44 @@ describe('HttpSyncAdapter', () => {
     await expect(adapter.push('[]')).rejects.toThrow(/push failed: 500/);
   });
 });
+
+describe('runSync validated import', () => {
+  it('routes pulled changes through importChangesValidated when a syncSchema is registered', async () => {
+    const local = new MemHandle();
+    const server = new MemHandle();
+    server.put('b', 'from-server', 1500);
+    const adapter = memAdapter(server);
+
+    const validated = vi.fn(async () => ({ applied: 1, skipped: 2, quarantined: 3 }));
+    (local as unknown as { importChangesValidated: typeof validated }).importChangesValidated =
+      validated;
+
+    const res = await runSync(local, adapter, { collections: ['notes'] }, {
+      notes: { version: 1, required: ['body'] },
+    });
+
+    expect(validated).toHaveBeenCalledTimes(1);
+    const [, schemasJson] = validated.mock.calls[0] as unknown as [string, string];
+    expect(JSON.parse(schemasJson)).toEqual({ notes: { version: 1, required: ['body'] } });
+    expect(res.pulled).toBe(1);
+    expect(res.skipped).toBe(2);
+    expect(res.quarantined).toBe(3);
+  });
+
+  it('falls back to plain importChanges when no syncSchema applies', async () => {
+    const local = new MemHandle();
+    const server = new MemHandle();
+    server.put('b', 'from-server', 1500);
+    const adapter = memAdapter(server);
+
+    const validated = vi.fn(async () => ({ applied: 0, skipped: 0, quarantined: 0 }));
+    (local as unknown as { importChangesValidated: typeof validated }).importChangesValidated =
+      validated;
+
+    const res = await runSync(local, adapter, { collections: ['notes'] });
+
+    expect(validated).not.toHaveBeenCalled();
+    expect(res.pulled).toBe(1);
+    expect(local.get('b')).toBe('from-server');
+  });
+});

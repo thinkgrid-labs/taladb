@@ -16,6 +16,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDB, HttpSyncAdapter } from '../src/index';
+import type { TalaDB } from '../src/index';
 
 let nativeAvailable = true;
 try {
@@ -132,5 +133,86 @@ describe.skipIf(!nativeAvailable)('bidirectional sync e2e (native engine + HTTP)
 
     await dbA.close();
     await dbB.close();
+  });
+
+  it('validates on import: quarantines a bad-shape doc, applies the valid one', async () => {
+    const dbA = await openDB(join(dir, 'e.db'));
+    const dbB = await openDB(join(dir, 'f.db'));
+    const adapter = new HttpSyncAdapter({ endpoint });
+
+    // B models `articles` with a tolerant sync schema requiring a string `body`.
+    dbB.collection('articles', {
+      syncSchema: { version: 1, required: ['body'], types: { body: 'str' } },
+    });
+
+    // A (no schema) writes one valid and one body-less article.
+    await dbA.collection('articles').insert({ title: 'good', body: 'hello', _v: 1 });
+    await dbA.collection('articles').insert({ title: 'bad', _v: 1 }); // no body
+    await dbA.sync(adapter, { collections: ['articles'] });
+
+    const passB = await dbB.sync(adapter, { collections: ['articles'] });
+    // Note: the reference server's store is shared across tests in this suite,
+    // so `pulled` also counts docs from earlier tests; only the validated
+    // `articles` behaviour is asserted precisely here.
+    expect(passB.pulled).toBeGreaterThanOrEqual(1); // the valid article applied
+    expect(passB.quarantined).toBe(1); // the body-less one set aside
+
+    const live = await dbB.collection('articles').find({});
+    expect(live).toHaveLength(1);
+    expect(live[0].title).toBe('good');
+
+    const held = await dbB.quarantined!('articles');
+    expect(held).toHaveLength(1);
+    expect(held[0].reason).toContain('body');
+    expect(held[0].document.title).toBe('bad');
+
+    await dbA.close();
+    await dbB.close();
+  });
+});
+
+describe.skipIf(!nativeAvailable)('openDB({ migrations }) e2e (native engine)', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'taladb-migrations-e2e-'));
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Note: reopen-after-close on the *same* path within one process is avoided
+  // here — JS GC doesn't deterministically release the native file lock between
+  // a close() and the next open() (the sync tests above sidestep it the same
+  // way, one path per db). Cross-reopen persistence of the version counter is
+  // proven deterministically in the Rust core test `user_version_*`; the
+  // runner's ordering/checkpoint/skip logic is unit-tested in migrations.test.ts.
+  it('runs pending migrations in ascending order and applies their effects', async () => {
+    const path = join(dir, 'm.db');
+    const ran: number[] = [];
+    // Deliberately out of order to prove the runner sorts by version.
+    const migrations = [
+      { version: 2, up: async (db: TalaDB) => { ran.push(2); await db.collection('users').insert({ email: 'a@b.c', role: 'user' }); } },
+      { version: 1, up: async (db: TalaDB) => { ran.push(1); await db.collection('users').createIndex('email'); } },
+    ];
+
+    const db = await openDB(path, { migrations });
+    expect(ran).toEqual([1, 2]); // sorted ascending despite declaration order
+    // v1 created the index and v2 inserted through it — both effects present.
+    expect(await db.collection('users').count({})).toBe(1);
+    const [user] = await db.collection('users').find({ email: 'a@b.c' });
+    expect(user?.role).toBe('user');
+    await db.close();
+  });
+
+  it('a failing migration propagates and stops the run', async () => {
+    const path = join(dir, 'fail.db');
+    const ran: number[] = [];
+    const boom = [
+      { version: 1, up: async (db: TalaDB) => { ran.push(1); await db.collection('c').insert({ n: 1 }); } },
+      { version: 2, up: async () => { ran.push(2); throw new Error('boom'); } },
+      { version: 3, up: async () => { ran.push(3); } },
+    ];
+    await expect(openDB(path, { migrations: boom })).rejects.toThrow('boom');
+    expect(ran).toEqual([1, 2]); // v1 applied, v2 threw, v3 never ran
   });
 });
