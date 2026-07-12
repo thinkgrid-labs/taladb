@@ -1,14 +1,64 @@
 name: CI
 
 on:
+  # Post-merge validation only. Feature/dev branches are covered by the
+  # pull_request event below — running both would double every run.
   push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+  # No paths-ignore here on purpose: `ci-pass` is the required status check in
+  # branch protection, and a skipped workflow never reports one — a docs-only PR
+  # would hang forever on "Waiting for status".
   pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+# One run per PR (or per branch). A new push cancels the in-flight run for the
+# same PR instead of queueing a second full matrix.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve the cross-platform build matrix.
+  #
+  # macOS runners bill at 10x the Linux rate and Windows at 2x, so PRs build
+  # Linux only. The full three-OS matrix runs post-merge on `main` (and on
+  # manual dispatch), which is what gates releases anyway — `release.yml`
+  # rebuilds every platform artifact from the tag.
+  #
+  # Trade-off: a Windows- or macOS-only compile break surfaces on `main`
+  # rather than in the PR. Run the workflow manually (Actions → CI → Run
+  # workflow) on a branch touching platform-specific code to check early.
+  # ---------------------------------------------------------------------------
+  setup:
+    name: Setup — resolve build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      node: ${{ steps.matrix.outputs.node }}
+      cli: ${{ steps.matrix.outputs.cli }}
+    steps:
+      - name: Pick matrix for ${{ github.event_name }}
+        id: matrix
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            node='[{"os":"ubuntu-latest","artifact":"taladb-node-linux"}]'
+            cli='[{"os":"ubuntu-latest","artifact":"taladb-linux-x86_64","bin":"taladb"}]'
+          else
+            node='[{"os":"ubuntu-latest","artifact":"taladb-node-linux"},{"os":"macos-latest","artifact":"taladb-node-macos"},{"os":"windows-latest","artifact":"taladb-node-windows"}]'
+            cli='[{"os":"ubuntu-latest","artifact":"taladb-linux-x86_64","bin":"taladb"},{"os":"macos-latest","artifact":"taladb-macos-aarch64","bin":"taladb"},{"os":"windows-latest","artifact":"taladb-windows-x86_64","bin":"taladb.exe"}]'
+          fi
+          echo "node=$node" >> "$GITHUB_OUTPUT"
+          echo "cli=$cli"   >> "$GITHUB_OUTPUT"
+
   # ---------------------------------------------------------------------------
   # Lint & Test — native Rust (fast, no WASM toolchain needed)
   # ---------------------------------------------------------------------------
@@ -25,14 +75,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+        uses: Swatinem/rust-cache@v2
 
       - name: cargo check
         run: cargo check --workspace
@@ -65,7 +108,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: tsc --noEmit (taladb)
         run: node_modules/.bin/tsc -p packages/clients/taladb/tsconfig.json --noEmit
@@ -101,7 +144,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Verify package files exist
         run: |
@@ -128,17 +171,14 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-wasm-
+          key: wasm
 
       - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
 
       - name: Build WASM (release)
         run: wasm-pack build packages/bindings/web --target web --out-dir pkg --release
@@ -156,18 +196,12 @@ jobs:
   build-node:
     name: Build — Node.js (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: rust-check
+    needs: [setup, rust-check]
 
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: taladb-node-linux
-          - os: macos-latest
-            artifact: taladb-node-macos
-          - os: windows-latest
-            artifact: taladb-node-windows
+        include: ${{ fromJSON(needs.setup.outputs.node) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -176,14 +210,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-node-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-node-
+          key: node
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -197,7 +226,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build native module
         working-directory: packages/bindings/node
@@ -216,21 +245,12 @@ jobs:
   build-cli:
     name: Build — CLI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: rust-check
+    needs: [setup, rust-check]
 
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: taladb-linux-x86_64
-            bin: taladb
-          - os: macos-latest
-            artifact: taladb-macos-aarch64
-            bin: taladb
-          - os: windows-latest
-            artifact: taladb-windows-x86_64
-            bin: taladb.exe
+        include: ${{ fromJSON(needs.setup.outputs.cli) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -239,14 +259,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-cli-
+          key: cli
 
       - name: Build CLI (release)
         run: cargo build -p taladb-cli --release
@@ -279,7 +294,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       # The sync e2e suite (tests/sync.e2e.test.ts) runs against the real
       # native engine — download the freshly built linux binary so it executes
@@ -324,7 +339,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Unit + integration tests
         working-directory: packages/clients/react
@@ -359,7 +374,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Unit tests
         working-directory: packages/adapters/mongodb
@@ -394,7 +409,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       # taladbSyncStore tests run against the real native engine.
       - name: Download Node.js native module
@@ -439,7 +454,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build workspace packages the example consumes
         run: |
@@ -460,6 +475,7 @@ jobs:
     name: CI — all checks passed
     runs-on: ubuntu-latest
     needs:
+      - setup
       - rust-check
       - ts-check
       - validate-cloudflare
@@ -473,12 +489,15 @@ jobs:
       - build-example-next
     if: always()
     steps:
+      # Every job above runs unconditionally, so `skipped` here means an
+      # upstream job failed and its dependents never ran — treat it as a
+      # failure, otherwise the gate would go green on a broken run.
       - name: Check all jobs succeeded
         run: |
           results='${{ toJSON(needs.*.result) }}'
           echo "Job results: $results"
-          if echo "$results" | grep -qE '"(failure|cancelled)"'; then
-            echo "One or more required jobs failed or were cancelled."
+          if echo "$results" | grep -qE '"(failure|cancelled|skipped)"'; then
+            echo "One or more required jobs failed, was cancelled, or was skipped."
             exit 1
           fi
           echo "All jobs passed — safe to publish."
