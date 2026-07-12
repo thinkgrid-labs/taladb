@@ -35,9 +35,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use std::collections::HashMap;
 use taladb_core::{
-    Database, Filter, HnswOptions, HttpSyncHook, SyncHook, TalaDbConfig, Update, Value,
-    VectorMetric,
+    Database, FieldType, Filter, HnswOptions, HttpSyncHook, SchemaValidator, StructuralSchema,
+    SyncHook, TalaDbConfig, Update, Value, VectorMetric,
 };
 
 thread_local! {
@@ -136,6 +137,7 @@ pub unsafe extern "C" fn taladb_open_with_config(
     };
 
     let mut passphrase: Option<String> = None;
+    let mut durability_eventual = false;
     let sync_hook: Option<Arc<HttpSyncHook>> = if !config_json.is_null() {
         match unsafe { CStr::from_ptr(config_json) }.to_str() {
             Ok(json_str) => {
@@ -152,6 +154,7 @@ pub unsafe extern "C" fn taladb_open_with_config(
                             set_last_error(e.to_string());
                             return std::ptr::null_mut();
                         }
+                        durability_eventual = !config.durability.flush_every_write;
                         if config.sync.enabled {
                             Some(Arc::new(HttpSyncHook::new(config.sync)))
                         } else {
@@ -178,7 +181,10 @@ pub unsafe extern "C" fn taladb_open_with_config(
         None => Database::open(Path::new(path_str)),
     };
     match opened {
-        Ok(db) => Box::into_raw(Box::new(TalaDbHandle { db, sync_hook })),
+        Ok(db) => {
+            db.set_durability(durability_eventual);
+            Box::into_raw(Box::new(TalaDbHandle { db, sync_hook }))
+        }
         Err(e) => {
             set_last_error(e.to_string());
             std::ptr::null_mut()
@@ -749,6 +755,218 @@ pub unsafe extern "C" fn taladb_list_collection_names(handle: *mut TalaDbHandle)
                 std::ptr::null_mut()
             }
         },
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Read the current application migration version (0 if never set), or -1 on
+/// error. Backs the `openDB({ migrations })` runner.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_user_version(handle: *mut TalaDbHandle) -> i64 {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return -1,
+    };
+    match h.db.user_version() {
+        Ok(v) => v as i64,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+/// Persist the application migration version. Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_set_user_version(handle: *mut TalaDbHandle, version: u32) -> i32 {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return -1,
+    };
+    match h.db.set_user_version(version) {
+        Ok(()) => 0,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+/// Force any batched (eventual-durability) writes to disk. Returns 0 on
+/// success, -1 on error. No-op under the default immediate durability.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_flush(handle: *mut TalaDbHandle) -> i32 {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return -1,
+    };
+    match h.db.flush() {
+        Ok(()) => 0,
+        Err(e) => {
+            set_last_error(e.to_string());
+            -1
+        }
+    }
+}
+
+/// Build the per-collection structural schema map from a
+/// `{ "<collection>": { version, required, types, defaults, renames } }` JSON
+/// object. Returns an empty map on parse failure (import stays tolerant).
+fn build_schemas(schemas_json: &str) -> HashMap<String, StructuralSchema> {
+    let Ok(serde_json::Value::Object(obj)) =
+        serde_json::from_str::<serde_json::Value>(schemas_json)
+    else {
+        return HashMap::new();
+    };
+    let parse_field_type = |name: &str| match name {
+        "bool" => Some(FieldType::Bool),
+        "int" => Some(FieldType::Int),
+        "float" => Some(FieldType::Float),
+        "str" => Some(FieldType::Str),
+        "bytes" => Some(FieldType::Bytes),
+        "array" => Some(FieldType::Array),
+        "object" => Some(FieldType::Object),
+        "any" => Some(FieldType::Any),
+        _ => None,
+    };
+    let mut out = HashMap::with_capacity(obj.len());
+    for (col, desc) in &obj {
+        let version = desc
+            .get("version")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let required = desc
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let types = desc
+            .get("types")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| {
+                        v.as_str()
+                            .and_then(parse_field_type)
+                            .map(|t| (k.clone(), t))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let defaults = desc
+            .get("defaults")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), json_to_value(v)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let renames = desc
+            .get("renames")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(from, to)| to.as_str().map(|t| (from.clone(), t.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.insert(
+            col.clone(),
+            StructuralSchema {
+                version,
+                required,
+                types,
+                defaults,
+                renames,
+            },
+        );
+    }
+    out
+}
+
+/// Merge a JSON changeset through a tolerant structural validator built from
+/// `schemas_json`. Returns a JSON `{ "applied", "skipped", "quarantined" }`
+/// string, or NULL on error. Caller must free with `taladb_free_string`.
+///
+/// # Safety
+/// `handle` must be a live handle; `changeset_json` / `schemas_json` valid C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_import_changes_validated(
+    handle: *mut TalaDbHandle,
+    changeset_json: *const c_char,
+    schemas_json: *const c_char,
+) -> *mut c_char {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return std::ptr::null_mut(),
+    };
+    let (Some(cs), Some(sj)) = (cstr_to_string(changeset_json), cstr_to_string(schemas_json))
+    else {
+        return std::ptr::null_mut();
+    };
+    let changeset: taladb_core::Changeset = match serde_json::from_str(&cs) {
+        Ok(c) => c,
+        Err(e) => {
+            set_last_error(format!("changeset parse failed: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+    let validator = Arc::new(SchemaValidator::new(build_schemas(&sj)));
+    match h.db.import_changes_validated(changeset, validator) {
+        Ok(report) => {
+            let json = serde_json::json!({
+                "applied": report.applied,
+                "skipped": report.skipped,
+                "quarantined": report.quarantined,
+            });
+            to_cstring(json.to_string())
+        }
+        Err(e) => {
+            set_last_error(e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Documents set aside in `collection`'s quarantine table, as a JSON array of
+/// `{ document, reason, changedAt }`. NULL on error. Free with `taladb_free_string`.
+///
+/// # Safety
+/// `handle` must be a live handle; `collection` a valid C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn taladb_quarantined(
+    handle: *mut TalaDbHandle,
+    collection: *const c_char,
+) -> *mut c_char {
+    let h = match ptr_to_ref(handle) {
+        Some(h) => h,
+        None => return std::ptr::null_mut(),
+    };
+    let Some(col) = cstr_to_string(collection) else {
+        return std::ptr::null_mut();
+    };
+    match h.db.quarantined(&col) {
+        Ok(recs) => {
+            let arr: Vec<serde_json::Value> = recs
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "document": doc_to_json(&r.document),
+                        "reason": r.reason,
+                        "changedAt": r.changed_at,
+                    })
+                })
+                .collect();
+            to_cstring(serde_json::Value::Array(arr).to_string())
+        }
         Err(e) => {
             set_last_error(e.to_string());
             std::ptr::null_mut()

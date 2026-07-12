@@ -2,10 +2,11 @@ use napi::bindgen_prelude::{AsyncTask, Float32Array};
 use napi::{Env, Task};
 use napi_derive::napi;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 use taladb_core::{
-    Collection, Database, Filter, HnswOptions, HttpSyncHook, TalaDbConfig, TalaDbError, Update,
-    Value, VectorMetric, VectorSearchResult,
+    Collection, Database, FieldType, Filter, HnswOptions, HttpSyncHook, SchemaValidator,
+    StructuralSchema, TalaDbConfig, TalaDbError, Update, Value, VectorMetric, VectorSearchResult,
 };
 
 fn err_to_napi(e: TalaDbError) -> napi::Error {
@@ -299,6 +300,94 @@ fn parse_hnsw_opts(
 }
 
 // ---------------------------------------------------------------------------
+// Import-validation schema helpers
+// ---------------------------------------------------------------------------
+
+fn parse_field_type(name: &str) -> napi::Result<FieldType> {
+    Ok(match name {
+        "bool" => FieldType::Bool,
+        "int" => FieldType::Int,
+        "float" => FieldType::Float,
+        "str" => FieldType::Str,
+        "bytes" => FieldType::Bytes,
+        "array" => FieldType::Array,
+        "object" => FieldType::Object,
+        "any" => FieldType::Any,
+        other => {
+            return Err(napi::Error::from_reason(format!(
+                "unknown field type \"{other}\" (expected bool|int|float|str|bytes|array|object|any)"
+            )));
+        }
+    })
+}
+
+fn parse_schema_desc(desc: &JsonValue) -> napi::Result<StructuralSchema> {
+    let version = desc.get("version").and_then(JsonValue::as_i64).unwrap_or(0);
+    let required = desc
+        .get("required")
+        .and_then(JsonValue::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let types = match desc.get("types").and_then(JsonValue::as_object) {
+        Some(map) => {
+            let mut out = HashMap::with_capacity(map.len());
+            for (k, v) in map {
+                let name = v.as_str().ok_or_else(|| {
+                    napi::Error::from_reason(format!("schema type for `{k}` must be a string"))
+                })?;
+                out.insert(k.clone(), parse_field_type(name)?);
+            }
+            out
+        }
+        None => HashMap::new(),
+    };
+    let defaults = desc
+        .get("defaults")
+        .and_then(JsonValue::as_object)
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let renames = desc
+        .get("renames")
+        .and_then(JsonValue::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(from, to)| to.as_str().map(|t| (from.clone(), t.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(StructuralSchema {
+        version,
+        required,
+        types,
+        defaults,
+        renames,
+    })
+}
+
+/// Parse a `{ "<collection>": <descriptor>, ... }` JSON object into the
+/// per-collection schema map backing [`SchemaValidator`].
+fn build_schemas(schemas_json: &str) -> napi::Result<HashMap<String, StructuralSchema>> {
+    let root: JsonValue = serde_json::from_str(schemas_json)
+        .map_err(|e| napi::Error::from_reason(format!("schema descriptor parse failed: {e}")))?;
+    let obj = root
+        .as_object()
+        .ok_or_else(|| napi::Error::from_reason("schema descriptor must be a JSON object"))?;
+    let mut out = HashMap::with_capacity(obj.len());
+    for (col, desc) in obj {
+        out.insert(col.clone(), parse_schema_desc(desc)?);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // napi bindings
 // ---------------------------------------------------------------------------
 
@@ -339,11 +428,24 @@ impl TalaDBNode {
             None => Database::open(std::path::Path::new(&path)),
         }
         .map_err(err_to_napi)?;
+        // Apply durability from config (default: flush every write / immediate).
+        if let Some(json) = config_json.as_deref()
+            && let Ok(cfg) = serde_json::from_str::<TalaDbConfig>(json)
+        {
+            db.set_durability(!cfg.durability.flush_every_write);
+        }
         let sync_hook = build_sync_hook(config_json)?;
         Ok(TalaDBNode {
             inner: Some(db),
             sync_hook,
         })
+    }
+
+    /// Force any batched (eventual-durability) writes to disk. No-op under the
+    /// default immediate durability. Backs `db.flush()`.
+    #[napi]
+    pub fn flush(&self) -> napi::Result<()> {
+        self.db()?.flush().map_err(err_to_napi)
     }
 
     /// Compact the underlying storage file, reclaiming space freed by deletes
@@ -400,6 +502,65 @@ impl TalaDBNode {
             .map_err(|e| napi::Error::from_reason(format!("changeset parse failed: {e}")))?;
         let n = self.db()?.import_changes(changeset).map_err(err_to_napi)?;
         Ok(n as u32)
+    }
+
+    /// Merge a JSON changeset through a tolerant structural validator built from
+    /// `schemas_json` — a `{ "<collection>": { version, required, types,
+    /// defaults } }` object. Every imported upsert is normalized, skipped, or
+    /// quarantined per its collection schema before Last-Write-Wins; a rejected
+    /// document is set aside (see `quarantined`), never dropped, and never
+    /// aborts the batch. Returns `{ applied, skipped, quarantined }`.
+    #[napi(js_name = "importChangesValidated")]
+    pub fn import_changes_validated(
+        &self,
+        changeset_json: String,
+        schemas_json: String,
+    ) -> napi::Result<JsonValue> {
+        let changeset: taladb_core::Changeset = serde_json::from_str(&changeset_json)
+            .map_err(|e| napi::Error::from_reason(format!("changeset parse failed: {e}")))?;
+        let schemas = build_schemas(&schemas_json)?;
+        let validator = Arc::new(SchemaValidator::new(schemas));
+        let report = self
+            .db()?
+            .import_changes_validated(changeset, validator)
+            .map_err(err_to_napi)?;
+        Ok(serde_json::json!({
+            "applied": report.applied,
+            "skipped": report.skipped,
+            "quarantined": report.quarantined,
+        }))
+    }
+
+    /// Return every document currently held in `collection`'s quarantine table,
+    /// each as `{ document, reason, changedAt }`. Empty when nothing has been
+    /// set aside. For operator inspection and recovery tooling.
+    #[napi(js_name = "quarantined")]
+    pub fn quarantined(&self, collection: String) -> napi::Result<Vec<JsonValue>> {
+        let recs = self.db()?.quarantined(&collection).map_err(err_to_napi)?;
+        Ok(recs
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "document": doc_to_json(&r.document),
+                    "reason": r.reason,
+                    "changedAt": r.changed_at,
+                })
+            })
+            .collect())
+    }
+
+    /// Read the current application migration version (0 if never set). Backs
+    /// the `openDB({ migrations })` runner, which advances it per migration.
+    #[napi(js_name = "userVersion")]
+    pub fn user_version(&self) -> napi::Result<u32> {
+        self.db()?.user_version().map_err(err_to_napi)
+    }
+
+    /// Persist the application migration version. Called after each migration's
+    /// body succeeds so a crash mid-run resumes from the last applied version.
+    #[napi(js_name = "setUserVersion")]
+    pub fn set_user_version(&self, version: u32) -> napi::Result<()> {
+        self.db()?.set_user_version(version).map_err(err_to_napi)
     }
 
     /// Get a collection by name. If an HTTP sync hook is configured it is

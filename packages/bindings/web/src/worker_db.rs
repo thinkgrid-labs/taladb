@@ -15,8 +15,8 @@ use web_sys::FileSystemSyncAccessHandle;
 #[cfg(not(feature = "cf-workers"))]
 use taladb_core::engine::RedbBackend;
 use taladb_core::{
-    Changeset, Database, Filter, HnswOptions, LastWriteWins, SyncAdapter, Update, Value,
-    VectorMetric,
+    Changeset, Database, Filter, HnswOptions, LastWriteWins, SchemaValidator, SyncAdapter, Update,
+    Value, VectorMetric,
 };
 // Encryption is only wired on the wasm OPFS open path — gate the imports the
 // same way as `open_with_config_and_opfs` so native workspace builds (CI's
@@ -24,9 +24,9 @@ use taladb_core::{
 #[cfg(all(target_arch = "wasm32", not(feature = "cf-workers")))]
 use taladb_core::{EncryptedBackend, MIN_PBKDF2_ITERATIONS, StorageBackend, derive_key};
 
-use crate::doc_to_json;
 #[cfg(not(feature = "cf-workers"))]
 use crate::storage::opfs_backend::OpfsBackend;
+use crate::{build_schemas, doc_to_json};
 
 #[cfg(target_arch = "wasm32")]
 use serde_json::{Map, Value as JsonValue, json};
@@ -387,6 +387,23 @@ impl WorkerDB {
     pub fn export_snapshot(&self) -> Result<Vec<u8>, JsValue> {
         self.db
             .export_snapshot()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Set write durability: `eventual = true` batches OPFS fsyncs for
+    /// throughput (call `flush()` to force), `false` (default) fsyncs each
+    /// commit. Derived from `durability.flush_every_write` by the worker.
+    #[wasm_bindgen(js_name = setDurability)]
+    pub fn set_durability(&self, eventual: bool) {
+        self.db.set_durability(eventual);
+    }
+
+    /// Force batched (eventual) OPFS writes to durable storage. No-op under the
+    /// default immediate durability. Backs `db.flush()`.
+    #[wasm_bindgen(js_name = flush)]
+    pub fn flush(&self) -> Result<(), JsValue> {
+        self.db
+            .flush()
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -891,6 +908,24 @@ impl WorkerDB {
         serde_json::to_string(&names).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Read the current application migration version (0 if never set). Backs
+    /// the `openDB({ migrations })` runner, which advances it per migration.
+    #[wasm_bindgen(js_name = userVersion)]
+    pub fn user_version(&self) -> Result<u32, JsValue> {
+        self.db
+            .user_version()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Persist the application migration version. Called after each migration's
+    /// body succeeds so a crash mid-run resumes from the last applied version.
+    #[wasm_bindgen(js_name = setUserVersion)]
+    pub fn set_user_version(&self, version: u32) -> Result<(), JsValue> {
+        self.db
+            .set_user_version(version)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     // ------------------------------------------------------------------
     // Bidirectional sync — changeset export / import
     // ------------------------------------------------------------------
@@ -937,6 +972,52 @@ impl WorkerDB {
             .import_changes(&self.db, changeset)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(applied as u32)
+    }
+
+    /// Import a remote changeset through a tolerant structural validator built
+    /// from `schemas_json` (`{ "<collection>": { version, required, types,
+    /// defaults } }`). Returns a JSON `{ applied, skipped, quarantined }`.
+    /// Rejected documents are set aside (see `quarantined`), never dropped.
+    #[wasm_bindgen(js_name = importChangesetValidated)]
+    pub fn import_changeset_validated(
+        &self,
+        changeset_json: &str,
+        schemas_json: &str,
+    ) -> Result<String, JsValue> {
+        let changeset: Changeset =
+            serde_json::from_str(changeset_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let schemas = build_schemas(schemas_json)?;
+        let report = self
+            .db
+            .import_changes_validated(changeset, Arc::new(SchemaValidator::new(schemas)))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&serde_json::json!({
+            "applied": report.applied,
+            "skipped": report.skipped,
+            "quarantined": report.quarantined,
+        }))
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Documents set aside in `collection`'s quarantine table, as a JSON array
+    /// of `{ document, reason, changedAt }`.
+    #[wasm_bindgen(js_name = quarantined)]
+    pub fn quarantined(&self, collection: &str) -> Result<String, JsValue> {
+        let recs = self
+            .db
+            .quarantined(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let arr: Vec<_> = recs
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "document": doc_to_json(&r.document),
+                    "reason": r.reason,
+                    "changedAt": r.changed_at,
+                })
+            })
+            .collect();
+        serde_json::to_string(&arr).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
 

@@ -180,6 +180,37 @@ int32_t taladb_import_changes(TalaDbHandle *handle,
  */
 char *taladb_list_collection_names(TalaDbHandle *handle);
 
+/**
+ * Merge a JSON changeset through a tolerant structural validator built from
+ * schemas_json ({ "<collection>": { version, required, types, defaults,
+ * renames } }). Returns a JSON "{ applied, skipped, quarantined }" string, or
+ * NULL on error. Caller must free with taladb_free_string().
+ */
+char *taladb_import_changes_validated(TalaDbHandle *handle,
+                                      const char   *changeset_json,
+                                      const char   *schemas_json);
+
+/**
+ * Documents set aside in a collection's quarantine table by a validated import,
+ * as a JSON array of { document, reason, changedAt }. NULL on error. Caller
+ * must free with taladb_free_string().
+ */
+char *taladb_quarantined(TalaDbHandle *handle, const char *collection);
+
+/**
+ * Read / write the application migration version (backs openDB({ migrations })).
+ * taladb_user_version returns the version (0 if unset) or -1 on error;
+ * taladb_set_user_version returns 0 on success, -1 on error.
+ */
+int64_t taladb_user_version(TalaDbHandle *handle);
+int32_t taladb_set_user_version(TalaDbHandle *handle, uint32_t version);
+
+/**
+ * Force any batched (eventual-durability) writes to disk. Returns 0 on success,
+ * -1 on error. No-op under the default immediate durability. Backs db.flush().
+ */
+int32_t taladb_flush(TalaDbHandle *handle);
+
 /* -------------------------------------------------------------------------
  * Index management
  * ---------------------------------------------------------------------- */

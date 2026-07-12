@@ -6,10 +6,14 @@ import type {
   TalaDB,
   SyncAdapter,
   SyncOptions,
+  SyncSchema,
+  QuarantinedDocument,
   AggregatePipeline,
+  Update,
+  Filter,
 } from './types';
 import { loadConfig, validateConfig } from './config';
-import type { TalaDbConfig, SyncConfig } from './config';
+import type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
 import { runSync, unsupportedSync, type SyncHandle } from './sync';
 
 // Re-export all public types for consumers (export…from satisfies S7763)
@@ -58,15 +62,23 @@ export class TalaDbValidationError extends Error {
 }
 
 /**
- * Wraps a `Collection<T>` to intercept writes (and optionally reads) through
- * the provided schema validator. Throws `TalaDbValidationError` on failure.
+ * Wraps a `Collection<T>` to intercept writes through a schema validator
+ * (`schema`) and/or normalize reads through a lazy `migrateDocument` — either
+ * or both. Returns the collection unchanged when neither applies.
+ *
+ * @internal Exported for unit testing; not part of the public API surface.
  */
-function applySchema<T extends Document>(
+export function applySchema<T extends Document>(
   col: Collection<T>,
   options: CollectionOptions<T>,
 ): Collection<T> {
-  const { schema, validateOnRead = false } = options;
-  if (!schema) return col;
+  const { schema, validateOnRead = false, migrateDocument, syncSchema, persistMigrations = false } = options;
+  if (!schema && !migrateDocument) return col;
+
+  if (migrateDocument && !(syncSchema && syncSchema.version && syncSchema.version > 0)) {
+    throw new Error('CollectionOptions.migrateDocument requires syncSchema.version (the migration target)');
+  }
+  const targetVersion = syncSchema?.version ?? 0;
 
   function parseWrite(doc: unknown, label: string): T {
     try {
@@ -76,40 +88,88 @@ function applySchema<T extends Document>(
     }
   }
 
-  function parseRead(doc: unknown): T {
+  /** `$set`/`$unset` that turns `original` into `migrated` (ignoring `_id`). */
+  function diffUpdate(original: T, migrated: T): Update<T> | null {
+    const $set: Record<string, unknown> = {};
+    const $unset: Record<string, true> = {};
+    for (const k of Object.keys(migrated)) {
+      if (k === '_id') continue;
+      if (JSON.stringify(migrated[k]) !== JSON.stringify(original[k])) $set[k] = migrated[k];
+    }
+    for (const k of Object.keys(original)) {
+      if (k !== '_id' && !(k in migrated)) $unset[k] = true;
+    }
+    const update: Record<string, unknown> = {};
+    if (Object.keys($set).length) update.$set = $set;
+    if (Object.keys($unset).length) update.$unset = $unset;
+    return Object.keys(update).length ? (update as Update<T>) : null;
+  }
+
+  /** Lazy read-time upgrade: migrate a below-target document, then stamp `_v`. */
+  function migrateRead(doc: T): T {
+    if (!migrateDocument) return doc;
+    const fromVersion = typeof doc._v === 'number' ? doc._v : 0;
+    if (fromVersion >= targetVersion) return doc;
+    return { ...migrateDocument(doc, fromVersion), _v: targetVersion };
+  }
+
+  async function readOne(doc: T | null): Promise<T | null> {
+    if (doc === null) return null;
+    const migrated = migrateRead(doc);
+    // Opt-in: write the upgraded shape back so it becomes permanent (filters and
+    // indexes on the new shape then match). Best-effort — a failed write leaves
+    // the returned value migrated and re-migrates next read. Skipped when the
+    // doc was already current (migrated === doc, same reference).
+    if (persistMigrations && migrated !== doc && typeof doc._id === 'string') {
+      const update = diffUpdate(doc, migrated);
+      if (update) {
+        try {
+          await col.updateOne({ _id: doc._id } as Filter<T>, update);
+        } catch {
+          // best-effort; the returned value is still migrated
+        }
+      }
+    }
+    if (!validateOnRead || !schema) return migrated;
     try {
-      return schema!.parse(doc);
+      return schema.parse(migrated);
     } catch (err) {
       throw new TalaDbValidationError(err, 'read');
     }
   }
 
+  const wrapReads = Boolean(migrateDocument) || (validateOnRead && Boolean(schema));
+
   return {
     ...col,
-    insert: async (doc) => {
-      parseWrite(doc, 'insert');
-      return col.insert(doc);
-    },
-    insertMany: async (docs) => {
-      docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
-      return col.insertMany(docs);
-    },
-    find: validateOnRead
+    insert: schema
+      ? async (doc) => {
+          parseWrite(doc, 'insert');
+          return col.insert(doc);
+        }
+      : col.insert.bind(col),
+    insertMany: schema
+      ? async (docs) => {
+          docs.forEach((doc, i) => parseWrite(doc, `insertMany[${i}]`));
+          return col.insertMany(docs);
+        }
+      : col.insertMany.bind(col),
+    find: wrapReads
       ? async (filter?) => {
           const docs = await col.find(filter);
-          return docs.map((d) => parseRead(d));
+          return Promise.all(docs.map((d) => readOne(d) as Promise<T>));
         }
       : col.find.bind(col),
-    findOne: validateOnRead
+    findOne: wrapReads
       ? async (filter) => {
           const doc = await col.findOne(filter);
-          return doc === null ? null : parseRead(doc);
+          return readOne(doc);
         }
       : col.findOne.bind(col),
   };
 }
 
-export type { TalaDbConfig, SyncConfig } from './config';
+export type { TalaDbConfig, SyncConfig, DurabilityConfig } from './config';
 
 // ============================================================
 // Platform detection + dynamic import
@@ -307,7 +367,12 @@ async function createInMemoryBrowserDB(_dbName: string): Promise<TalaDB> {
   return handle satisfies TalaDB;
 }
 
-async function createBrowserDB(dbName: string, config?: TalaDbConfig, passphrase?: string): Promise<TalaDB> {
+async function createBrowserDB(
+  dbName: string,
+  config?: TalaDbConfig,
+  passphrase?: string,
+  migrations?: Migration[],
+): Promise<TalaDB> {
   // createSyncAccessHandle (required for OPFS persistence) is only available
   // in Dedicated Workers per the WHATWG spec — not SharedWorkers. We use a
   // DedicatedWorker so each tab gets its own isolated worker + file handle.
@@ -349,7 +414,12 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig, passphrase
     };
   }
 
+  // Per-collection sync schemas, registered as collections are opened, so
+  // `db.sync()` validates pulled documents in the worker ("validate, never cast").
+  const syncSchemas: Record<string, SyncSchema> = {};
+
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
+    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const s = JSON.stringify;
     const wrapped: Collection<T> = {
       insert: (doc) =>
@@ -515,6 +585,7 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig, passphrase
   const handle = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: () => proxy.send<void>('compact'),
+    flush: async () => { await proxy.send<void>('flush'); },
     syncStatus: async () => JSON.parse(await proxy.send<string>('syncStatus')) as { pending: number; dropped: number; failed: number },
     flushSync: (timeoutMs = 5000) => proxy.send<boolean>('flushSync', { timeoutMs }),
     close: async () => {
@@ -532,11 +603,31 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig, passphrase
       proxy.send<string>('exportChangeset', { collectionsJson: JSON.stringify(collections), sinceMs }),
     importChanges: (changeset: string) =>
       proxy.send<number>('importChangeset', { changesetJson: changeset }),
+    importChangesValidated: async (changeset: string, schemasJson: string) =>
+      JSON.parse(await proxy.send<string>('importChangesetValidated', { changesetJson: changeset, schemasJson })) as {
+        applied: number;
+        skipped: number;
+        quarantined: number;
+      },
     listCollectionNames: async () =>
       JSON.parse(await proxy.send<string>('listCollections')) as string[],
+    quarantined: async <T extends Document = Document>(collection: string) =>
+      JSON.parse(await proxy.send<string>('quarantined', { collection })) as QuarantinedDocument<T>[],
     sync: (adapter: SyncAdapter, options: SyncOptions) =>
-      runSync(handle as unknown as SyncHandle, adapter, options),
+      runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
   };
+  if (migrations?.length) {
+    // Version accessors run inside the worker, alongside the engine, so the
+    // migration bodies (which write through the same worker) stay consistent.
+    await runMigrations(
+      handle,
+      async () => proxy.send<number>('userVersion'),
+      async (v) => {
+        await proxy.send<null>('setUserVersion', { version: v });
+      },
+      migrations,
+    );
+  }
   return handle satisfies TalaDB;
 }
 
@@ -544,7 +635,12 @@ async function createBrowserDB(dbName: string, config?: TalaDbConfig, passphrase
 // Node.js adapter (wraps @taladb/node native module)
 // ============================================================
 
-async function createNodeDB(dbName: string, config?: TalaDbConfig, passphrase?: string): Promise<TalaDB> {
+async function createNodeDB(
+  dbName: string,
+  config?: TalaDbConfig,
+  passphrase?: string,
+  migrations?: Migration[],
+): Promise<TalaDB> {
   // @taladb/node ships platform-specific .node binaries
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore — types generated by `napi build`; not available until package is built
@@ -556,7 +652,12 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig, passphrase?: 
   const configJson = config !== undefined ? JSON.stringify(config) : null;
   const db = TalaDBNode.open(dbName, configJson, passphrase ?? null);
 
+  // Per-collection sync schemas, registered as collections are opened, so
+  // `db.sync()` can validate pulled documents ("validate, never cast").
+  const syncSchemas: Record<string, SyncSchema> = {};
+
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
+    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const col = db.collection(name);
     // Prefer the *Async native variants (added in 0.8.1): they run on the
     // libuv thread pool instead of blocking the JS event loop. Fall back to
@@ -612,12 +713,36 @@ async function createNodeDB(dbName: string, config?: TalaDbConfig, passphrase?: 
     compact: async () => db.compact(),
     // Releases the native file handle/lock (no-op on older .node binaries).
     close: async () => db.close?.(),
+    flush: db.flush ? async () => { db.flush(); } : undefined,
     exportChanges: async (collections: string[], sinceMs: number) => db.exportChanges(sinceMs, collections),
     importChanges: async (changeset: string) => db.importChanges(changeset),
+    // Feature-detected: only present when the loaded .node binary supports it,
+    // so older prebuilt binaries fall back to plain importChanges.
+    importChangesValidated: db.importChangesValidated
+      ? async (changeset: string, schemasJson: string) =>
+          db.importChangesValidated(changeset, schemasJson) as {
+            applied: number;
+            skipped: number;
+            quarantined: number;
+          }
+      : undefined,
     listCollectionNames: async () => db.listCollectionNames(),
+    quarantined: async <T extends Document = Document>(collection: string) =>
+      (db.quarantined ? db.quarantined(collection) : []) as QuarantinedDocument<T>[],
     sync: (adapter: SyncAdapter, options: SyncOptions) =>
-      runSync(handle as unknown as SyncHandle, adapter, options),
+      runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
   };
+  if (migrations?.length) {
+    if (typeof db.userVersion !== 'function' || typeof db.setUserVersion !== 'function') {
+      throw new Error('openDB({ migrations }) requires @taladb/node ≥ 0.9.2 — rebuild the native module');
+    }
+    await runMigrations(
+      handle,
+      async () => db.userVersion(),
+      async (v) => db.setUserVersion(v),
+      migrations,
+    );
+  }
   return handle satisfies TalaDB;
 }
 
@@ -657,9 +782,24 @@ interface NativeDB {
   exportChanges?(collectionsJson: string[], sinceMs: number): string;
   importChanges?(changeset: string): number;
   listCollectionNames?(): string[];
+  // Validate-on-import (JSI HostObject 0.9.2+). Feature-detected so `db.sync()`
+  // falls back to unvalidated import on native modules that predate them.
+  importChangesValidated?(changeset: string, schemasJson: string): {
+    applied: number;
+    skipped: number;
+    quarantined: number;
+  };
+  quarantined?(collection: string): unknown[];
+  // Migration version accessors (openDB({ migrations })). Present once the JSI
+  // HostObject exposes them; feature-detected so older binaries throw a clear
+  // "not available" error instead of silently skipping migrations.
+  userVersion?(): number;
+  setUserVersion?(version: number): void;
+  // Force batched (eventual) writes durable. Feature-detected (JSI 0.9.2+).
+  flush?(): void;
 }
 
-async function createNativeDB(_dbName: string): Promise<TalaDB> {
+async function createNativeDB(_dbName: string, migrations?: Migration[]): Promise<TalaDB> {
   // The JSI HostObject is installed by @taladb/react-native's TurboModule
   // at app startup via TalaDBModule.initialize(dbName).
   // After that, it is available at globalThis.__TalaDB__.
@@ -672,7 +812,12 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
   }
   const native: NativeDB = maybeNative;
 
+  // Per-collection sync schemas, registered as collections are opened, so
+  // `db.sync()` validates pulled documents ("validate, never cast").
+  const syncSchemas: Record<string, SyncSchema> = {};
+
   function wrapCollection<T extends Document>(name: string, opts?: CollectionOptions<T>): Collection<T> {
+    if (opts?.syncSchema) syncSchemas[name] = opts.syncSchema;
     const wrapped: Collection<T> = {
       insert: async (doc) => native.insert(name, doc as Record<string, unknown>),
       insertMany: async (docs) => native.insertMany(name, docs as Record<string, unknown>[]),
@@ -726,9 +871,14 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
             collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
             exportChanges: async (collections: string[], sinceMs: number) => native.exportChanges!(collections, sinceMs),
             importChanges: async (changeset: string) => native.importChanges!(changeset),
+            // Feature-detected: present on 0.9.2+ JSI HostObjects; when absent,
+            // runSync falls back to unvalidated importChanges.
+            importChangesValidated: native.importChangesValidated
+              ? async (changeset: string, schemasJson: string) => native.importChangesValidated!(changeset, schemasJson)
+              : undefined,
             listCollectionNames: async () => native.listCollectionNames!(),
             sync: (adapter: SyncAdapter, options: SyncOptions) =>
-              runSync(handle as unknown as SyncHandle, adapter, options),
+              runSync(handle as unknown as SyncHandle, adapter, options, syncSchemas),
           };
           return {
             exportChanges: handle.exportChanges,
@@ -738,22 +888,108 @@ async function createNativeDB(_dbName: string): Promise<TalaDB> {
         })()
       : unsupportedSync('react-native');
 
-  return {
+  const handle: TalaDB = {
     collection: <T extends Document>(name: string, opts?: CollectionOptions<T>) => wrapCollection<T>(name, opts),
     compact: async () => native.compact(),
     close: async () => native.close(),
+    flush: native.flush ? async () => { native.flush!(); } : undefined,
+    quarantined: native.quarantined
+      ? async <T extends Document = Document>(collection: string) =>
+          native.quarantined!(collection) as QuarantinedDocument<T>[]
+      : undefined,
     ...syncSurface,
   };
+  if (migrations?.length) {
+    // Feature-detected: the JSI HostObject exposes these once the native glue
+    // ships. Until then, fail loudly rather than silently skip migrations.
+    if (typeof native.userVersion !== 'function' || typeof native.setUserVersion !== 'function') {
+      throw new Error(
+        'openDB({ migrations }) is not available on this @taladb/react-native binary yet ' +
+          '(the JSI HostObject does not expose userVersion/setUserVersion). Update the native module.',
+      );
+    }
+    await runMigrations(
+      handle,
+      async () => native.userVersion!(),
+      async (v) => native.setUserVersion!(v),
+      migrations,
+    );
+  }
+  return handle;
 }
 
 // ============================================================
 // Public entry point
 // ============================================================
 
+/**
+ * A single application schema migration, run once at `openDB` when its
+ * `version` is greater than the database's stored migration version.
+ */
+export interface Migration {
+  /** Monotonic version. Must be a positive integer, unique across the array. */
+  version: number;
+  /** Optional human-readable label for logs. */
+  description?: string;
+  /**
+   * The migration body. Receives the open database and may use the full
+   * collection API. Runs to completion before the version is advanced.
+   *
+   * **Write migrations idempotently.** TalaDB checkpoints per version (the
+   * stored version advances only after `up` fully resolves), but a single `up`
+   * is not wrapped in one atomic transaction — if it throws partway, the writes
+   * it already made persist and `up` re-runs from the start on the next open.
+   */
+  up: (db: TalaDB) => Promise<void> | void;
+}
+
+/**
+ * Runtime-agnostic migration runner. Each binding supplies `getVersion` /
+ * `setVersion` (its own persisted counter); the loop is identical everywhere.
+ *
+ * Runs pending migrations (`version` > stored) in ascending order, advancing
+ * the stored version after each `up` resolves — checkpoint per version. If an
+ * `up` throws, the loop stops and the error propagates; the stored version
+ * reflects the last fully-applied migration, so the next open resumes there.
+ *
+ * @internal Exported for unit testing; not part of the public API surface.
+ */
+export async function runMigrations(
+  db: TalaDB,
+  getVersion: () => Promise<number>,
+  setVersion: (v: number) => Promise<void>,
+  migrations: Migration[],
+): Promise<void> {
+  const sorted = [...migrations].sort((a, b) => a.version - b.version);
+  for (let i = 0; i < sorted.length; i++) {
+    const v = sorted[i].version;
+    if (!Number.isInteger(v) || v < 1) {
+      throw new Error(`TalaDB migration version must be a positive integer, got ${v}`);
+    }
+    if (i > 0 && v === sorted[i - 1].version) {
+      throw new Error(`TalaDB duplicate migration version ${v}`);
+    }
+  }
+  const current = await getVersion();
+  for (const m of sorted) {
+    if (m.version <= current) continue;
+    await m.up(db);
+    await setVersion(m.version);
+  }
+}
+
 /** Options for `openDB`. */
 export interface OpenDBOptions {
   /** Encrypt native database values at rest. Never hard-code this value. */
   passphrase?: string;
+  /**
+   * Ordered application schema migrations, run once each at open in ascending
+   * `version` order (only those newer than the stored migration version). The
+   * stored version advances after each migration succeeds — checkpoint per
+   * version, resuming from the last applied one on the next open. **Node.js
+   * only today**; passing this on another runtime throws.
+   */
+  migrations?: Migration[];
   /**
    * Explicit path to a `taladb.config.yml` / `taladb.config.json` file.
    * If omitted, TalaDB auto-discovers the file from `process.cwd()` on Node.js.
@@ -767,6 +1003,14 @@ export interface OpenDBOptions {
    * Useful for passing config programmatically without a config file on disk.
    */
   config?: TalaDbConfig;
+  /**
+   * Storage durability, e.g. `{ flush_every_write: false }` to batch commits
+   * for write throughput (call `db.flush()` to force a sync), or `{ flush_ms }`
+   * to tune the browser IndexedDB-fallback snapshot debounce. Merged into
+   * `config.durability`. Node + browser; on React Native pass it in the config
+   * JSON to `TalaDBModule.initialize`.
+   */
+  durability?: DurabilityConfig;
 }
 
 /**
@@ -796,18 +1040,27 @@ export async function openDB(dbName = 'taladb.db', options?: OpenDBOptions): Pro
     resolvedConfig = await loadConfig(options?.configPath);
   }
 
+  // A top-level `durability` option merges into config.durability (option wins).
+  if (options?.durability) {
+    resolvedConfig = {
+      ...resolvedConfig,
+      durability: { ...resolvedConfig?.durability, ...options.durability },
+    };
+  }
+
   const platform = detectPlatform();
+  const migrations = options?.migrations;
   switch (platform) {
     case 'browser':
       // Browser encryption is applied inside the OPFS worker (AES-GCM-256, salt
       // in an OPFS sidecar). The worker fails closed if OPFS is unavailable, so
       // an encrypted DB is never silently downgraded to a plaintext fallback.
-      return createBrowserDB(dbName, resolvedConfig, options?.passphrase);
+      return createBrowserDB(dbName, resolvedConfig, options?.passphrase, migrations);
     case 'react-native':
       if (options?.passphrase !== undefined) {
         throw new Error('On React Native, pass the passphrase in the config JSON to TalaDBModule.initialize(); refusing to assume the already-open native database is encrypted');
       }
-      return createNativeDB(dbName);
-    case 'node':         return createNodeDB(dbName, resolvedConfig, options?.passphrase);
+      return createNativeDB(dbName, migrations);
+    case 'node':         return createNodeDB(dbName, resolvedConfig, options?.passphrase, migrations);
   }
 }

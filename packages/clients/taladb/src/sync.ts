@@ -12,6 +12,7 @@ import type {
   SyncAdapter,
   SyncOptions,
   SyncResult,
+  SyncSchema,
 } from './types';
 
 /** Reserved collection holding one cursor document per sync target. Hidden
@@ -29,10 +30,27 @@ interface CursorDoc extends Document {
   pullMs: number;
 }
 
+/** Outcome of a validated import: applied/skipped/quarantined counts. */
+export interface ImportReport {
+  applied: number;
+  skipped: number;
+  quarantined: number;
+}
+
 /** The low-level surface `runSync` needs from a platform DB handle. */
 export interface SyncHandle {
   exportChanges(collections: string[], sinceMs: number): Promise<SerializedChangeset>;
   importChanges(changeset: SerializedChangeset): Promise<number>;
+  /**
+   * Tolerant validated import — present only on bindings that support it
+   * (Node.js today). `schemasJson` is a JSON-encoded
+   * `Record<string, SyncSchema>`. When absent, `runSync` falls back to the
+   * unvalidated {@link importChanges}.
+   */
+  importChangesValidated?(
+    changeset: SerializedChangeset,
+    schemasJson: string,
+  ): Promise<ImportReport>;
   collection(name: string): Collection<CursorDoc>;
   /** User collection names (reserved `_`-prefixed excluded). Backs "sync all". */
   listCollectionNames(): Promise<string[]>;
@@ -112,6 +130,7 @@ export async function runSync(
   handle: SyncHandle,
   adapter: SyncAdapter,
   options: SyncOptions,
+  syncSchemas: Record<string, SyncSchema> = {},
 ): Promise<SyncResult> {
   const direction = options.direction ?? 'both';
   const target = options.target ?? 'default';
@@ -131,11 +150,28 @@ export async function runSync(
   // pushed back to the peer they came from.
   const local = doPush ? await handle.exportChanges(collections, 0) : '[]';
 
+  // Only the collections actually in scope for this pass need a schema; a peer
+  // that sends others still merges under plain LWW.
+  const scopedSchemas: Record<string, SyncSchema> = {};
+  for (const c of collections) {
+    if (syncSchemas[c]) scopedSchemas[c] = syncSchemas[c];
+  }
+  const useValidated = handle.importChangesValidated && Object.keys(scopedSchemas).length > 0;
+
   let pulled = 0;
+  let skipped = 0;
+  let quarantined = 0;
   if (doPull) {
     const remote = await adapter.pull!(0);
     if (remote && remote !== '[]') {
-      pulled = await handle.importChanges(remote);
+      if (useValidated) {
+        const report = await handle.importChangesValidated!(remote, JSON.stringify(scopedSchemas));
+        pulled = report.applied;
+        skipped = report.skipped;
+        quarantined = report.quarantined;
+      } else {
+        pulled = await handle.importChanges(remote);
+      }
     }
   }
 
@@ -149,5 +185,5 @@ export async function runSync(
     pushMs: cursor.pushMs,
     pullMs: cursor.pullMs,
   });
-  return { pushed, pulled, cursor: 0 };
+  return { pushed, pulled, skipped, quarantined, cursor: 0 };
 }

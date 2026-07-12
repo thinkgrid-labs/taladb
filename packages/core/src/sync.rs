@@ -29,6 +29,7 @@
 //! without coordination. Deletes win ties against upserts.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use web_time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -38,7 +39,7 @@ use crate::document::{Document, Value};
 #[allow(unused_imports)] // trait needed for begin_read/begin_write method dispatch
 use crate::engine::StorageBackend;
 use crate::error::TalaDbError;
-use crate::index::tomb_table_name;
+use crate::index::{quarantine_table_name, tomb_table_name};
 use crate::query::filter::Filter;
 
 // ---------------------------------------------------------------------------
@@ -167,6 +168,239 @@ pub struct Change {
 pub type Changeset = Vec<Change>;
 
 // ---------------------------------------------------------------------------
+// Tolerant import-time validation (schema-evolution safety net)
+// ---------------------------------------------------------------------------
+//
+// Sync import is the boundary TalaDB does NOT control: the peer may run an
+// older or newer app version, so a foreign-shaped or malformed document can
+// arrive at any time. A local-first, Last-Write-Wins engine must never
+// hard-reject on this boundary — doing so either silently loses a legitimately
+// newer write or wedges the whole pull batch. Instead the import path consults
+// an optional [`ImportValidator`] that returns one of three *tolerant*
+// decisions per document. The batch always runs to completion.
+//
+// The validator carries the *policy* (a schema parse, a `_v` migration,
+// coercion of a below-current shape); the core carries only the *mechanism*
+// (call the hook, honour its decision, keep going, retain rejects). This keeps
+// the JS-side schema (Zod/Valibot) and per-document `_v` migration where they
+// belong while still enforcing "validate, never cast" inside `import_changes`
+// itself rather than only at a higher layer.
+
+/// What an [`ImportValidator`] decides to do with one incoming upsert.
+pub enum ImportDecision {
+    /// Store the document exactly as received, subject to the usual
+    /// Last-Write-Wins comparison.
+    Accept,
+    /// Store this normalized form instead of the received document — e.g. after
+    /// running a `_v` migration, filling defaults, or coercing a field. Subject
+    /// to the same Last-Write-Wins comparison.
+    Coerce(Document),
+    /// Drop this document silently — it is not our concern (e.g. a collection
+    /// this client does not model). Counted in [`ImportReport::skipped`].
+    Skip,
+    /// Set the document aside in the collection's quarantine table with the
+    /// given human-readable reason, rather than applying or discarding it.
+    /// Counted in [`ImportReport::quarantined`]. Recoverable by an operator or
+    /// a later migration.
+    Quarantine(String),
+}
+
+/// A per-document gate consulted on every imported upsert.
+///
+/// Implementations MUST be deterministic and side-effect free: two replicas
+/// running the *same* validator over the *same* document must reach the same
+/// [`ImportDecision`], or the databases will diverge. This is the same
+/// determinism contract Last-Write-Wins already relies on. Delete changes are
+/// never passed through the validator — a tombstone has no shape to check.
+pub trait ImportValidator: Send + Sync {
+    /// Inspect one imported document. `collection` is the target collection
+    /// name; `doc` is the remote document (id preserved). Return
+    /// [`ImportDecision::Coerce`] to substitute a normalized form.
+    fn check(&self, collection: &str, doc: &Document) -> ImportDecision;
+}
+
+/// Outcome counts for a validated import pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    /// Documents actually written locally (upserted or deleted) after LWW.
+    pub applied: u64,
+    /// Upserts the validator asked to [`ImportDecision::Skip`].
+    pub skipped: u64,
+    /// Upserts diverted to the quarantine table via
+    /// [`ImportDecision::Quarantine`].
+    pub quarantined: u64,
+}
+
+/// A document set aside by the import validator, retained for later recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuarantineRecord {
+    pub document: Document,
+    pub reason: String,
+    /// The `changed_at` the rejected change carried, so a later replay can
+    /// still honour Last-Write-Wins ordering.
+    pub changed_at: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Built-in structural validator
+// ---------------------------------------------------------------------------
+//
+// A minimal, deterministic [`ImportValidator`] that language bindings can drive
+// from a per-collection schema descriptor. It is deliberately *structural* (not
+// a full Zod/Valibot equivalent): the import boundary can only safely do
+// structural checks + tolerant normalization, while the rich schema stays on
+// the strict, local `insert` path. See docs/guide/schema-and-sync-standards.md.
+
+/// Expected primitive shape of one field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldType {
+    Bool,
+    Int,
+    Float,
+    Str,
+    Bytes,
+    Array,
+    Object,
+    /// Accepts any value — use to require presence without constraining type.
+    Any,
+}
+
+impl FieldType {
+    /// Whether `value` satisfies this type. `Null` always passes (a present but
+    /// null optional field is not a type error; required-ness is checked
+    /// separately).
+    pub fn matches(self, value: &Value) -> bool {
+        matches!(
+            (self, value),
+            (_, Value::Null)
+                | (FieldType::Any, _)
+                | (FieldType::Bool, Value::Bool(_))
+                | (FieldType::Int, Value::Int(_))
+                | (FieldType::Float, Value::Float(_))
+                | (FieldType::Str, Value::Str(_))
+                | (FieldType::Bytes, Value::Bytes(_))
+                | (FieldType::Array, Value::Array(_))
+                | (FieldType::Object, Value::Object(_))
+        )
+    }
+}
+
+/// A per-collection structural schema consulted on import.
+///
+/// A document whose `_v` is **below** [`version`](Self::version) is upgraded in
+/// place (missing `defaults` filled, `_v` stamped) rather than rejected —
+/// additive-only migration. A document whose `_v` is **above** the known
+/// version is accepted untouched (the peer is ahead, not wrong). Otherwise the
+/// document is checked: a missing/null [`required`](Self::required) field or a
+/// [`types`](Self::types) mismatch quarantines it; extra fields are allowed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StructuralSchema {
+    /// Current document shape version. `0` disables the migration step.
+    #[serde(default)]
+    pub version: i64,
+    /// Fields that must be present and non-null.
+    #[serde(default)]
+    pub required: Vec<String>,
+    /// Expected primitive type per field. Fields absent here accept any type.
+    #[serde(default)]
+    pub types: HashMap<String, FieldType>,
+    /// Values applied to missing fields when upgrading a below-version document.
+    #[serde(default)]
+    pub defaults: Vec<(String, Value)>,
+    /// Field renames `(from, to)` applied when upgrading a below-version
+    /// document: if `from` is present and `to` is absent, the value moves from
+    /// `from` to `to`. Applied before [`defaults`](Self::defaults), so a rename
+    /// takes precedence over a default for the same target field.
+    #[serde(default)]
+    pub renames: Vec<(String, String)>,
+}
+
+impl StructuralSchema {
+    /// Evaluate one document against this schema, returning a tolerant decision.
+    pub fn evaluate(&self, doc: &Document) -> ImportDecision {
+        let doc_v = doc.get("_v").and_then(Value::as_int).unwrap_or(0);
+
+        // Peer is ahead of us — accept untouched rather than reject.
+        if self.version != 0 && doc_v > self.version {
+            return ImportDecision::Accept;
+        }
+
+        // Below current version: additive upgrade (rename, fill defaults, stamp `_v`).
+        let coerced = if self.version != 0 && doc_v < self.version {
+            let mut up = doc.clone();
+            for (from, to) in &self.renames {
+                if up.contains_key(from)
+                    && !up.contains_key(to)
+                    && let Some(v) = up.remove(from)
+                {
+                    up.set(to.clone(), v);
+                }
+            }
+            for (k, def) in &self.defaults {
+                if !up.contains_key(k) {
+                    up.set(k.clone(), def.clone());
+                }
+            }
+            up.set("_v", Value::Int(self.version));
+            Some(up)
+        } else {
+            None
+        };
+
+        let target = coerced.as_ref().unwrap_or(doc);
+
+        for field in &self.required {
+            match target.get(field) {
+                None | Some(Value::Null) => {
+                    return ImportDecision::Quarantine(format!("missing required field `{field}`"));
+                }
+                _ => {}
+            }
+        }
+        for (field, ty) in &self.types {
+            if let Some(v) = target.get(field)
+                && !ty.matches(v)
+            {
+                return ImportDecision::Quarantine(format!(
+                    "field `{field}` expected {ty:?}, got {}",
+                    v.type_name()
+                ));
+            }
+        }
+
+        match coerced {
+            Some(d) => ImportDecision::Coerce(d),
+            None => ImportDecision::Accept,
+        }
+    }
+}
+
+/// An [`ImportValidator`] backed by a per-collection [`StructuralSchema`] map.
+///
+/// Collections with no registered schema are accepted as-is — import stays
+/// tolerant by default and a peer syncing a collection this client does not
+/// model is never spuriously quarantined.
+pub struct SchemaValidator {
+    schemas: HashMap<String, StructuralSchema>,
+}
+
+impl SchemaValidator {
+    pub fn new(schemas: HashMap<String, StructuralSchema>) -> Self {
+        SchemaValidator { schemas }
+    }
+}
+
+impl ImportValidator for SchemaValidator {
+    fn check(&self, collection: &str, doc: &Document) -> ImportDecision {
+        match self.schemas.get(collection) {
+            Some(schema) => schema.evaluate(doc),
+            None => ImportDecision::Accept,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SyncAdapter trait
 // ---------------------------------------------------------------------------
 
@@ -197,17 +431,27 @@ pub trait SyncAdapter: Send + Sync {
 /// Resolves conflicts by keeping the change with the highest `changed_at`
 /// timestamp. Equal-timestamp upserts are broken by comparing serialized
 /// document bytes; deletes win ties against upserts.
-pub struct LastWriteWins;
+///
+/// Optionally holds an [`ImportValidator`] (see [`with_validator`]) that gates
+/// every imported upsert before the Last-Write-Wins comparison. With no
+/// validator attached, import is unvalidated (the historical behaviour).
+///
+/// [`with_validator`]: LastWriteWins::with_validator
+#[derive(Default)]
+pub struct LastWriteWins {
+    validator: Option<Arc<dyn ImportValidator>>,
+}
 
 impl LastWriteWins {
     pub fn new() -> Self {
-        LastWriteWins
+        LastWriteWins { validator: None }
     }
-}
 
-impl Default for LastWriteWins {
-    fn default() -> Self {
-        LastWriteWins::new()
+    /// Attach a tolerant import-time validator. Every upsert imported through
+    /// this adapter is passed to `validator.check()`; deletes are unaffected.
+    pub fn with_validator(mut self, validator: Arc<dyn ImportValidator>) -> Self {
+        self.validator = Some(validator);
+        self
     }
 }
 
@@ -292,13 +536,59 @@ impl SyncAdapter for LastWriteWins {
         db: &crate::Database,
         changeset: Changeset,
     ) -> Result<u64, TalaDbError> {
-        let mut applied = 0u64;
+        // Preserve the historical return contract (documents applied) while the
+        // full tolerant outcome is available via [`LastWriteWins::import_report`].
+        self.import_report(db, changeset).map(|r| r.applied)
+    }
+}
+
+impl LastWriteWins {
+    /// Merge a remote changeset, returning the full [`ImportReport`] (applied /
+    /// skipped / quarantined). This is the tolerant import path: when a
+    /// validator is attached, a document that fails validation is normalized,
+    /// skipped, or quarantined — never dropped silently and never able to abort
+    /// the batch. Storage/serialization errors still propagate as `Err`.
+    pub fn import_report(
+        &self,
+        db: &crate::Database,
+        changeset: Changeset,
+    ) -> Result<ImportReport, TalaDbError> {
+        let mut report = ImportReport::default();
 
         for change in changeset {
             let col = db.collection(&change.collection)?;
 
             match change.op {
                 ChangeOp::Upsert(remote_doc) => {
+                    // Tolerant validation gate. Runs *before* any Last-Write-Wins
+                    // comparison so a foreign- or old-shaped document is
+                    // normalized, set aside, or skipped rather than cast blindly
+                    // into local storage. No validator attached => accept as-is
+                    // (historical behaviour).
+                    let remote_doc = match &self.validator {
+                        None => remote_doc,
+                        Some(v) => match v.check(&change.collection, &remote_doc) {
+                            ImportDecision::Accept => remote_doc,
+                            ImportDecision::Coerce(normalized) => normalized,
+                            ImportDecision::Skip => {
+                                report.skipped += 1;
+                                continue;
+                            }
+                            ImportDecision::Quarantine(reason) => {
+                                quarantine_document(
+                                    db,
+                                    &change.collection,
+                                    change.id,
+                                    remote_doc,
+                                    reason,
+                                    change.changed_at,
+                                )?;
+                                report.quarantined += 1;
+                                continue;
+                            }
+                        },
+                    };
+
                     // Look up local version of the document by ULID.
                     // _id is the Document::id field, not a field in the fields vec,
                     // so Filter::Eq("_id", ...) would never match. Use find_by_id instead.
@@ -343,7 +633,7 @@ impl SyncAdapter for LastWriteWins {
                         // for the ID so the replace is not later exported as a
                         // deletion.
                         col.replace_with_id(remote_doc)?;
-                        applied += 1;
+                        report.applied += 1;
                     }
                 }
 
@@ -391,19 +681,44 @@ impl SyncAdapter for LastWriteWins {
                     wtxn.commit()?;
 
                     if existed {
-                        applied += 1;
+                        report.applied += 1;
                     }
                 }
             }
         }
 
-        Ok(applied)
+        Ok(report)
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Write a validator-rejected document into the collection's quarantine table,
+/// keyed by its ULID. Overwrites any earlier quarantine record for the same id
+/// (the latest rejection is the useful one). The document is retained verbatim
+/// so an operator or a later migration can recover or reprocess it.
+fn quarantine_document(
+    db: &crate::Database,
+    collection: &str,
+    id: Ulid,
+    document: Document,
+    reason: String,
+    changed_at: u64,
+) -> Result<(), TalaDbError> {
+    let record = QuarantineRecord {
+        document,
+        reason,
+        changed_at,
+    };
+    let bytes = postcard::to_allocvec(&record)?;
+    let table = quarantine_table_name(collection);
+    let mut wtxn = db.backend().begin_write()?;
+    wtxn.put(&table, &id.to_bytes(), &bytes)?;
+    wtxn.commit()?;
+    Ok(())
+}
 
 /// Read the tombstone timestamp for `id` in `collection`, if one exists.
 fn read_tombstone_ts(

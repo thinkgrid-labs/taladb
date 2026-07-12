@@ -81,11 +81,44 @@ pub struct SyncConfig {
 ///
 /// Unknown top-level keys are silently ignored so future config additions are
 /// backwards-compatible with older library versions.
+/// Storage durability configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DurabilityConfig {
+    /// When `true` (default), every write commit is fsync'd immediately (redb
+    /// `Immediate` durability) — a crash never loses an acknowledged write. When
+    /// `false`, commits are batched (redb `Eventual`) for higher write
+    /// throughput; call `db.flush()` to force a durable sync. Applies to
+    /// file-backed (Node) and OPFS (browser) storage; in-memory ignores it.
+    #[serde(default = "default_true")]
+    pub flush_every_write: bool,
+    /// Browser IndexedDB-fallback snapshot debounce, in milliseconds. `None`
+    /// uses the engine default (500 ms). Only affects the non-OPFS browser
+    /// fallback path — the OPFS and Node paths use `flush_every_write` instead.
+    #[serde(default)]
+    pub flush_ms: Option<u32>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for DurabilityConfig {
+    fn default() -> Self {
+        DurabilityConfig {
+            flush_every_write: true,
+            flush_ms: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct TalaDbConfig {
     /// HTTP push sync configuration. Disabled by default.
     #[serde(default)]
     pub sync: SyncConfig,
+    /// Storage durability configuration.
+    #[serde(default)]
+    pub durability: DurabilityConfig,
 }
 
 impl TalaDbConfig {
@@ -353,6 +386,7 @@ sync:
                 insert_endpoint: Some("http://localhost:3000/insert".into()),
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
     }

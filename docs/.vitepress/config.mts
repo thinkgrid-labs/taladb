@@ -110,7 +110,7 @@ export default defineConfig({
         ],
       },
       {
-        text: "v0.9.1",
+        text: "v0.9.2",
         items: [
           {
             text: "Changelog",
@@ -150,6 +150,7 @@ export default defineConfig({
           { text: "Bidirectional Sync", link: "/guide/bidirectional-sync" },
           { text: "HTTP Push Sync", link: "/guide/http-sync" },
           { text: "CRDT Sync", link: "/guide/crdt-sync" },
+          { text: "Schema & Sync Standards", link: "/guide/schema-and-sync-standards" },
         ],
       },
       {

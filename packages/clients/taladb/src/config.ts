@@ -43,10 +43,29 @@ export interface SyncConfig {
   exclude_fields?: string[];
 }
 
+/** Storage durability settings. */
+export interface DurabilityConfig {
+  /**
+   * When `true` (default), every write commit is fsync'd immediately — a crash
+   * never loses an acknowledged write. When `false`, commits are batched for
+   * higher write throughput; call `db.flush()` to force a durable sync. Applies
+   * to Node (file) and browser OPFS storage; in-memory ignores it.
+   */
+  flush_every_write?: boolean;
+  /**
+   * Browser IndexedDB-fallback snapshot debounce, in milliseconds (default
+   * 500). Only affects the non-OPFS browser fallback path — the OPFS and Node
+   * paths use `flush_every_write`.
+   */
+  flush_ms?: number;
+}
+
 /** Top-level TalaDB configuration. */
 export interface TalaDbConfig {
   /** HTTP push sync configuration. Disabled by default. */
   sync?: SyncConfig;
+  /** Storage durability configuration. */
+  durability?: DurabilityConfig;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 {
   "name": "taladb-workspace",
   "private": true,
-  "version": "0.9.1",
+  "version": "0.9.2",
   "type": "module",
   "scripts": {
     "sync-version": "node scripts/sync-version.js",
@@ -16,8 +16,8 @@
     "bench": "node scripts/bench.mjs",
     "bench:web": "node scripts/bench-web.mjs",
     "test:rust": "cargo test --workspace",
-    "test:web": "wasm-pack test packages/taladb-web --headless --chrome",
-    "clean": "rimraf packages/*/pkg packages/*/dist packages/taladb-node/*.node target",
+    "test:web": "wasm-pack test --headless --chrome packages/bindings/web",
+    "clean": "rimraf \"packages/*/*/pkg\" \"packages/*/*/dist\" \"packages/bindings/node/*.node\" target",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"

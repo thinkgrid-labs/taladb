@@ -112,6 +112,54 @@ export interface Schema<T> {
   parse(data: unknown): T;
 }
 
+/** Primitive field type for a {@link SyncSchema}. `'any'` requires presence
+ * without constraining the value's type. */
+export type SyncFieldType = 'bool' | 'int' | 'float' | 'str' | 'bytes' | 'array' | 'object' | 'any';
+
+/**
+ * A tolerant, structural schema applied to documents **arriving via sync**
+ * (`db.sync()` pull). Distinct from {@link Schema} (Zod/Valibot), which is
+ * strict and runs on the *local* `insert` path: sync import is the boundary you
+ * don't control, so it validates structurally and never hard-rejects.
+ *
+ * On import, per document:
+ * - `_v` **below** `version` → upgraded in place (missing `defaults` filled,
+ *   `_v` stamped) — additive-only migration.
+ * - `_v` **above** `version` → accepted untouched (the peer is ahead).
+ * - a missing/`null` `required` field or a `types` mismatch → **quarantined**
+ *   (set aside, recoverable via {@link TalaDB.quarantined}), never dropped and
+ *   never aborting the batch.
+ *
+ * @example
+ * const users = db.collection<User>('users', {
+ *   schema: User,                     // strict, on insert
+ *   syncSchema: {                     // tolerant, on import
+ *     version: 1,
+ *     required: ['name'],
+ *     types: { name: 'str', age: 'int' },
+ *     defaults: { age: 0 },
+ *   },
+ * });
+ */
+export interface SyncSchema {
+  /** Current document shape version. Omit or `0` to disable the migration step. */
+  version?: number;
+  /** Fields that must be present and non-null, or the document is quarantined. */
+  required?: string[];
+  /** Expected primitive type per field. Fields absent here accept any type. */
+  types?: Record<string, SyncFieldType>;
+  /** Values applied to missing fields when upgrading a below-`version` document. */
+  defaults?: Record<string, Value>;
+  /**
+   * Field renames applied when upgrading a below-`version` document, as
+   * `{ oldName: newName }`. If the old field is present and the new one absent,
+   * the value moves. Applied before {@link defaults}. Structural (runs in the
+   * engine at import) — for renames that need computation, use
+   * {@link CollectionOptions.migrateDocument}.
+   */
+  renames?: Record<string, string>;
+}
+
 /** Options passed to `db.collection()`. */
 export interface CollectionOptions<T extends Document = Document> {
   /**
@@ -129,6 +177,50 @@ export interface CollectionOptions<T extends Document = Document> {
    * Defaults to `false`.
    */
   validateOnRead?: boolean;
+  /**
+   * Tolerant structural schema applied to documents arriving via `db.sync()`.
+   * See {@link SyncSchema}. Enables validate-on-import ("validate, never cast")
+   * in the core sync path, with `_v` migration and quarantine of bad shapes.
+   * Wired on browser (OPFS worker) and Node.js; React Native falls back to
+   * unvalidated import until its binding carries the plumbing.
+   */
+  syncSchema?: SyncSchema;
+  /**
+   * Lazy, read-time document migration — the arbitrary-JS complement to the
+   * structural {@link SyncSchema}. When set, every document returned by `find`
+   * / `findOne` whose `_v` is **below** `syncSchema.version` is passed through
+   * `migrateDocument(doc, fromVersion)` and stamped to the current version
+   * before you see it, so application code always reads the current shape even
+   * for documents that predate the schema (renames, computed/derived fields,
+   * splits/merges). Runs on **every runtime** (it's a pure read transform in
+   * the client — no binding support needed).
+   *
+   * Requires `syncSchema.version` (the migration target). The transform is
+   * applied to the returned value only; it is not persisted back to storage —
+   * pair with `openDB({ migrations })` or a `syncSchema` rename to rewrite
+   * stored documents eagerly. Must be pure and deterministic.
+   *
+   * @example
+   * const users = db.collection<User>('users', {
+   *   syncSchema: { version: 2 },
+   *   migrateDocument: (doc, from) =>
+   *     from < 2 ? { ...doc, fullName: `${doc.first} ${doc.last}` } : doc,
+   * });
+   */
+  migrateDocument?: (doc: T, fromVersion: number) => T;
+  /**
+   * When `true`, a document upgraded by {@link migrateDocument} on read is
+   * **written back** to storage (a best-effort `updateOne` computing the
+   * `$set`/`$unset` diff) so the migration becomes permanent — after which
+   * filters and indexes on the new shape match it. Default `false` (the
+   * migrated shape is returned but not persisted).
+   *
+   * Trade-offs: reads that encounter un-migrated documents now issue writes
+   * (which fire live-query and sync-hook notifications like any other write);
+   * a failed write is swallowed and simply retried on the next read. For a
+   * one-shot eager rewrite instead, prefer `openDB({ migrations })`.
+   */
+  persistMigrations?: boolean;
 }
 
 // --------------- Aggregation ---------------
@@ -332,8 +424,30 @@ export interface SyncResult {
   pushed: number;
   /** Number of documents changed locally by the pulled remote changeset. */
   pulled: number;
+  /**
+   * Documents in the pulled changeset skipped by an import validator (a
+   * collection this client does not model). Present (possibly `0`) whenever a
+   * `syncSchema` applied; omitted otherwise.
+   */
+  skipped?: number;
+  /**
+   * Documents in the pulled changeset set aside by an import validator because
+   * they failed structural validation. Recoverable via {@link TalaDB.quarantined}.
+   * Present (possibly `0`) whenever a `syncSchema` applied; omitted otherwise.
+   */
+  quarantined?: number;
   /** Active sync cursor. Currently `0` because timestamp adapters replay safely. */
   cursor: number;
+}
+
+/** A document set aside during a validated sync import, with its rejection reason. */
+export interface QuarantinedDocument<T extends Document = Document> {
+  /** The rejected document, retained verbatim. */
+  document: T;
+  /** Human-readable reason the document was quarantined. */
+  reason: string;
+  /** The `changed_at` (ms epoch) the rejected change carried. */
+  changedAt: number;
 }
 
 // --------------- TalaDB interface ---------------
@@ -373,6 +487,20 @@ export interface TalaDB {
    * await db.compact();
    */
   compact(): Promise<void>;
+  /**
+   * Return the documents set aside in `collection`'s quarantine table by a
+   * validated sync import (see {@link SyncSchema}). Empty when nothing was
+   * quarantined. Wired on browser and Node.js; resolves to `[]` on runtimes
+   * without support.
+   */
+  quarantined?<T extends Document = Document>(collection: string): Promise<QuarantinedDocument<T>[]>;
+  /**
+   * Force any batched (eventual-durability) writes to durable storage, and on
+   * the browser also write the IndexedDB fallback snapshot immediately. A
+   * no-op under the default `flush_every_write: true` durability. Use for
+   * "save now" moments (before checkout, on `visibilitychange`).
+   */
+  flush?(): Promise<void>;
   /** Browser HTTP-push queue health, when supported by the active binding. */
   syncStatus?(): Promise<{ pending: number; dropped: number; failed: number }>;
   /** Wait for accepted browser HTTP-push events, returning false on timeout. */

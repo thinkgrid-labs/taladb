@@ -142,6 +142,16 @@ export class TalaDBWasm {
      * ```
      */
     static openWithSnapshot(snapshot?: Uint8Array | null): TalaDBWasm;
+    /**
+     * Persist the application migration version. Called after each migration's
+     * body succeeds so a crash mid-run resumes from the last applied version.
+     */
+    setUserVersion(version: number): void;
+    /**
+     * Read the current application migration version (0 if never set). Backs
+     * the `openDB({ migrations })` runner, which advances it per migration.
+     */
+    userVersion(): number;
 }
 
 export class WorkerDB {
@@ -247,6 +257,11 @@ export class WorkerDB {
      */
     findOne(collection: string, filter_json: string): string;
     /**
+     * Force batched (eventual) OPFS writes to durable storage. No-op under the
+     * default immediate durability. Backs `db.flush()`.
+     */
+    flush(): void;
+    /**
      * Import a remote changeset and merge it into the local database using
      * Last-Write-Wins conflict resolution.
      *
@@ -259,6 +274,13 @@ export class WorkerDB {
      * ```
      */
     importChangeset(changeset_json: string): number;
+    /**
+     * Import a remote changeset through a tolerant structural validator built
+     * from `schemas_json` (`{ "<collection>": { version, required, types,
+     * defaults } }`). Returns a JSON `{ applied, skipped, quarantined }`.
+     * Rejected documents are set aside (see `quarantined`), never dropped.
+     */
+    importChangesetValidated(changeset_json: string, schemas_json: string): string;
     /**
      * Insert a document. Returns the new ULID as a string.
      */
@@ -328,6 +350,22 @@ export class WorkerDB {
      * ```
      */
     static openWithSnapshot(data?: Uint8Array | null): WorkerDB;
+    /**
+     * Documents set aside in `collection`'s quarantine table, as a JSON array
+     * of `{ document, reason, changedAt }`.
+     */
+    quarantined(collection: string): string;
+    /**
+     * Set write durability: `eventual = true` batches OPFS fsyncs for
+     * throughput (call `flush()` to force), `false` (default) fsyncs each
+     * commit. Derived from `durability.flush_every_write` by the worker.
+     */
+    setDurability(eventual: boolean): void;
+    /**
+     * Persist the application migration version. Called after each migration's
+     * body succeeds so a crash mid-run resumes from the last applied version.
+     */
+    setUserVersion(version: number): void;
     syncPending(): bigint;
     syncStatus(): string;
     /**
@@ -345,6 +383,11 @@ export class WorkerDB {
      * No-op when the `vector-hnsw` feature is disabled or the index is flat-only.
      */
     upgradeVectorIndex(collection: string, field: string): void;
+    /**
+     * Read the current application migration version (0 if never set). Backs
+     * the `openDB({ migrations })` runner, which advances it per migration.
+     */
+    userVersion(): number;
 }
 
 /**
@@ -420,7 +463,9 @@ export interface InitOutput {
     readonly workerdb_find: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_findNearest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly workerdb_findOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly workerdb_flush: (a: number) => [number, number];
     readonly workerdb_importChangeset: (a: number, b: number, c: number) => [number, number, number];
+    readonly workerdb_importChangesetValidated: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_insert: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_insertMany: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly workerdb_listCollections: (a: number) => [number, number, number, number];
@@ -430,11 +475,15 @@ export interface InitOutput {
     readonly workerdb_openWithConfigAndSnapshot: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly workerdb_openWithOpfs: (a: any) => [number, number, number];
     readonly workerdb_openWithSnapshot: (a: number, b: number) => [number, number, number];
+    readonly workerdb_quarantined: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly workerdb_setDurability: (a: number, b: number) => void;
+    readonly workerdb_setUserVersion: (a: number, b: number) => [number, number];
     readonly workerdb_syncPending: (a: number) => bigint;
     readonly workerdb_syncStatus: (a: number) => [number, number];
     readonly workerdb_updateMany: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_updateOne: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_upgradeVectorIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly workerdb_userVersion: (a: number) => [number, number, number];
     readonly __wbg_collectionwasm_free: (a: number, b: number) => void;
     readonly __wbg_taladbwasm_free: (a: number, b: number) => void;
     readonly collectionwasm_aggregate: (a: number, b: any) => [number, number, number];
@@ -462,6 +511,8 @@ export interface InitOutput {
     readonly taladbwasm_listCollectionNames: (a: number) => [number, number, number, number];
     readonly taladbwasm_openInMemory: () => [number, number, number];
     readonly taladbwasm_openWithSnapshot: (a: number, b: number) => [number, number, number];
+    readonly taladbwasm_setUserVersion: (a: number, b: number) => [number, number];
+    readonly taladbwasm_userVersion: (a: number) => [number, number, number];
     readonly init: () => void;
     readonly opfs_open_backend: (a: number, b: number) => any;
     readonly idb_load_snapshot: (a: number, b: number) => any;
@@ -470,12 +521,12 @@ export interface InitOutput {
     readonly opfs_delete_snapshot: (a: number, b: number) => any;
     readonly opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly opfs_load_snapshot: (a: number, b: number) => any;
+    readonly wasm_bindgen__closure__destroy__h2c4f24ad7d89538e: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__he22c2c171c027d5f: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__hcc9749e9df054fa1: (a: number, b: number) => void;
-    readonly wasm_bindgen__closure__destroy__h0b9d610530342eed: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hb52f4011b6a30878: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h04047ee6b7bd7952: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h1db834cd18eb3d6d: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

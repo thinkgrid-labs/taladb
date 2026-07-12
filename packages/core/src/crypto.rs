@@ -233,6 +233,14 @@ impl StorageBackend for EncryptedBackend {
             key: &self.key,
         }))
     }
+
+    fn set_durability(&self, eventual: bool) {
+        self.inner.set_durability(eventual);
+    }
+
+    fn flush(&self) -> Result<(), TalaDbError> {
+        self.inner.flush()
+    }
 }
 
 // ---------------------------------------------------------------------------

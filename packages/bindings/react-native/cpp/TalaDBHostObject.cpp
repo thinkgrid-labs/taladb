@@ -247,6 +247,9 @@ std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
         "count",
         "aggregate",
         "exportChanges", "importChanges", "listCollectionNames",
+        "importChangesValidated", "quarantined",
+        "userVersion", "setUserVersion",
+        "flush",
         "createIndex", "dropIndex",
         "createCompoundIndex", "dropCompoundIndex",
         "createFtsIndex", "dropFtsIndex",
@@ -490,6 +493,72 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 std::string json(result);
                 taladb_free_string(result);
                 return parse(rt, json);  // JSON array → JS string[]
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // Validate-on-import — importChangesValidated / quarantined
+    // ------------------------------------------------------------------
+    if (name == "importChangesValidated") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "importChangesValidated"), 2,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 2) throw JSError(rt, "importChangesValidated requires 2 arguments");
+                auto changeset = args[0].getString(rt).utf8(rt);
+                auto schemas   = args[1].getString(rt).utf8(rt);
+                char *result = taladb_import_changes_validated(db_, changeset.c_str(), schemas.c_str());
+                if (!result) throw JSError(rt, "taladb_import_changes_validated failed");
+                std::string json(result);
+                taladb_free_string(result);
+                return parse(rt, json);  // { applied, skipped, quarantined }
+            });
+    }
+
+    if (name == "quarantined") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "quarantined"), 1,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 1) throw JSError(rt, "quarantined requires 1 argument");
+                auto col = args[0].getString(rt).utf8(rt);
+                char *result = taladb_quarantined(db_, col.c_str());
+                if (!result) throw JSError(rt, "taladb_quarantined failed");
+                std::string json(result);
+                taladb_free_string(result);
+                return parse(rt, json);  // [{ document, reason, changedAt }]
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // Application migrations — userVersion / setUserVersion
+    // ------------------------------------------------------------------
+    if (name == "userVersion") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "userVersion"), 0,
+            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                int64_t v = taladb_user_version(db_);
+                if (v < 0) throw JSError(rt, "taladb_user_version failed");
+                return Value(static_cast<double>(v));
+            });
+    }
+
+    if (name == "setUserVersion") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "setUserVersion"), 1,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 1) throw JSError(rt, "setUserVersion requires 1 argument");
+                uint32_t version = static_cast<uint32_t>(args[0].getNumber());
+                if (taladb_set_user_version(db_, version) < 0)
+                    throw JSError(rt, "taladb_set_user_version failed");
+                return Value::undefined();
+            });
+    }
+
+    if (name == "flush") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "flush"), 0,
+            [this](Runtime &rt, const Value &, const Value *, size_t) -> Value {
+                if (taladb_flush(db_) < 0) throw JSError(rt, "taladb_flush failed");
+                return Value::undefined();
             });
     }
 
