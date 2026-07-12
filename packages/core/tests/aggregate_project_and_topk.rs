@@ -94,6 +94,75 @@ fn project_rejects_empty_body() {
     assert!(parse(json!([{ "$project": {} }])).is_err());
 }
 
+/// Values are read for truthiness the way MongoDB reads them: zero excludes,
+/// every other number includes. The truthiness test runs on the number itself —
+/// casting to `i64` first would floor `0.5` to `0` and silently turn an
+/// inclusion into an exclusion.
+#[test]
+fn project_reads_nonzero_numbers_as_inclusion() {
+    for spec in [
+        json!(1),
+        json!(2),
+        json!(1.5),
+        json!(0.5),
+        json!(-1),
+        json!(true),
+    ] {
+        let pl = parse(json!([{ "$project": { "name": spec } }])).unwrap();
+        assert!(
+            matches!(&pl[0], Stage::Project { fields, include: true, .. } if fields == &vec!["name".to_string()]),
+            "{spec} should include, got {:?}",
+            pl[0],
+        );
+    }
+}
+
+#[test]
+fn project_reads_zero_as_exclusion() {
+    for spec in [json!(0), json!(0.0), json!(-0.0), json!(false)] {
+        let pl = parse(json!([{ "$project": { "bulky": spec } }])).unwrap();
+        assert!(
+            matches!(&pl[0], Stage::Project { fields, include: false, .. } if fields == &vec!["bulky".to_string()]),
+            "{spec} should exclude, got {:?}",
+            pl[0],
+        );
+    }
+}
+
+/// `{a: 0.5, b: 1}` names no exclusion, so it must not trip the mixing check.
+/// Under an `i64` cast `0.5` floored to `0` and this errored out.
+#[test]
+fn project_fractional_inclusion_is_not_mistaken_for_mixing() {
+    let pl = parse(json!([{ "$project": { "name": 0.5, "score": 1 } }])).unwrap();
+    assert!(matches!(&pl[0], Stage::Project { include: true, .. }));
+
+    let out = db_with(3)
+        .collection("items")
+        .unwrap()
+        .aggregate(pl)
+        .unwrap();
+    for d in &out {
+        assert!(
+            d.get("name").is_some(),
+            "fractional-truthy field was dropped"
+        );
+        assert!(d.get("score").is_some());
+        assert!(
+            d.get("bulky").is_none(),
+            "unlisted field survived an inclusion"
+        );
+    }
+}
+
+#[test]
+fn project_rejects_non_numeric_non_boolean_values() {
+    let err = parse(json!([{ "$project": { "name": "yes" } }])).unwrap_err();
+    assert!(
+        err.contains("must be a number or boolean"),
+        "unexpected: {err}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Bounded ($sort + $skip + $limit) — must be indistinguishable from a full sort
 // ---------------------------------------------------------------------------

@@ -224,3 +224,85 @@ fn projection_after_indexed_sort_still_applies() {
         assert!(d.get("name").is_some(), "unlisted field was dropped");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Mixed Int/Float. The index tags Int (0x20) below Float (0x30), so byte order
+// puts *every* integer before *every* float — while the sort comparator ranks
+// them numerically. On such a field the index is not sorted the way the query
+// asks, and the fast path must decline it: it truncates to a page before the
+// comparator ever runs, so a document it wrongly excludes can never be
+// recovered by the final sort. These pin it against the scan-and-sort path.
+// ---------------------------------------------------------------------------
+
+/// Interleaved so that neither type is already in the right place: correct
+/// ascending order is 1.5, 2, 3.5, 100 — but index order is 2, 100, 1.5, 3.5.
+fn seeded_mixed_numeric(index_it: bool) -> Database {
+    let db = Database::open_in_memory().unwrap();
+    let col = db.collection("items").unwrap();
+    for (name, score) in [
+        ("item-a", Value::Int(100)),
+        ("item-b", Value::Float(1.5)),
+        ("item-c", Value::Int(2)),
+        ("item-d", Value::Float(3.5)),
+    ] {
+        col.insert(vec![
+            ("name".into(), Value::Str(name.into())),
+            ("score".into(), score),
+        ])
+        .unwrap();
+    }
+    if index_it {
+        col.create_index("score").unwrap();
+    }
+    db
+}
+
+#[test]
+fn mixed_int_float_sort_matches_unindexed_across_pages() {
+    let run = |db: &Database, pipeline: Vec<Stage>| {
+        names(&db.collection("items").unwrap().aggregate(pipeline).unwrap())
+    };
+    for dir in [SortDirection::Asc, SortDirection::Desc] {
+        for skip in [0u64, 1, 2] {
+            for limit in [1u64, 2, 3, 4] {
+                let pipeline = vec![
+                    Stage::Sort(vec![spec("score", dir.clone())]),
+                    Stage::Skip(skip),
+                    Stage::Limit(limit),
+                ];
+                let got = run(&seeded_mixed_numeric(true), pipeline.clone());
+                let want = run(&seeded_mixed_numeric(false), pipeline);
+                assert_eq!(got, want, "dir={dir:?} skip={skip} limit={limit}");
+            }
+        }
+    }
+}
+
+/// The all-Int and all-Float cases stay on the fast path — the bail-out must be
+/// narrow, triggering only on a field that actually mixes the two.
+#[test]
+fn homogeneous_numeric_sorts_are_unaffected() {
+    for float_valued in [false, true] {
+        let db = Database::open_in_memory().unwrap();
+        let col = db.collection("items").unwrap();
+        for i in 0..20u32 {
+            let score = if float_valued {
+                Value::Float(f64::from(i) * 1.5)
+            } else {
+                Value::Int(i64::from(i))
+            };
+            col.insert(vec![
+                ("name".into(), Value::Str(format!("item-{i:05}"))),
+                ("score".into(), score),
+            ])
+            .unwrap();
+        }
+        col.create_index("score").unwrap();
+        let sort = vec![spec("score", SortDirection::Asc)];
+        let page = col
+            .aggregate(vec![Stage::Sort(sort.clone()), Stage::Limit(5)])
+            .unwrap();
+        let want: Vec<String> = names(&full_sorted(&db, sort)).into_iter().take(5).collect();
+        assert_eq!(names(&page), want);
+    }
+}

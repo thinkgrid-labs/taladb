@@ -18,6 +18,12 @@
 //!   0x40 = Str  (null-escaped UTF-8 bytes + 0x00 terminator)
 //!   0x50 = Bytes (null-escaped bytes + 0x00 terminator)
 //!   0x60 = Array / Object (not indexable — skipped silently)
+//!
+//! Note that `Int` and `Float` carry *distinct* tags, so index order groups all
+//! integers before all floats. The sort comparator (`query::options::cmp_values`)
+//! instead compares the two numerically, so on a field holding both, index order
+//! is **not** sort order — see [`TAG_INT`]. Readers that rely on index order
+//! being sort order must handle that case.
 
 use std::ops::Bound;
 
@@ -32,6 +38,17 @@ pub type IndexBounds = Option<(Bound<Vec<u8>>, Bound<Vec<u8>>)>;
 // ---------------------------------------------------------------------------
 // Index key encoding
 // ---------------------------------------------------------------------------
+
+/// Type tag leading an encoded `Int` key.
+///
+/// `TAG_INT < TAG_FLOAT`, so a byte-ordered index scan yields every integer
+/// before every float — while `cmp_values` orders the two numerically. A field
+/// carrying both representations therefore has an index order that disagrees
+/// with sort order, and any fast path substituting one for the other must first
+/// rule that out (see `Collection::aggregate_via_sorted_index`).
+pub(crate) const TAG_INT: u8 = 0x20;
+/// Type tag leading an encoded `Float` key. See [`TAG_INT`].
+pub(crate) const TAG_FLOAT: u8 = 0x30;
 
 pub fn encode_index_key(value: &Value, id: Ulid) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
@@ -52,13 +69,13 @@ fn encode_value_prefix(value: &Value, buf: &mut Vec<u8>) -> Option<()> {
             buf.push(0x11);
         }
         Value::Int(n) => {
-            buf.push(0x20);
+            buf.push(TAG_INT);
             // XOR with sign bit to make two's-complement sort as unsigned big-endian
             let sortable = (*n as u64) ^ 0x8000_0000_0000_0000u64;
             buf.extend_from_slice(&sortable.to_be_bytes());
         }
         Value::Float(f) => {
-            buf.push(0x30);
+            buf.push(TAG_FLOAT);
             let bits = f.to_bits();
             // IEEE 754 sort: if sign bit set, flip all bits; else flip just sign bit
             let sortable = if bits >> 63 == 1 {

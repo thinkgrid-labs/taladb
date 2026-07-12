@@ -1274,7 +1274,11 @@ impl Collection {
     /// Correctness rests on two facts:
     /// * index keys are `encode_value_prefix(value) ++ ulid` with an
     ///   order-preserving encoding, so index order **is** `(value, id)` order —
-    ///   exactly the total order the sort comparator defines;
+    ///   the total order the sort comparator defines. This holds for every value
+    ///   type *except* a field mixing `Int` and `Float`: those carry distinct
+    ///   type tags (`TAG_INT` < `TAG_FLOAT`), so the index groups all integers
+    ///   before all floats while `cmp_values` compares them numerically. We
+    ///   detect that case below and decline the fast path;
     /// * only the *first* sort key needs to be indexed. Documents past the run
     ///   of ties that straddles the page boundary compare strictly worse on that
     ///   first key, so no later key can pull them onto the page. We therefore
@@ -1308,6 +1312,25 @@ impl Collection {
         // silently drop those documents from the result.
         if entries.len() as u64 != rtxn.count_entries(&docs_table_name(&self.name))? {
             return Ok(None);
+        }
+
+        // Index order groups every Int before every Float (distinct type tags),
+        // but the sort comparator ranks them numerically — so on a field holding
+        // both, the index is not sorted the way the query asks. Truncating to a
+        // page here would drop documents the comparator would have ranked onto
+        // it, and the final sort could never pull them back (they are never
+        // decoded). Bail out to the scan-and-sort path, which is always correct.
+        let mut has_int = false;
+        let mut has_float = false;
+        for entry in &entries {
+            match entry.value_prefix.first() {
+                Some(&crate::index::TAG_INT) => has_int = true,
+                Some(&crate::index::TAG_FLOAT) => has_float = true,
+                _ => {}
+            }
+            if has_int && has_float {
+                return Ok(None);
+            }
         }
 
         if spec.direction == SortDirection::Desc {

@@ -274,7 +274,6 @@ fn parse_sort(body: &Json) -> Result<Vec<SortSpec>, String> {
     Ok(specs)
 }
 
-/// `{ field: 1, ... }` — keep the listed fields (value must be truthy/1).
 /// Parse a `$project` body into `(fields, include, keep_id)`.
 ///
 /// Inclusion (`{a: 1}`) keeps only the listed fields; exclusion (`{a: 0}`) drops
@@ -282,6 +281,12 @@ fn parse_sort(body: &Json) -> Result<Vec<SortSpec>, String> {
 /// resolved — previously an all-zero body parsed to an empty *inclusion* list,
 /// which returned documents stripped of every field but `_id` with no error.
 /// `_id: 0` is the one exclusion allowed to accompany an inclusion.
+///
+/// Values are booleans or numbers, read for truthiness as MongoDB reads them:
+/// zero excludes, every other number includes. Truthiness is evaluated on the
+/// number itself, *not* on a cast to `i64` — a cast silently floors `0.5` to `0`
+/// and flips it from inclusion to exclusion, which then trips the mixing check
+/// in `{a: 0.5, b: 1}` and errors out on a body that names no exclusion at all.
 fn parse_project(body: &Json) -> Result<(Vec<String>, bool, bool), String> {
     let obj = body.as_object().ok_or("$project must be an object")?;
     if obj.is_empty() {
@@ -295,8 +300,12 @@ fn parse_project(body: &Json) -> Result<(Vec<String>, bool, bool), String> {
     for (field, spec) in obj {
         let keep = match spec {
             Json::Bool(b) => *b,
-            Json::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)) != Some(0),
-            _ => return Err(format!("$project value for '{field}' must be 0 or 1")),
+            Json::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
+            _ => {
+                return Err(format!(
+                    "$project value for '{field}' must be a number or boolean"
+                ));
+            }
         };
         if field == "_id" {
             keep_id = keep;
