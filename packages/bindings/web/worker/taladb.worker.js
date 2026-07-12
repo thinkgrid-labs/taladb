@@ -287,7 +287,7 @@ async function flushSnapshot() {
  * Schedule (or immediately trigger) an IDB snapshot write.
  *
  * - If the last flush was more than SNAPSHOT_MAX_INTERVAL_MS ago, flush now.
- * - Otherwise debounce: reset the timer to fire SNAPSHOT_DEBOUNCE_MS from now.
+ * - Otherwise debounce: reset the timer to fire snapshotDebounceMs from now.
  */
 function scheduleSnapshot() {
   const now = Date.now();
@@ -572,7 +572,12 @@ async function dispatch(op, args) {
       // Tolerant validated import: normalize/skip/quarantine per schema, LWW.
       // Returns a JSON string { applied, skipped, quarantined }.
       const reportJson = db.importChangesetValidated(args.changesetJson, args.schemasJson);
-      if ((JSON.parse(reportJson).applied ?? 0) > 0) onWriteCommitted();
+      const report = JSON.parse(reportJson);
+      // Quarantined documents are written to the quarantine table, so a batch
+      // that only quarantines still dirties the database. Without this, the IDB
+      // fallback would never snapshot them and they would be lost on reload —
+      // the opposite of the "never dropped on the floor" guarantee.
+      if ((report.applied ?? 0) > 0 || (report.quarantined ?? 0) > 0) onWriteCommitted();
       return reportJson;
     }
 

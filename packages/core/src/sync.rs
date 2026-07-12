@@ -317,6 +317,33 @@ pub struct StructuralSchema {
 }
 
 impl StructuralSchema {
+    /// Reject a schema whose migration directives can never run.
+    ///
+    /// [`renames`](Self::renames) and [`defaults`](Self::defaults) are only
+    /// applied to a document whose `_v` is *below* [`version`](Self::version).
+    /// With `version == 0` the migration step is skipped entirely — but
+    /// [`required`](Self::required) and [`types`](Self::types) still apply, so a
+    /// rename schema declared without a version would quarantine every single
+    /// document it was written to upgrade. Fail loudly at schema-build time
+    /// instead.
+    pub fn validate(&self) -> Result<(), TalaDbError> {
+        if self.version == 0 && !(self.renames.is_empty() && self.defaults.is_empty()) {
+            return Err(TalaDbError::Config(
+                "sync schema declares `renames`/`defaults` but no `version`: the import \
+                 migration step only runs for documents below `version`, so with version 0 \
+                 they would never be applied and documents missing those fields would be \
+                 quarantined instead of upgraded"
+                    .into(),
+            ));
+        }
+        if self.version < 0 {
+            return Err(TalaDbError::Config(
+                "sync schema `version` must not be negative".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Evaluate one document against this schema, returning a tolerant decision.
     pub fn evaluate(&self, doc: &Document) -> ImportDecision {
         let doc_v = doc.get("_v").and_then(Value::as_int).unwrap_or(0);
@@ -388,6 +415,23 @@ pub struct SchemaValidator {
 impl SchemaValidator {
     pub fn new(schemas: HashMap<String, StructuralSchema>) -> Self {
         SchemaValidator { schemas }
+    }
+
+    /// Build a validator, rejecting any schema whose directives can never run
+    /// (see [`StructuralSchema::validate`]). Prefer this over [`new`](Self::new)
+    /// at every binding boundary: a schema that silently does nothing is worse
+    /// than one that fails to load, because the documents it was meant to
+    /// upgrade get quarantined instead.
+    pub fn try_new(schemas: HashMap<String, StructuralSchema>) -> Result<Self, TalaDbError> {
+        for (collection, schema) in &schemas {
+            schema.validate().map_err(|e| match e {
+                TalaDbError::Config(msg) => {
+                    TalaDbError::Config(format!("collection `{collection}`: {msg}"))
+                }
+                other => other,
+            })?;
+        }
+        Ok(SchemaValidator { schemas })
     }
 }
 
@@ -554,6 +598,9 @@ impl LastWriteWins {
         changeset: Changeset,
     ) -> Result<ImportReport, TalaDbError> {
         let mut report = ImportReport::default();
+        // Rejects are collected here and written in one transaction after the
+        // batch, rather than one fsync'd commit per document.
+        let mut rejects: Vec<(String, Ulid, QuarantineRecord)> = Vec::new();
 
         for change in changeset {
             let col = db.collection(&change.collection)?;
@@ -575,14 +622,15 @@ impl LastWriteWins {
                                 continue;
                             }
                             ImportDecision::Quarantine(reason) => {
-                                quarantine_document(
-                                    db,
-                                    &change.collection,
+                                rejects.push((
+                                    change.collection.clone(),
                                     change.id,
-                                    remote_doc,
-                                    reason,
-                                    change.changed_at,
-                                )?;
+                                    QuarantineRecord {
+                                        document: remote_doc,
+                                        reason,
+                                        changed_at: change.changed_at,
+                                    },
+                                ));
                                 report.quarantined += 1;
                                 continue;
                             }
@@ -687,6 +735,8 @@ impl LastWriteWins {
             }
         }
 
+        quarantine_documents(db, rejects)?;
+
         Ok(report)
     }
 }
@@ -695,27 +745,28 @@ impl LastWriteWins {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Write a validator-rejected document into the collection's quarantine table,
-/// keyed by its ULID. Overwrites any earlier quarantine record for the same id
-/// (the latest rejection is the useful one). The document is retained verbatim
-/// so an operator or a later migration can recover or reprocess it.
-fn quarantine_document(
+/// Write every validator-rejected document of an import batch into its
+/// collection's quarantine table, keyed by ULID, in a **single** transaction.
+/// Overwrites any earlier quarantine record for the same id (the latest
+/// rejection is the useful one). Documents are retained verbatim so an operator
+/// or a later migration can recover or reprocess them.
+///
+/// One commit for the whole batch, not one per reject: under the default
+/// `flush_every_write` durability each commit is an fsync, and a per-document
+/// commit also left the quarantine table holding an arbitrary prefix of the
+/// batch if the process died midway.
+fn quarantine_documents(
     db: &crate::Database,
-    collection: &str,
-    id: Ulid,
-    document: Document,
-    reason: String,
-    changed_at: u64,
+    rejects: Vec<(String, Ulid, QuarantineRecord)>,
 ) -> Result<(), TalaDbError> {
-    let record = QuarantineRecord {
-        document,
-        reason,
-        changed_at,
-    };
-    let bytes = postcard::to_allocvec(&record)?;
-    let table = quarantine_table_name(collection);
+    if rejects.is_empty() {
+        return Ok(());
+    }
     let mut wtxn = db.backend().begin_write()?;
-    wtxn.put(&table, &id.to_bytes(), &bytes)?;
+    for (collection, id, record) in rejects {
+        let bytes = postcard::to_allocvec(&record)?;
+        wtxn.put(&quarantine_table_name(&collection), &id.to_bytes(), &bytes)?;
+    }
     wtxn.commit()?;
     Ok(())
 }

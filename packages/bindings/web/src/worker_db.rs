@@ -987,9 +987,11 @@ impl WorkerDB {
         let changeset: Changeset =
             serde_json::from_str(changeset_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let schemas = build_schemas(schemas_json)?;
+        let validator = SchemaValidator::try_new(schemas)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let report = self
             .db
-            .import_changes_validated(changeset, Arc::new(SchemaValidator::new(schemas)))
+            .import_changes_validated(changeset, Arc::new(validator))
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         serde_json::to_string(&serde_json::json!({
             "applied": report.applied,
