@@ -91,11 +91,40 @@ The output document of each group has `_id` set to the group key plus one field 
 
 ### `$project`
 
-Include the listed fields (any truthy value keeps a field). `_id` is kept unless you omit it.
+Reshape each document. A projection is either an **inclusion** or an **exclusion** — not both.
 
 ```ts
-{ $project: { _id: 1, total: 1 } }
+{ $project: { name: 1, city: 1 } }   // inclusion — keep ONLY these fields
+{ $project: { description: 0 } }     // exclusion — keep everything EXCEPT this
 ```
+
+`_id` is kept unless you set `_id: 0`, and that is the one exclusion allowed to sit alongside an inclusion:
+
+```ts
+{ $project: { total: 1, _id: 0 } }   // fine
+{ $project: { name: 1, bulky: 0 } }  // throws — mixed inclusion and exclusion
+```
+
+::: warning Changed in 0.9.3
+Before 0.9.3 the engine implemented inclusion only. An exclusion such as `{ description: 0 }` parsed to an *empty inclusion list*, so every document came back stripped of every field but `_id` — silently, with no error. Exclusion now works, and mixing the two modes raises an error instead of resolving to something arbitrary.
+:::
+
+## Paging: sort + skip + limit
+
+A `$sort` followed by `$skip`/`$limit` is a **bounded** query, and the engine treats it as one. When the sort's first key is indexed and no `$match` precedes it, the page is served by walking that index — no document outside the page is decoded at all:
+
+```ts
+await listings.aggregate([
+  { $sort: { rating: -1 } },   // `rating` is indexed
+  { $skip: 0 },
+  { $limit: 24 },
+  { $project: { name: 1, city: 1, rating: 1 } },
+]);
+```
+
+Paging a 10,000-document collection for 24 rows costs about the same as reading 24 documents, not 10,000. Multi-key sorts qualify too — only the *first* key needs an index; the rest order within the run of ties at the page boundary. Without an index on that first key the query still works, and still avoids a full sort (only the reachable `skip + limit` documents are ordered), but it must read the collection to do it.
+
+Paging is stable: ties are broken on the unique `_id`, so a document can never appear on two pages or fall between them as `$skip` grows.
 
 ## Runtime availability
 

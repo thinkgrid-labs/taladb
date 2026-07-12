@@ -1,10 +1,42 @@
 import * as react_jsx_runtime from 'react/jsx-runtime';
 import { ReactNode } from 'react';
-import { TalaDB, OpenDBOptions, Document, Collection, Filter } from 'taladb';
+import { CollectionOptions, Document, TalaDB, OpenDBOptions, Collection, Filter } from 'taladb';
 
-type TalaDBProviderProps = {
+/**
+ * Per-collection options (`schema`, `syncSchema`, `migrateDocument`, …), keyed by
+ * collection name.
+ *
+ * Register them once on the provider and every hook below it — `useCollection`,
+ * and therefore `useFind`, `useQuery` and `useMutation` — resolves a *configured*
+ * collection. Without this, those hooks call `db.collection(name)` with no
+ * options, so a hook-driven write silently skips the strict `schema` validation
+ * and the `_v` stamp that `db.collection(name, { … })` would have applied.
+ */
+type CollectionRegistry = Record<string, CollectionOptions<any>>;
+/** Resolves the registered options for a collection. Stable across renders. */
+interface CollectionResolver {
+    get<T extends Document>(name: string): CollectionOptions<T> | undefined;
+}
+declare function useCollectionOptions(): CollectionResolver;
+type SharedProps = {
     children: ReactNode;
-} & ({
+    /**
+     * Per-collection options, keyed by collection name — see {@link CollectionRegistry}.
+     *
+     * ```tsx
+     * <TalaDBProvider
+     *   name="app.db"
+     *   collections={{
+     *     bookings: { schema: BookingSchema, syncSchema: { version: 1 } },
+     *   }}
+     * >
+     * ```
+     * Treated as static configuration: read when a collection handle is first
+     * created, so an inline object here does not thrash live queries.
+     */
+    collections?: CollectionRegistry;
+};
+type TalaDBProviderProps = SharedProps & ({
     /** A TalaDB instance you opened yourself with `openDB()`. */
     db: TalaDB;
     name?: never;
@@ -57,17 +89,30 @@ declare function useTalaDB(): TalaDB;
 /**
  * Returns a stable `Collection<T>` handle from the nearest `<TalaDBProvider>`.
  *
- * The returned collection is memoised — the same object reference is returned
- * on every render unless the db instance or collection name changes. Pass it
- * directly to `useFind` or `useFindOne` without wrapping in `useMemo`.
+ * The collection is opened **with its registered options** — the `schema`,
+ * `syncSchema` and `migrateDocument` declared in the provider's `collections`
+ * prop, or the `options` passed here (which win). That is what makes a write
+ * through `useMutation` hard-fail on an invalid document and carry its `_v`
+ * shape version, exactly as `db.collection(name, { … })` does. Without it the
+ * hooks resolve a bare, unconfigured handle and silently skip validation.
  *
- * @param name  The collection name (e.g. `'articles'`).
+ * The returned collection is memoised — the same object reference is returned on
+ * every render unless the db instance or collection name changes. Pass it
+ * directly to `useFind` or `useFindOne` without wrapping in `useMemo`. Options
+ * are read when the handle is first created and treated as static configuration,
+ * so an inline `{ schema }` object cannot thrash live-query subscriptions.
+ *
+ * @param name     The collection name (e.g. `'articles'`).
+ * @param options  Per-call options; overrides the provider's registry entry.
  *
  * @example
+ * // Registered once on the provider — every hook below it picks this up:
+ * <TalaDBProvider name="app.db" collections={{ articles: { schema: Article } }}>
+ *
  * const articles = useCollection<Article>('articles')
  * const { data, loading } = useFind(articles, { locale: 'en' })
  */
-declare function useCollection<T extends Document>(name: string): Collection<T>;
+declare function useCollection<T extends Document>(name: string, options?: CollectionOptions<T>): Collection<T>;
 
 interface FindResult<T> {
     /** The current matching documents. Empty array while loading. */
@@ -347,4 +392,4 @@ interface MutationResult<T extends Document> {
  */
 declare function useMutation<T extends Document>(options: UseMutationOptions): MutationResult<T>;
 
-export { type FindOneResult, type FindResult, type MutationResult, type PrefetchEntry, type PrefetchMode, type PrefetchSlice, type QueryResult, type ReadSource, type ReplicationConfig, ReplicationProvider, type ReplicationProviderProps, TalaDBProvider, type TalaDBProviderProps, type UseMutationOptions, type UseQueryOptions, type WriteOp, useCollection, useFind, useFindOne, useMutation, useQueries, useQuery, useReplicationConfig, useTalaDB };
+export { type CollectionRegistry, type CollectionResolver, type FindOneResult, type FindResult, type MutationResult, type PrefetchEntry, type PrefetchMode, type PrefetchSlice, type QueryResult, type ReadSource, type ReplicationConfig, ReplicationProvider, type ReplicationProviderProps, TalaDBProvider, type TalaDBProviderProps, type UseMutationOptions, type UseQueryOptions, type WriteOp, useCollection, useCollectionOptions, useFind, useFindOne, useMutation, useQueries, useQuery, useReplicationConfig, useTalaDB };

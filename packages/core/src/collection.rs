@@ -14,10 +14,10 @@ use crate::index::{
     compound_table_name, docs_table_name, encode_compound_key, encode_index_key, index_table_name,
     meta_key, tomb_table_name,
 };
-use crate::query::executor::execute;
+use crate::query::executor::{execute, fetch_documents, index_ordered_entries};
 use crate::query::filter::Filter;
 use crate::query::options::{
-    FindOptions, partial_sort_documents, project_document, sort_documents,
+    FindOptions, SortDirection, partial_sort_documents, project_document, sort_documents,
 };
 use crate::query::planner::plan_full;
 use crate::sync::{SyncEvent, SyncHook, now_ms};
@@ -1260,15 +1260,91 @@ impl Collection {
         Ok(docs)
     }
 
+    /// Serve a bounded `$sort` (+`$skip`/`$limit`) straight from a secondary
+    /// index, decoding only the documents on the requested page.
+    ///
+    /// Returns `None` when the shape doesn't qualify and the caller should fall
+    /// back to the ordinary scan-then-sort path.
+    ///
+    /// Why this exists: without it, `[$sort, $skip, $limit]` over an unfiltered
+    /// collection decodes **every** document just to order them and then throw
+    /// all but a page away — the dominant cost of paging a large catalog.
+    /// Walking the index touches no documents at all.
+    ///
+    /// Correctness rests on two facts:
+    /// * index keys are `encode_value_prefix(value) ++ ulid` with an
+    ///   order-preserving encoding, so index order **is** `(value, id)` order —
+    ///   exactly the total order the sort comparator defines;
+    /// * only the *first* sort key needs to be indexed. Documents past the run
+    ///   of ties that straddles the page boundary compare strictly worse on that
+    ///   first key, so no later key can pull them onto the page. We therefore
+    ///   take the page plus the rest of its boundary tie-run, decode just those,
+    ///   and let the normal pipeline order them on the full multi-key spec.
+    fn aggregate_via_sorted_index(
+        &self,
+        pipeline: &[Stage],
+    ) -> Result<Option<Vec<Document>>, TalaDbError> {
+        let Some(Stage::Sort(specs)) = pipeline.first() else {
+            return Ok(None);
+        };
+        let Some(spec) = specs.first() else {
+            return Ok(None);
+        };
+        // Only worth it when the reachable set is bounded by a `$limit`.
+        let Some(keep) = crate::aggregate::reachable_after_sort(&pipeline[1..]) else {
+            return Ok(None);
+        };
+
+        let cache = self.load_indexes_cached()?;
+        if !cache.indexes.iter().any(|i| i.field == spec.field) {
+            return Ok(None);
+        }
+
+        let rtxn = self.backend.begin_read()?;
+        let mut entries = index_ordered_entries(rtxn.as_ref(), &self.name, &spec.field)?;
+
+        // A document whose sort field is absent has no index entry, so the index
+        // is not a faithful ordering of the collection. Bail out rather than
+        // silently drop those documents from the result.
+        if entries.len() as u64 != rtxn.count_entries(&docs_table_name(&self.name))? {
+            return Ok(None);
+        }
+
+        if spec.direction == SortDirection::Desc {
+            entries.reverse();
+        }
+
+        // Take the page, then extend through the end of the tie-run it lands in.
+        let mut take = keep.min(entries.len());
+        if take > 0 {
+            let boundary = entries[take - 1].value_prefix.clone();
+            while take < entries.len() && entries[take].value_prefix == boundary {
+                take += 1;
+            }
+        }
+
+        let ulids = entries.into_iter().take(take).map(|e| e.id).collect();
+        let docs = fetch_documents(rtxn.as_ref(), &self.name, ulids)?;
+
+        // Hand the (small) candidate set to the normal pipeline: it applies the
+        // full multi-key sort, then the same $skip/$limit/$project as always.
+        Ok(Some(execute_pipeline(docs, pipeline)?))
+    }
+
     /// Execute an aggregation pipeline against the collection.
     ///
     /// If the first stage is `Stage::Match`, the query planner is consulted so
     /// that any available index can be used to narrow the candidate set before
-    /// the remaining stages run.
+    /// the remaining stages run. An unfiltered, bounded `$sort` is instead served
+    /// directly from that field's index — see `aggregate_via_sorted_index`.
     pub fn aggregate(
         &self,
         pipeline: crate::aggregate::Pipeline,
     ) -> Result<Vec<Document>, TalaDbError> {
+        if let Some(page) = self.aggregate_via_sorted_index(&pipeline)? {
+            return Ok(page);
+        }
+
         let (initial_docs, rest_start) = if let Some(Stage::Match(filter)) = pipeline.first() {
             let cache = self.load_indexes_cached()?;
             let plan = plan_full(

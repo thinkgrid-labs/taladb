@@ -521,12 +521,12 @@ export interface InitOutput {
     readonly opfs_delete_snapshot: (a: number, b: number) => any;
     readonly opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly opfs_load_snapshot: (a: number, b: number) => any;
-    readonly wasm_bindgen__closure__destroy__h2c4f24ad7d89538e: (a: number, b: number) => void;
+    readonly wasm_bindgen__closure__destroy__hbdc531cbd92d8795: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__he22c2c171c027d5f: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__hcc9749e9df054fa1: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hb52f4011b6a30878: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h1db834cd18eb3d6d: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

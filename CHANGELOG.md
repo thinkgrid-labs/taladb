@@ -5,7 +5,25 @@ All notable changes to TalaDB will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.2] - Unreleased
+## [0.9.3] - 2026-07-12
+
+Paging a large collection stops being a full-collection operation, and three
+API-surface bugs that silently did the wrong thing are fixed.
+
+### Added
+
+- **Sorted pages are served from the index — a paged `$sort` no longer reads the whole collection.** `[{ $sort }, { $skip }, { $limit }]` over an unfiltered collection used to decode **every** document, sort all of them, then throw away everything but the page. `aggregate` now walks the sort field's secondary index in key order (touching no documents at all), takes only the page — plus the run of ties it lands in — and decodes just those. Paging a 10,000-document catalog for 24 rows went from **88.9 ms to 6.4 ms (13.8×)**, and is now faster than a bare full scan because it never performs one. Applies when the leading `$sort`'s **first** key is indexed; multi-key sorts qualify (later keys order within the tie-run). Falls back to the old path when the field is unindexed, or when any document lacks it — such a document has no index entry, and serving from the index would silently drop it.
+- **Bounded (top-K) sort.** When a `$sort` is followed by a `$skip`/`$limit` that makes the reachable set finite, only those documents are ordered (`O(n + k log k)`) instead of the whole matched set (`O(n log n)`). This is the fallback path's counterpart to the index-served page above, and it applies to filtered queries too.
+
+### Fixed
+
+- **`$project` exclusion silently returned near-empty documents.** The engine implemented *inclusion* only, but the type (`Record<string, 0 | 1>`) advertised Mongo-style exclusion. `{ description: 0 }` parsed to an **empty inclusion list**, so every document came back stripped of every field except `_id` — no error, no warning, just missing data. Exclusion is now implemented (`{ a: 0 }` keeps everything but `a`), inclusion is unchanged, and **mixing the two now throws** rather than resolving to something arbitrary (`_id: 0` alongside an inclusion remains legal, as in MongoDB).
+- **Sort order is now total, so paging cannot repeat or drop a document.** The comparator returned `Equal` for documents tied on every sort key, leaving their relative order to the sort algorithm. Under a bounded sort (`find` with sort+limit, and now `$sort`+`$limit`) ties could be resolved differently per call, so a growing `$skip` could show the same document on two pages — or on none. Ties now break on the unique, monotonic `_id`, which makes a partial sort's prefix provably identical to a full sort's.
+- **Sorting is ~7× faster.** The comparator re-resolved every sort field by scanning the document's field list and comparing key strings — on each of `O(n log n)` comparisons — and every swap moved a whole `Document`. Sort keys are now extracted once and the sort shuffles those instead (decorate-sort-undecorate).
+- **`$in` was unusable on a union-typed field.** `FieldOps<T>` was a *distributive* conditional (`T extends null | undefined ? … : …`), so for a field typed `'Cabin' | 'Villa' | …` it spread over the union and inferred `$in?: 'Cabin'[] | 'Villa'[] | …` rather than `$in?: ('Cabin' | 'Villa' | …)[]` — every such filter needed an `as` cast. `FieldOps` is no longer a conditional at all: `$exists` is always available (it was the only thing the conditional bought) and the value operators use `NonNullable<T>`, so optional fields keep both.
+- **The React hooks bypassed collection configuration.** `useCollection(name)` called `db.collection(name)` with **no options**, and `useQuery`/`useMutation` build on it — so a write through `useMutation` skipped the `schema` validation and the `_v` stamp that `db.collection(name, { … })` applies. An app following both the hooks guide and the [Schema & Sync Standards](https://taladb.dev/guide/schema-and-sync-standards) silently lost strict local validation. `<TalaDBProvider collections={{ bookings: { schema, syncSchema } }}>` now registers per-collection options and `useCollection` (hence every hook below it) resolves a configured handle; `useCollection(name, options)` overrides per call. The registry is read through a stable resolver, so an inline `collections={{…}}` object cannot invalidate live-query subscriptions.
+
+## [0.9.2] - 2026-07-12
 
 Schema evolution for local-first data: tolerant **validate-on-import** and
 application **schema migrations**, both wired on **browser (OPFS worker) and

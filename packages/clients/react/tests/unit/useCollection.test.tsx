@@ -31,7 +31,7 @@ describe('useCollection', () => {
     const { db } = createMockDB()
     const spy = vi.spyOn(db, 'collection')
     renderHook(() => useCollection('articles'), { wrapper: wrapper(db) })
-    expect(spy).toHaveBeenCalledWith('articles')
+    expect(spy).toHaveBeenCalledWith('articles', undefined)
   })
 
   it('returns the same reference across re-renders (memoised)', () => {
@@ -64,8 +64,8 @@ describe('useCollection', () => {
       { wrapper: wrapper(db), initialProps: { name: 'notes' } },
     )
     rerender({ name: 'articles' })
-    expect(spy).toHaveBeenCalledWith('notes')
-    expect(spy).toHaveBeenCalledWith('articles')
+    expect(spy).toHaveBeenCalledWith('notes', undefined)
+    expect(spy).toHaveBeenCalledWith('articles', undefined)
   })
 
   it('returns a new collection when the db instance changes', () => {

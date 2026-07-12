@@ -16,8 +16,8 @@ interface SyncProviderProps {
     options?: SyncOptions;
     /** Called after each successful pass. */
     onSync?: (result: SyncResult) => void;
-    /** Called when a pass fails (offline, 401, server down). Failures are safe:
-     * cursors only advance on success and the next pass covers the gap. */
+    /** Called when a pass fails (offline, 401, server down). The next replayed
+     * pass covers the gap. */
     onError?: (error: unknown) => void;
     children?: ReactNode;
 }

@@ -1,12 +1,39 @@
 'use client';
 
 // src/context.tsx
-import { createContext, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { Fragment, jsx } from "react/jsx-runtime";
 var TalaDBContext = createContext(null);
+var CollectionOptionsContext = createContext({
+  get: () => void 0
+});
+function useCollectionOptions() {
+  return useContext(CollectionOptionsContext);
+}
+function CollectionOptionsProvider({
+  collections,
+  children
+}) {
+  const latest = useRef(collections);
+  latest.current = collections;
+  const resolver = useMemo(
+    () => ({
+      get: (name) => latest.current?.[name]
+    }),
+    []
+  );
+  return /* @__PURE__ */ jsx(CollectionOptionsContext.Provider, { value: resolver, children });
+}
 function TalaDBProvider(props) {
   if ("db" in props && props.db) {
-    return /* @__PURE__ */ jsx(TalaDBContext.Provider, { value: props.db, children: props.children });
+    return /* @__PURE__ */ jsx(TalaDBContext.Provider, { value: props.db, children: /* @__PURE__ */ jsx(CollectionOptionsProvider, { collections: props.collections, children: props.children }) });
   }
   return /* @__PURE__ */ jsx(NamedProvider, { ...props });
 }
@@ -14,6 +41,7 @@ function NamedProvider({
   name,
   options,
   fallback = null,
+  collections,
   children
 }) {
   const [db, setDb] = useState(null);
@@ -41,7 +69,7 @@ function NamedProvider({
   }, [name, optionsKey]);
   if (error !== null) throw error;
   if (db === null) return /* @__PURE__ */ jsx(Fragment, { children: fallback });
-  return /* @__PURE__ */ jsx(TalaDBContext.Provider, { value: db, children });
+  return /* @__PURE__ */ jsx(TalaDBContext.Provider, { value: db, children: /* @__PURE__ */ jsx(CollectionOptionsProvider, { collections, children }) });
 }
 function useTalaDB() {
   const db = useContext(TalaDBContext);
@@ -52,16 +80,22 @@ function useTalaDB() {
 }
 
 // src/useCollection.ts
-import { useMemo } from "react";
-function useCollection(name) {
+import { useMemo as useMemo2, useRef as useRef2 } from "react";
+function useCollection(name, options) {
   const db = useTalaDB();
-  return useMemo(() => db.collection(name), [db, name]);
+  const registry = useCollectionOptions();
+  const explicit = useRef2(options);
+  explicit.current = options;
+  return useMemo2(
+    () => db.collection(name, explicit.current ?? registry.get(name)),
+    [db, name, registry]
+  );
 }
 
 // src/useFind.ts
-import { useCallback, useRef, useSyncExternalStore } from "react";
+import { useCallback, useRef as useRef3, useSyncExternalStore } from "react";
 function useFind(collection, filter) {
-  const snapshotRef = useRef({ data: [], loading: true, error: null });
+  const snapshotRef = useRef3({ data: [], loading: true, error: null });
   const filterKey = JSON.stringify(filter ?? null);
   const subscribe = useCallback(
     (notify) => {
@@ -83,9 +117,9 @@ function useFind(collection, filter) {
 }
 
 // src/useFindOne.ts
-import { useCallback as useCallback2, useRef as useRef2, useSyncExternalStore as useSyncExternalStore2 } from "react";
+import { useCallback as useCallback2, useRef as useRef4, useSyncExternalStore as useSyncExternalStore2 } from "react";
 function useFindOne(collection, filter) {
-  const snapshotRef = useRef2({ data: null, loading: true, error: null });
+  const snapshotRef = useRef4({ data: null, loading: true, error: null });
   const filterKey = JSON.stringify(filter);
   const subscribe = useCallback2(
     (notify) => {
@@ -110,8 +144,8 @@ import {
   createContext as createContext2,
   useContext as useContext2,
   useEffect as useEffect2,
-  useMemo as useMemo2,
-  useRef as useRef3
+  useMemo as useMemo3,
+  useRef as useRef5
 } from "react";
 
 // src/replication/engine.ts
@@ -170,7 +204,7 @@ import { jsx as jsx2, jsxs } from "react/jsx-runtime";
 var ReplicationContext = createContext2(null);
 function ReplicationProvider({ children, ...config }) {
   const key = `${config.endpoint}|${config.pollMs ?? ""}|${JSON.stringify(config.paths ?? null)}|${JSON.stringify(config.prefetch ?? null)}|${config.prefetchMode ?? ""}|${config.prefetchConcurrency ?? ""}`;
-  const value = useMemo2(
+  const value = useMemo3(
     () => config,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [key]
@@ -228,7 +262,7 @@ function PrefetchRunner() {
   const slices = normalizePrefetch(base?.prefetch);
   const mode = base?.prefetchMode ?? "once";
   const concurrency = Math.max(1, base?.prefetchConcurrency ?? 2);
-  const baseRef = useRef3(base);
+  const baseRef = useRef5(base);
   baseRef.current = base;
   const sig = JSON.stringify({ slices, mode, concurrency, endpoint: base?.endpoint ?? null });
   useEffect2(() => {
@@ -267,7 +301,7 @@ function PrefetchRunner() {
 }
 
 // src/useQuery.ts
-import { useCallback as useCallback3, useEffect as useEffect3, useRef as useRef4, useState as useState2 } from "react";
+import { useCallback as useCallback3, useEffect as useEffect3, useRef as useRef6, useState as useState2 } from "react";
 function useQuery(options) {
   const { collection, filter, source = "local-first" } = options;
   const networked = source !== "local-only";
@@ -281,7 +315,7 @@ function useQuery(options) {
     paths: options.paths,
     pollMs: options.pollMs
   });
-  const configRef = useRef4(config);
+  const configRef = useRef6(config);
   configRef.current = config;
   const [syncing, setSyncing] = useState2(false);
   const [syncError, setSyncError] = useState2(null);
@@ -320,7 +354,7 @@ function useQuery(options) {
 }
 
 // src/useQueries.ts
-import { useEffect as useEffect4, useRef as useRef5, useState as useState3 } from "react";
+import { useEffect as useEffect4, useRef as useRef7, useState as useState3 } from "react";
 var NOOP_REFETCH = async () => {
 };
 function emptyResult() {
@@ -346,9 +380,9 @@ function useQueries(queries) {
       pollMs: q.pollMs ?? null
     }))
   );
-  const queriesRef = useRef5(queries);
+  const queriesRef = useRef7(queries);
   queriesRef.current = queries;
-  const baseRef = useRef5(base);
+  const baseRef = useRef7(base);
   baseRef.current = base;
   const [results, setResults] = useState3(
     () => queries.map(() => emptyResult())
@@ -426,7 +460,7 @@ function useQueries(queries) {
 }
 
 // src/useMutation.ts
-import { useCallback as useCallback4, useEffect as useEffect5, useRef as useRef6, useState as useState4 } from "react";
+import { useCallback as useCallback4, useEffect as useEffect5, useRef as useRef8, useState as useState4 } from "react";
 function useMutation(options) {
   const { collection, direction = "push", drainOnMount = true } = options;
   const db = useTalaDB();
@@ -437,7 +471,7 @@ function useMutation(options) {
     fetch: options.fetch,
     paths: options.paths
   });
-  const configRef = useRef6(config);
+  const configRef = useRef8(config);
   configRef.current = config;
   const [pending, setPending] = useState4(false);
   const [error, setError] = useState4(null);
@@ -502,6 +536,7 @@ export {
   ReplicationProvider,
   TalaDBProvider,
   useCollection,
+  useCollectionOptions,
   useFind,
   useFindOne,
   useMutation,

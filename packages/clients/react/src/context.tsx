@@ -1,37 +1,122 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import type { TalaDB, OpenDBOptions } from 'taladb'
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
+import type { TalaDB, OpenDBOptions, CollectionOptions, Document } from 'taladb'
 
 const TalaDBContext = createContext<TalaDB | null>(null)
 
-export type TalaDBProviderProps = {
+/**
+ * Per-collection options (`schema`, `syncSchema`, `migrateDocument`, …), keyed by
+ * collection name.
+ *
+ * Register them once on the provider and every hook below it — `useCollection`,
+ * and therefore `useFind`, `useQuery` and `useMutation` — resolves a *configured*
+ * collection. Without this, those hooks call `db.collection(name)` with no
+ * options, so a hook-driven write silently skips the strict `schema` validation
+ * and the `_v` stamp that `db.collection(name, { … })` would have applied.
+ */
+// `any` (not `Document`) is deliberate: a registry mixing `CollectionOptions<Booking>`
+// with `CollectionOptions<Review>` has no useful common supertype, and each entry is
+// re-typed at the `useCollection<T>()` call site anyway.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type CollectionRegistry = Record<string, CollectionOptions<any>>
+
+/** Resolves the registered options for a collection. Stable across renders. */
+export interface CollectionResolver {
+  get<T extends Document>(name: string): CollectionOptions<T> | undefined
+}
+
+const CollectionOptionsContext = createContext<CollectionResolver>({
+  get: () => undefined,
+})
+
+export function useCollectionOptions(): CollectionResolver {
+  return useContext(CollectionOptionsContext)
+}
+
+type SharedProps = {
   children: ReactNode
-} & (
-  | {
-      /** A TalaDB instance you opened yourself with `openDB()`. */
-      db: TalaDB
-      name?: never
-      options?: never
-      fallback?: never
-    }
-  | {
-      /**
-       * Database name — the provider owns the `openDB(name)` lifecycle:
-       * it opens lazily on the client (never during SSR), provides the handle
-       * once ready, and closes it on unmount. The natural form for Next.js,
-       * where `openDB` cannot run during server rendering.
-       */
-      name: string
-      /** Options forwarded to `openDB(name, options)` (e.g. inline sync config). */
-      options?: OpenDBOptions
-      /**
-       * Rendered while the database is opening (and during SSR).
-       * Defaults to `null`. Children only render once the db is ready, so
-       * `useTalaDB()` never observes a missing instance.
-       */
-      fallback?: ReactNode
-      db?: never
-    }
-)
+  /**
+   * Per-collection options, keyed by collection name — see {@link CollectionRegistry}.
+   *
+   * ```tsx
+   * <TalaDBProvider
+   *   name="app.db"
+   *   collections={{
+   *     bookings: { schema: BookingSchema, syncSchema: { version: 1 } },
+   *   }}
+   * >
+   * ```
+   * Treated as static configuration: read when a collection handle is first
+   * created, so an inline object here does not thrash live queries.
+   */
+  collections?: CollectionRegistry
+}
+
+export type TalaDBProviderProps = SharedProps &
+  (
+    | {
+        /** A TalaDB instance you opened yourself with `openDB()`. */
+        db: TalaDB
+        name?: never
+        options?: never
+        fallback?: never
+      }
+    | {
+        /**
+         * Database name — the provider owns the `openDB(name)` lifecycle:
+         * it opens lazily on the client (never during SSR), provides the handle
+         * once ready, and closes it on unmount. The natural form for Next.js,
+         * where `openDB` cannot run during server rendering.
+         */
+        name: string
+        /** Options forwarded to `openDB(name, options)` (e.g. inline sync config). */
+        options?: OpenDBOptions
+        /**
+         * Rendered while the database is opening (and during SSR).
+         * Defaults to `null`. Children only render once the db is ready, so
+         * `useTalaDB()` never observes a missing instance.
+         */
+        fallback?: ReactNode
+        db?: never
+      }
+  )
+
+/**
+ * Publishes the collection registry behind a resolver whose identity never
+ * changes, so passing an inline `collections={{…}}` object cannot invalidate the
+ * memoised collection handles (and thus the live-query subscriptions) below it.
+ */
+function CollectionOptionsProvider({
+  collections,
+  children,
+}: {
+  collections?: CollectionRegistry
+  children: ReactNode
+}) {
+  const latest = useRef(collections)
+  latest.current = collections
+
+  const resolver = useMemo<CollectionResolver>(
+    () => ({
+      get: <T extends Document>(name: string) =>
+        latest.current?.[name] as CollectionOptions<T> | undefined,
+    }),
+    [],
+  )
+
+  return (
+    <CollectionOptionsContext.Provider value={resolver}>
+      {children}
+    </CollectionOptionsContext.Provider>
+  )
+}
 
 /**
  * Provides a TalaDB instance to all child hooks.
@@ -53,17 +138,24 @@ export type TalaDBProviderProps = {
  */
 export function TalaDBProvider(props: TalaDBProviderProps) {
   if ('db' in props && props.db) {
-    return <TalaDBContext.Provider value={props.db}>{props.children}</TalaDBContext.Provider>
+    return (
+      <TalaDBContext.Provider value={props.db}>
+        <CollectionOptionsProvider collections={props.collections}>
+          {props.children}
+        </CollectionOptionsProvider>
+      </TalaDBContext.Provider>
+    )
   }
-  return <NamedProvider {...(props as Extract<TalaDBProviderProps, { name: string }>)} />
+  return <NamedProvider {...(props as Extract<TalaDBProviderProps, { name: string }> & SharedProps)} />
 }
 
 function NamedProvider({
   name,
   options,
   fallback = null,
+  collections,
   children,
-}: Extract<TalaDBProviderProps, { name: string }>) {
+}: Extract<TalaDBProviderProps, { name: string }> & SharedProps) {
   const [db, setDb] = useState<TalaDB | null>(null)
   const [error, setError] = useState<unknown>(null)
   const optionsKey = JSON.stringify(options ?? null)
@@ -105,7 +197,11 @@ function NamedProvider({
   if (error !== null) throw error
 
   if (db === null) return <>{fallback}</>
-  return <TalaDBContext.Provider value={db}>{children}</TalaDBContext.Provider>
+  return (
+    <TalaDBContext.Provider value={db}>
+      <CollectionOptionsProvider collections={collections}>{children}</CollectionOptionsProvider>
+    </TalaDBContext.Provider>
+  )
 }
 
 /**

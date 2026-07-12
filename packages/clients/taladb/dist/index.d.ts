@@ -43,17 +43,30 @@ type Document = {
     _id?: string;
     [key: string]: Value | undefined;
 };
-type FieldOps<T> = T extends null | undefined ? {
-    $exists?: boolean;
-} : {
-    $eq?: T;
-    $ne?: T;
-    $gt?: T;
-    $gte?: T;
-    $lt?: T;
-    $lte?: T;
-    $in?: T[];
-    $nin?: T[];
+/**
+ * The operators available on a single field.
+ *
+ * Deliberately **not** a conditional type. `T extends null | undefined ? … : …`
+ * is *distributive*, so for a union-typed field (`type: 'Cabin' | 'Villa' | …`)
+ * it spreads over every member and infers `$in?: 'Cabin'[] | 'Villa'[] | …`
+ * instead of `$in?: ('Cabin' | 'Villa' | …)[]` — making `$in` unusable on any
+ * union field without a cast.
+ *
+ * Tuple-wrapping the check (`[T] extends [null | undefined]`) stops the
+ * distribution but then strips `$exists` from optional fields, which is the one
+ * thing the conditional existed for. So there is no conditional at all: `$exists`
+ * is always available (it is meaningful on every field), and the value operators
+ * use `NonNullable<T>` so an optional field still compares against its real type.
+ */
+type FieldOps<T> = {
+    $eq?: NonNullable<T>;
+    $ne?: NonNullable<T>;
+    $gt?: NonNullable<T>;
+    $gte?: NonNullable<T>;
+    $lt?: NonNullable<T>;
+    $lte?: NonNullable<T>;
+    $in?: NonNullable<T>[];
+    $nin?: NonNullable<T>[];
     $exists?: boolean;
     /** Full-text search: matches documents where this string field contains the given token. */
     $contains?: string;
@@ -96,6 +109,57 @@ type Update<T extends Document = Document> = {
 interface Schema<T> {
     parse(data: unknown): T;
 }
+/** Primitive field type for a {@link SyncSchema}. `'any'` requires presence
+ * without constraining the value's type. */
+type SyncFieldType = 'bool' | 'int' | 'float' | 'str' | 'bytes' | 'array' | 'object' | 'any';
+/**
+ * A tolerant, structural schema applied to documents **arriving via sync**
+ * (`db.sync()` pull). Distinct from {@link Schema} (Zod/Valibot), which is
+ * strict and runs on the *local* `insert` path: sync import is the boundary you
+ * don't control, so it validates structurally and never hard-rejects.
+ *
+ * On import, per document:
+ * - `_v` **below** `version` → upgraded in place (missing `defaults` filled,
+ *   `_v` stamped) — additive-only migration.
+ * - `_v` **above** `version` → accepted untouched (the peer is ahead).
+ * - a missing/`null` `required` field or a `types` mismatch → **quarantined**
+ *   (set aside, recoverable via {@link TalaDB.quarantined}), never dropped and
+ *   never aborting the batch.
+ *
+ * @example
+ * const users = db.collection<User>('users', {
+ *   schema: User,                     // strict, on insert
+ *   syncSchema: {                     // tolerant, on import
+ *     version: 1,
+ *     required: ['name'],
+ *     types: { name: 'str', age: 'int' },
+ *     defaults: { age: 0 },
+ *   },
+ * });
+ */
+interface SyncSchema {
+    /**
+     * Current document shape version. Omit or `0` to disable the migration step
+     * entirely — in which case {@link renames} and {@link defaults} never run, so
+     * declaring either without a `version` is rejected at `db.collection()` rather
+     * than silently quarantining the documents they were meant to upgrade.
+     */
+    version?: number;
+    /** Fields that must be present and non-null, or the document is quarantined. */
+    required?: string[];
+    /** Expected primitive type per field. Fields absent here accept any type. */
+    types?: Record<string, SyncFieldType>;
+    /** Values applied to missing fields when upgrading a below-`version` document. */
+    defaults?: Record<string, Value>;
+    /**
+     * Field renames applied when upgrading a below-`version` document, as
+     * `{ oldName: newName }`. If the old field is present and the new one absent,
+     * the value moves. Applied before {@link defaults}. Structural (runs in the
+     * engine at import) — for renames that need computation, use
+     * {@link CollectionOptions.migrateDocument}.
+     */
+    renames?: Record<string, string>;
+}
 /** Options passed to `db.collection()`. */
 interface CollectionOptions<T extends Document = Document> {
     /**
@@ -113,6 +177,53 @@ interface CollectionOptions<T extends Document = Document> {
      * Defaults to `false`.
      */
     validateOnRead?: boolean;
+    /**
+     * Tolerant structural schema applied to documents arriving via `db.sync()`.
+     * See {@link SyncSchema}. Enables validate-on-import ("validate, never cast")
+     * in the core sync path, with `_v` migration and quarantine of bad shapes.
+     * Wired on browser (OPFS worker), Node.js, and React Native; a binding whose
+     * native module predates 0.9.2 falls back to unvalidated import.
+     *
+     * Declaring a `version` also makes locally-inserted documents carry that `_v`,
+     * so they are never mistaken for legacy documents on read.
+     */
+    syncSchema?: SyncSchema;
+    /**
+     * Lazy, read-time document migration — the arbitrary-JS complement to the
+     * structural {@link SyncSchema}. When set, every document returned by `find`
+     * / `findOne` whose `_v` is **below** `syncSchema.version` is passed through
+     * `migrateDocument(doc, fromVersion)` and stamped to the current version
+     * before you see it, so application code always reads the current shape even
+     * for documents that predate the schema (renames, computed/derived fields,
+     * splits/merges). Runs on **every runtime** (it's a pure read transform in
+     * the client — no binding support needed).
+     *
+     * Requires `syncSchema.version` (the migration target). The transform is
+     * applied to the returned value only; it is not persisted back to storage —
+     * pair with `openDB({ migrations })` or a `syncSchema` rename to rewrite
+     * stored documents eagerly. Must be pure and deterministic.
+     *
+     * @example
+     * const users = db.collection<User>('users', {
+     *   syncSchema: { version: 2 },
+     *   migrateDocument: (doc, from) =>
+     *     from < 2 ? { ...doc, fullName: `${doc.first} ${doc.last}` } : doc,
+     * });
+     */
+    migrateDocument?: (doc: T, fromVersion: number) => T;
+    /**
+     * When `true`, a document upgraded by {@link migrateDocument} on read is
+     * **written back** to storage (a best-effort `updateOne` computing the
+     * `$set`/`$unset` diff) so the migration becomes permanent — after which
+     * filters and indexes on the new shape match it. Default `false` (the
+     * migrated shape is returned but not persisted).
+     *
+     * Trade-offs: reads that encounter un-migrated documents now issue writes
+     * (which fire live-query and sync-hook notifications like any other write);
+     * a failed write is swallowed and simply retried on the next read. For a
+     * one-shot eager rewrite instead, prefer `openDB({ migrations })`.
+     */
+    persistMigrations?: boolean;
 }
 /** A single MongoDB-style aggregation stage. */
 type AggregateStage<T extends Document = Document> = {
@@ -129,7 +240,14 @@ type AggregateStage<T extends Document = Document> = {
     $skip: number;
 } | {
     $limit: number;
-} | {
+}
+/**
+ * Reshape each document. Either an **inclusion** (`{ name: 1, city: 1 }` —
+ * keep only these) or an **exclusion** (`{ description: 0 }` — keep everything
+ * else). The two cannot be mixed and doing so throws; `_id: 0` is the one
+ * exclusion allowed alongside an inclusion.
+ */
+ | {
     $project: Record<string, 0 | 1>;
 };
 /** An ordered aggregation pipeline. */
@@ -296,8 +414,29 @@ interface SyncResult {
     pushed: number;
     /** Number of documents changed locally by the pulled remote changeset. */
     pulled: number;
+    /**
+     * Documents in the pulled changeset skipped by an import validator (a
+     * collection this client does not model). Always `0` when no `syncSchema`
+     * applied to the pass.
+     */
+    skipped?: number;
+    /**
+     * Documents in the pulled changeset set aside by an import validator because
+     * they failed structural validation. Recoverable via {@link TalaDB.quarantined}.
+     * Always `0` when no `syncSchema` applied to the pass.
+     */
+    quarantined?: number;
     /** Active sync cursor. Currently `0` because timestamp adapters replay safely. */
     cursor: number;
+}
+/** A document set aside during a validated sync import, with its rejection reason. */
+interface QuarantinedDocument<T extends Document = Document> {
+    /** The rejected document, retained verbatim. */
+    document: T;
+    /** Human-readable reason the document was quarantined. */
+    reason: string;
+    /** The `changed_at` (ms epoch) the rejected change carried. */
+    changedAt: number;
 }
 interface TalaDB {
     collection<T extends Document = Document>(name: string, options?: CollectionOptions<T>): Collection<T>;
@@ -334,6 +473,20 @@ interface TalaDB {
      * await db.compact();
      */
     compact(): Promise<void>;
+    /**
+     * Return the documents set aside in `collection`'s quarantine table by a
+     * validated sync import (see {@link SyncSchema}). Empty when nothing was
+     * quarantined. Wired on browser and Node.js; resolves to `[]` on runtimes
+     * without support.
+     */
+    quarantined?<T extends Document = Document>(collection: string): Promise<QuarantinedDocument<T>[]>;
+    /**
+     * Force any batched (eventual-durability) writes to durable storage, and on
+     * the browser also write the IndexedDB fallback snapshot immediately. A
+     * no-op under the default `flush_every_write: true` durability. Use for
+     * "save now" moments (before checkout, on `visibilitychange`).
+     */
+    flush?(): Promise<void>;
     /** Browser HTTP-push queue health, when supported by the active binding. */
     syncStatus?(): Promise<{
         pending: number;
@@ -377,10 +530,28 @@ interface SyncConfig {
      */
     exclude_fields?: string[];
 }
+/** Storage durability settings. */
+interface DurabilityConfig {
+    /**
+     * When `true` (default), every write commit is fsync'd immediately — a crash
+     * never loses an acknowledged write. When `false`, commits are batched for
+     * higher write throughput; call `db.flush()` to force a durable sync. Applies
+     * to Node (file) and browser OPFS storage; in-memory ignores it.
+     */
+    flush_every_write?: boolean;
+    /**
+     * Browser IndexedDB-fallback snapshot debounce, in milliseconds (default
+     * 500). Only affects the non-OPFS browser fallback path — the OPFS and Node
+     * paths use `flush_every_write`.
+     */
+    flush_ms?: number;
+}
 /** Top-level TalaDB configuration. */
 interface TalaDbConfig {
     /** HTTP push sync configuration. Disabled by default. */
     sync?: SyncConfig;
+    /** Storage durability configuration. */
+    durability?: DurabilityConfig;
 }
 
 interface HttpSyncAdapterOptions {
@@ -430,11 +601,70 @@ declare class TalaDbValidationError extends Error {
     readonly cause: unknown;
     constructor(cause: unknown, context?: string);
 }
+/**
+ * Wraps a `Collection<T>` to intercept writes through a schema validator
+ * (`schema`), stamp `_v` on insert when a `syncSchema.version` is declared, and
+ * normalize reads through a lazy `migrateDocument`. Returns the collection
+ * unchanged when none of those apply.
+ *
+ * Read normalization covers `find`, `findOne`, and `subscribe` (live queries).
+ * It cannot cover `aggregate`, `findNearest`, or FTS `search`: those run inside
+ * the engine against the *stored* shape, so a below-version document is matched
+ * and projected as it sits on disk. Use `persistMigrations` or
+ * `openDB({ migrations })` to rewrite storage if you query old documents that way.
+ *
+ * @internal Exported for unit testing; not part of the public API surface.
+ */
+declare function applySchema<T extends Document>(col: Collection<T>, options: CollectionOptions<T>): Collection<T>;
 
+/**
+ * A single application schema migration, run once at `openDB` when its
+ * `version` is greater than the database's stored migration version.
+ */
+interface Migration {
+    /** Monotonic version. Must be a positive integer, unique across the array. */
+    version: number;
+    /** Optional human-readable label for logs. */
+    description?: string;
+    /**
+     * The migration body. Receives the open database and may use the full
+     * collection API. Runs to completion before the version is advanced.
+     *
+     * **Write migrations idempotently.** TalaDB checkpoints per version (the
+     * stored version advances only after `up` fully resolves), but a single `up`
+     * is not wrapped in one atomic transaction — if it throws partway, the writes
+     * it already made persist and `up` re-runs from the start on the next open.
+     */
+    up: (db: TalaDB) => Promise<void> | void;
+}
+/**
+ * Runtime-agnostic migration runner. Each binding supplies `getVersion` /
+ * `setVersion` (its own persisted counter); the loop is identical everywhere.
+ *
+ * Runs pending migrations (`version` > stored) in ascending order, advancing
+ * the stored version after each `up` resolves — checkpoint per version. If an
+ * `up` throws, the loop stops and the error propagates; the stored version
+ * reflects the last fully-applied migration, so the next open resumes there.
+ *
+ * @internal Exported for unit testing; not part of the public API surface.
+ */
+declare function runMigrations(db: TalaDB, getVersion: () => Promise<number>, setVersion: (v: number) => Promise<void>, migrations: Migration[]): Promise<void>;
 /** Options for `openDB`. */
 interface OpenDBOptions {
     /** Encrypt native database values at rest. Never hard-code this value. */
     passphrase?: string;
+    /**
+     * Ordered application schema migrations, run once each at open in ascending
+     * `version` order (only those newer than the stored migration version). The
+     * stored version advances after each migration succeeds — checkpoint per
+     * version, resuming from the last applied one on the next open.
+     *
+     * Supported on Node.js, the browser (via the OPFS worker), and React Native.
+     * On a binding whose native module predates 0.9.2 (no `userVersion` /
+     * `setUserVersion`), `openDB` throws rather than silently skipping the
+     * migrations — rebuild or update the native module.
+     */
+    migrations?: Migration[];
     /**
      * Explicit path to a `taladb.config.yml` / `taladb.config.json` file.
      * If omitted, TalaDB auto-discovers the file from `process.cwd()` on Node.js.
@@ -448,6 +678,14 @@ interface OpenDBOptions {
      * Useful for passing config programmatically without a config file on disk.
      */
     config?: TalaDbConfig;
+    /**
+     * Storage durability, e.g. `{ flush_every_write: false }` to batch commits
+     * for write throughput (call `db.flush()` to force a sync), or `{ flush_ms }`
+     * to tune the browser IndexedDB-fallback snapshot debounce. Merged into
+     * `config.durability`. Node + browser; on React Native pass it in the config
+     * JSON to `TalaDBModule.initialize`.
+     */
+    durability?: DurabilityConfig;
 }
 /**
  * Open a TalaDB database.
@@ -466,4 +704,4 @@ interface OpenDBOptions {
  */
 declare function openDB(dbName?: string, options?: OpenDBOptions): Promise<TalaDB>;
 
-export { type AggregatePipeline, type AggregateStage, type Collection, type CollectionIndexInfo, type CollectionOptions, type Document, type Filter, HttpSyncAdapter, type OpenDBOptions, type Schema, type SerializedChangeset, type SyncAdapter, type SyncConfig, type SyncDirection, type SyncOptions, type SyncResult, type TalaDB, type TalaDbConfig, TalaDbValidationError, type Update, type Value, type VectorIndexOptions, type VectorMetric, type VectorSearchResult, openDB };
+export { type AggregatePipeline, type AggregateStage, type Collection, type CollectionIndexInfo, type CollectionOptions, type Document, type DurabilityConfig, type Filter, HttpSyncAdapter, type Migration, type OpenDBOptions, type Schema, type SerializedChangeset, type SyncAdapter, type SyncConfig, type SyncDirection, type SyncOptions, type SyncResult, type TalaDB, type TalaDbConfig, TalaDbValidationError, type Update, type Value, type VectorIndexOptions, type VectorMetric, type VectorSearchResult, applySchema, openDB, runMigrations };
