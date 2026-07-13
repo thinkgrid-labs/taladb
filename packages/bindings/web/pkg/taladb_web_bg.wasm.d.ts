@@ -11,6 +11,7 @@ export const workerdb_createFtsIndex: (a: number, b: number, c: number, d: numbe
 export const workerdb_createIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const workerdb_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number];
 export const workerdb_deleteMany: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const workerdb_deleteManyWithIds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const workerdb_deleteOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const workerdb_dropCompoundIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const workerdb_dropFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -34,6 +35,7 @@ export const workerdb_openWithConfigAndSnapshot: (a: number, b: number, c: numbe
 export const workerdb_openWithOpfs: (a: any) => [number, number, number];
 export const workerdb_openWithSnapshot: (a: number, b: number) => [number, number, number];
 export const workerdb_quarantined: (a: number, b: number, c: number) => [number, number, number, number];
+export const workerdb_replaceManyWithIds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const workerdb_setDurability: (a: number, b: number) => void;
 export const workerdb_setUserVersion: (a: number, b: number) => [number, number];
 export const workerdb_syncPending: (a: number) => bigint;
@@ -50,6 +52,7 @@ export const collectionwasm_createCompoundIndex: (a: number, b: number, c: numbe
 export const collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
 export const collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
 export const collectionwasm_deleteMany: (a: number, b: any) => [number, number, number];
+export const collectionwasm_deleteManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
 export const collectionwasm_deleteOne: (a: number, b: any) => [number, number, number];
 export const collectionwasm_dropCompoundIndex: (a: number, b: number, c: number) => [number, number];
 export const collectionwasm_dropIndex: (a: number, b: number, c: number) => [number, number];
@@ -59,6 +62,7 @@ export const collectionwasm_findNearest: (a: number, b: number, c: number, d: nu
 export const collectionwasm_findOne: (a: number, b: any) => [number, number, number];
 export const collectionwasm_insert: (a: number, b: any) => [number, number, number, number];
 export const collectionwasm_insertMany: (a: number, b: any) => [number, number, number];
+export const collectionwasm_replaceManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
 export const collectionwasm_updateMany: (a: number, b: any, c: any) => [number, number, number];
 export const collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
 export const collectionwasm_upgradeVectorIndex: (a: number, b: number, c: number) => [number, number];
@@ -79,12 +83,12 @@ export const is_opfs_available: () => any;
 export const opfs_delete_snapshot: (a: number, b: number) => any;
 export const opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
 export const opfs_load_snapshot: (a: number, b: number) => any;
-export const wasm_bindgen__closure__destroy__hbdc531cbd92d8795: (a: number, b: number) => void;
 export const wasm_bindgen__closure__destroy__he22c2c171c027d5f: (a: number, b: number) => void;
 export const wasm_bindgen__closure__destroy__hcc9749e9df054fa1: (a: number, b: number) => void;
+export const wasm_bindgen__closure__destroy__h19c12871948719de: (a: number, b: number) => void;
 export const wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d: (a: number, b: number, c: any) => [number, number];
 export const wasm_bindgen__convert__closures_____invoke__hb52f4011b6a30878: (a: number, b: number, c: any, d: any) => void;
-export const wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39: (a: number, b: number, c: any) => void;
+export const wasm_bindgen__convert__closures_____invoke__h581f2ef29031bc6f: (a: number, b: number, c: any) => void;
 export const wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87: (a: number, b: number) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

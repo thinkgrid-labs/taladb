@@ -37,6 +37,10 @@ export class CollectionWasm {
      */
     deleteMany(filter: any): number;
     /**
+     * Delete many documents by id, in one commit. Returns the number removed.
+     */
+    deleteManyWithIds(ids: any, origin: string): number;
+    /**
      * Delete the first matching document. Returns true if deleted.
      */
     deleteOne(filter: any): boolean;
@@ -77,6 +81,18 @@ export class CollectionWasm {
      * Insert multiple documents. Returns an array of ULID string ids.
      */
     insertMany(docs: any): any;
+    /**
+     * Upsert many documents **by caller-supplied `_id`**, in one commit.
+     *
+     * Unlike [`Self::insert_many`] — which mints a fresh ULID and discards `_id` —
+     * this honours the id on each document, which is what lets replication address
+     * a remote row by a *derived* id so repeated fetches converge on one document
+     * instead of duplicating it.
+     *
+     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
+     * or `"local"` for ordinary user writes.
+     */
+    replaceManyWithIds(docs: any, origin: string): any;
     /**
      * Update all matching documents. Returns the count updated.
      */
@@ -211,6 +227,10 @@ export class WorkerDB {
      * Delete all matching documents. Returns the count deleted.
      */
     deleteMany(collection: string, filter_json: string): number;
+    /**
+     * Delete many documents by id, in one commit. Returns the number removed.
+     */
+    deleteManyWithIds(collection: string, ids_json: string, origin: string): number;
     /**
      * Delete the first matching document. Returns `true` / `false`.
      */
@@ -356,6 +376,19 @@ export class WorkerDB {
      */
     quarantined(collection: string): string;
     /**
+     * Upsert many documents **by caller-supplied `_id`**, in one commit.
+     *
+     * Unlike `insert_many` — which discards `_id` and mints a fresh ULID — this
+     * honours the id in each document. That is what lets the replication
+     * coordinator address a remote row by a *derived* id (see `deriveDocId`) and
+     * have repeated fetches converge on one document instead of duplicating it.
+     *
+     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
+     * or `"local"` for ordinary user writes. Remote rows are marked so they can
+     * never replicate back out — see `Collection::replace_many_with_ids`.
+     */
+    replaceManyWithIds(collection: string, docs_json: string, origin: string): string;
+    /**
      * Set write durability: `eventual = true` batches OPFS fsyncs for
      * throughput (call `flush()` to force), `false` (default) fsyncs each
      * commit. Derived from `durability.flush_every_write` by the worker.
@@ -453,6 +486,7 @@ export interface InitOutput {
     readonly workerdb_createIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number];
     readonly workerdb_deleteMany: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly workerdb_deleteManyWithIds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly workerdb_deleteOne: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly workerdb_dropCompoundIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workerdb_dropFtsIndex: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -476,6 +510,7 @@ export interface InitOutput {
     readonly workerdb_openWithOpfs: (a: any) => [number, number, number];
     readonly workerdb_openWithSnapshot: (a: number, b: number) => [number, number, number];
     readonly workerdb_quarantined: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly workerdb_replaceManyWithIds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly workerdb_setDurability: (a: number, b: number) => void;
     readonly workerdb_setUserVersion: (a: number, b: number) => [number, number];
     readonly workerdb_syncPending: (a: number) => bigint;
@@ -492,6 +527,7 @@ export interface InitOutput {
     readonly collectionwasm_createIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_createVectorIndex: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly collectionwasm_deleteMany: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_deleteManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
     readonly collectionwasm_deleteOne: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_dropCompoundIndex: (a: number, b: number, c: number) => [number, number];
     readonly collectionwasm_dropIndex: (a: number, b: number, c: number) => [number, number];
@@ -501,6 +537,7 @@ export interface InitOutput {
     readonly collectionwasm_findOne: (a: number, b: any) => [number, number, number];
     readonly collectionwasm_insert: (a: number, b: any) => [number, number, number, number];
     readonly collectionwasm_insertMany: (a: number, b: any) => [number, number, number];
+    readonly collectionwasm_replaceManyWithIds: (a: number, b: any, c: number, d: number) => [number, number, number];
     readonly collectionwasm_updateMany: (a: number, b: any, c: any) => [number, number, number];
     readonly collectionwasm_updateOne: (a: number, b: any, c: any) => [number, number, number];
     readonly collectionwasm_upgradeVectorIndex: (a: number, b: number, c: number) => [number, number];
@@ -521,12 +558,12 @@ export interface InitOutput {
     readonly opfs_delete_snapshot: (a: number, b: number) => any;
     readonly opfs_flush_snapshot: (a: number, b: number, c: number, d: number) => any;
     readonly opfs_load_snapshot: (a: number, b: number) => any;
-    readonly wasm_bindgen__closure__destroy__hbdc531cbd92d8795: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__he22c2c171c027d5f: (a: number, b: number) => void;
     readonly wasm_bindgen__closure__destroy__hcc9749e9df054fa1: (a: number, b: number) => void;
+    readonly wasm_bindgen__closure__destroy__h19c12871948719de: (a: number, b: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hb52f4011b6a30878: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h581f2ef29031bc6f: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

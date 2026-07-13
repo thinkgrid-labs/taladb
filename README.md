@@ -57,7 +57,7 @@ Application code uses the unified `taladb` package with a single TypeScript API 
 
 ## Performance
 
-Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web` for the browser, `pnpm bench` for Node.js) on a **2018 MacBook Pro** (Intel i5-8259U, 8 GB) — deliberately modest hardware; treat these as a floor. TalaDB v0.9.0, file-backed / OPFS, medians after warmup.
+Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web` for the browser, `pnpm bench` for Node.js) on a **2018 MacBook Pro** (Intel i5-8259U, 8 GB) — deliberately modest hardware; treat these as a floor. Browser vector results are from TalaDB v0.9.4; the remaining v0.9.0 baseline was retained where a v0.9.4 re-run showed no improvement. File-backed / OPFS, medians after warmup.
 
 **Browser (WASM + OPFS)** — the flagship runtime, measured in headless Chrome (every timing includes the worker round-trip):
 
@@ -66,9 +66,9 @@ Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web
 | `findOne` by `_id` | 100k docs | **100 µs** |
 | `find` on indexed field | 100k docs | **300 µs** |
 | Bulk ingest (`insertMany`) | batches of 5k | **~57k docs/s** |
-| `findNearest` (384-dim, exact k-NN) | 10k vectors | **35 ms** |
-| `findNearest` (384-dim, exact k-NN) | 50k vectors | **170 ms** |
-| Hybrid: indexed filter + vector rank | 50k vectors | **162 ms** |
+| `findNearest` (384-dim, exact k-NN) | 10k vectors | **17 ms** |
+| `findNearest` (384-dim, exact k-NN) | 50k vectors | **85 ms** |
+| Hybrid: indexed filter + vector rank | 50k vectors | **123 ms** |
 
 **Node.js (native)** — file-backed, `fsync`-durable per write:
 
@@ -81,7 +81,7 @@ Measured with the reproducible suites in [`scripts/`](scripts/) (`pnpm bench:web
 | `findNearest` (384-dim, exact k-NN) | 10k / 100k vectors | **18 ms / 198 ms** |
 | Hybrid: indexed filter + vector rank | 100k vectors | **346 ms** |
 
-Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js (93 ms → 15 ms at 50k vectors). The v0.9.0 scan rewrite roughly **halved** flat vector search and turned two-sided range queries into a single bounded index scan (~463 ms → 1.4 ms). Browser vector search currently trails native by ~2× purely for lack of WASM `simd128` — a measured SIMD build closes the gap and is [next up](https://taladb.dev/roadmap). Full tables, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
+Vector search is exact by default — no approximation, no recall trade-off — with an optional HNSW index on Node.js (93 ms → 15 ms at 50k vectors). The v0.9.0 scan rewrite roughly **halved** native flat vector search and turned two-sided range queries into a single bounded index scan (~463 ms → 1.4 ms). The v0.9.4 browser release build now measures at near-native flat-search parity on the same hardware. Full tables, methodology, and tuning notes: **[taladb.dev/benchmarks](https://taladb.dev/benchmarks)**.
 
 ## Usage
 

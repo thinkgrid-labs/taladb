@@ -107,6 +107,21 @@ export class CollectionWasm {
         return ret[0] >>> 0;
     }
     /**
+     * Delete many documents by id, in one commit. Returns the number removed.
+     * @param {any} ids
+     * @param {string} origin
+     * @returns {number}
+     */
+    deleteManyWithIds(ids, origin) {
+        const ptr0 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_deleteManyWithIds(this.__wbg_ptr, ids, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Delete the first matching document. Returns true if deleted.
      * @param {any} filter
      * @returns {boolean}
@@ -232,6 +247,29 @@ export class CollectionWasm {
      */
     insertMany(docs) {
         const ret = wasm.collectionwasm_insertMany(this.__wbg_ptr, docs);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Upsert many documents **by caller-supplied `_id`**, in one commit.
+     *
+     * Unlike [`Self::insert_many`] — which mints a fresh ULID and discards `_id` —
+     * this honours the id on each document, which is what lets replication address
+     * a remote row by a *derived* id so repeated fetches converge on one document
+     * instead of duplicating it.
+     *
+     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
+     * or `"local"` for ordinary user writes.
+     * @param {any} docs
+     * @param {string} origin
+     * @returns {any}
+     */
+    replaceManyWithIds(docs, origin) {
+        const ptr0 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.collectionwasm_replaceManyWithIds(this.__wbg_ptr, docs, ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -635,6 +673,26 @@ export class WorkerDB {
         const ptr1 = passStringToWasm0(filter_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.workerdb_deleteMany(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Delete many documents by id, in one commit. Returns the number removed.
+     * @param {string} collection
+     * @param {string} ids_json
+     * @param {string} origin
+     * @returns {number}
+     */
+    deleteManyWithIds(collection, ids_json, origin) {
+        const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(ids_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.workerdb_deleteManyWithIds(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1155,6 +1213,46 @@ export class WorkerDB {
             return getStringFromWasm0(ptr2, len2);
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Upsert many documents **by caller-supplied `_id`**, in one commit.
+     *
+     * Unlike `insert_many` — which discards `_id` and mints a fresh ULID — this
+     * honours the id in each document. That is what lets the replication
+     * coordinator address a remote row by a *derived* id (see `deriveDocId`) and
+     * have repeated fetches converge on one document instead of duplicating it.
+     *
+     * `origin` is `"remote"` for authoritative rows replicated in from an origin,
+     * or `"local"` for ordinary user writes. Remote rows are marked so they can
+     * never replicate back out — see `Collection::replace_many_with_ids`.
+     * @param {string} collection
+     * @param {string} docs_json
+     * @param {string} origin
+     * @returns {string}
+     */
+    replaceManyWithIds(collection, docs_json, origin) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(collection, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(docs_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(origin, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.workerdb_replaceManyWithIds(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
         }
     }
     /**
@@ -1972,18 +2070,18 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 150, function: Function { arguments: [Externref], shim_idx: 151, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hbdc531cbd92d8795, wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39);
-            return ret;
-        },
-        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { dtor_idx: 228, function: Function { arguments: [], shim_idx: 229, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__he22c2c171c027d5f, wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87);
             return ret;
         },
-        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 693, function: Function { arguments: [Externref], shim_idx: 694, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 697, function: Function { arguments: [Externref], shim_idx: 698, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hcc9749e9df054fa1, wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d);
+            return ret;
+        },
+        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 79, function: Function { arguments: [Externref], shim_idx: 80, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h19c12871948719de, wasm_bindgen__convert__closures_____invoke__h581f2ef29031bc6f);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0) {
@@ -2038,8 +2136,8 @@ function wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h08f50693bde9ba87(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__hdb0b9b43cc4a6a39(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h581f2ef29031bc6f(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h581f2ef29031bc6f(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__hf7aaaabb54acaa8d(arg0, arg1, arg2) {
