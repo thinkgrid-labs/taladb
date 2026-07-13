@@ -270,3 +270,21 @@ export function taladbSyncStore(db: TalaDB, collectionName = 'sync_changes'): Sy
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Coverage-first replication (REST origins)
+//
+// The sync-contract handlers above serve TalaDB peers. These serve *ordinary
+// paged REST clients* — the path that lets a team point TalaDB at an API they
+// already have. See ./replication.ts.
+// ---------------------------------------------------------------------------
+export {
+  createReplicationHandlers,
+  type BootstrapArgs,
+  type BootstrapResult,
+  type CreateReplicationHandlersOptions,
+  type DeltaArgs,
+  type DeltaResult,
+  type ReplicationHandlers,
+  type Row,
+} from './replication';

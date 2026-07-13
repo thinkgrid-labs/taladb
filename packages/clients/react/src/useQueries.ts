@@ -1,152 +1,177 @@
-import { useEffect, useRef, useState } from 'react'
-import type { Document, Filter } from 'taladb'
-import { useTalaDB } from './context'
-import { useReplicationBase, resolveReplicationConfig } from './replication/config'
-import { replicate } from './replication/engine'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { AggregatePipeline, Document } from 'taladb'
+import { useCollectionOptions, useTalaDB } from './context'
+import { useReplication } from './replication/provider'
+import type { Coverage } from './useCoverage'
 import type { QueryResult, UseQueryOptions } from './useQuery'
 
-const NOOP_REFETCH = async (): Promise<void> => {}
-
-function emptyResult<T>(): QueryResult<T> {
-  return { data: [], loading: true, error: null, syncing: false, syncError: null, refetch: NOOP_REFETCH }
-}
-
 /**
- * Run several scoped queries at once — one replication + live query per entry,
- * in parallel. The result array is index-aligned with `queries`.
+ * Several pages at once, from several collections. Index-aligned with `queries`.
  *
- * Each entry is an independent `useQuery`: its own collection, filter, source,
- * and (optionally) endpoint. This is the multi-slice page case — e.g. a
- * dashboard that needs `orders` and `products` from the same origin. There are
- * no cross-collection joins (TalaDB is a document store); compose in the
- * component.
+ * Hooks can't be called in a variable-length loop, so this manages its own
+ * subscriptions rather than calling `useQuery` N times. Behaviour is otherwise
+ * identical: once a collection is covered, its read is purely local.
  *
- * v1 note: entries are typed as `Document`. For a strictly-typed single slice
- * use `useQuery<T>`; per-entry generics (tuple typing) are a follow-up.
+ * TalaDB is a document store with no cross-collection joins, so a page needing
+ * several collections composes them in the component (or denormalises at the
+ * origin). This is the hook for that.
  *
  * @example
- * const [orders, products] = useQueries([
- *   { collection: 'orders', filter: { open: true } },
- *   { collection: 'products' },
+ * const [products, categories] = useQueries([
+ *   { collection: 'products', filter: { category }, sort: { price: 1 }, page, limit: 50 },
+ *   { collection: 'categories' },
  * ])
  */
 export function useQueries(queries: UseQueryOptions<Document>[]): QueryResult<Document>[] {
   const db = useTalaDB()
-  const base = useReplicationBase()
+  const registry = useCollectionOptions()
+  const replication = useReplication()
 
-  // Fail fast (in render) if any networked entry has no resolvable endpoint —
-  // consistent with useQuery, and before the effect wires anything up.
-  for (const q of queries) {
-    const networked = (q.source ?? 'local-first') !== 'local-only'
-    if (networked && !(q.endpoint ?? base?.endpoint)) {
-      throw new Error(
-        `useQueries: the query for '${q.collection}' needs an endpoint for source ` +
-          `'${q.source ?? 'local-first'}'. Provide <ReplicationProvider endpoint="…">, ` +
-          'pass { endpoint }, or use source: "local-only".',
-      )
-    }
-  }
+  const [results, setResults] = useState<
+    Array<{ data: Document[]; loading: boolean; error: unknown }>
+  >(() => queries.map(() => ({ data: [], loading: true, error: null })))
+  const [bridgeIds, setBridgeIds] = useState<Record<number, string[]>>({})
+  const [fetchErrors, setFetchErrors] = useState<Record<number, unknown>>({})
 
-  // Re-establish subscriptions/replications only when the set of queries
-  // meaningfully changes (collection, filter, source, endpoint, pollMs).
-  const sig = JSON.stringify(
+  // Re-wire only when the queries actually change — not on every render, or an
+  // inline array would tear down every subscription each time.
+  const signature = JSON.stringify(
     queries.map((q) => ({
       collection: q.collection,
       filter: q.filter ?? null,
-      source: q.source ?? 'local-first',
-      endpoint: q.endpoint ?? null,
-      pollMs: q.pollMs ?? null,
+      sort: q.sort ?? null,
+      page: q.page ?? null,
+      limit: q.limit ?? null,
+      skip: q.skip ?? null,
+      enabled: q.enabled ?? true,
+    })),
+  )
+  const latest = useRef(queries)
+  latest.current = queries
+  const bridgeManifestKey = JSON.stringify(bridgeIds)
+  const replicationReadKey = JSON.stringify(
+    queries.map((q) => ({
+      scope: replication?.coordinators.get(q.collection)?.replicaScope ?? null,
+      ready: replication?.coverage[q.collection]?.status === 'complete',
     })),
   )
 
-  const queriesRef = useRef(queries)
-  queriesRef.current = queries
-  const baseRef = useRef(base)
-  baseRef.current = base
-
-  const [results, setResults] = useState<QueryResult<Document>[]>(() =>
-    queries.map(() => emptyResult<Document>()),
-  )
-
   useEffect(() => {
-    const qs = queriesRef.current
-    const b = baseRef.current
-    let cancelled = false
+    const current = latest.current
+    setResults(current.map(() => ({ data: [], loading: true, error: null })))
 
-    const setAt = (i: number, fn: (r: QueryResult<Document>) => QueryResult<Document>) => {
-      setResults((prev) => {
-        if (i >= prev.length) return prev
-        const copy = prev.slice()
-        copy[i] = fn(copy[i])
-        return copy
-      })
-    }
+    const unsubs = current.map((q, i) => {
+      if (q.enabled === false) return () => {}
 
-    const resolved = qs.map((q, i) => {
-      const { config } = resolveReplicationConfig(b, {
-        endpoint: q.endpoint,
-        getAuth: q.getAuth,
-        fetch: q.fetch,
-        paths: q.paths,
-        pollMs: q.pollMs,
-      })
-      const networked = (q.source ?? 'local-first') !== 'local-only'
-      const pollMs = q.pollMs ?? b?.pollMs ?? 0
-      const refetch = async (): Promise<void> => {
-        if (!networked || !config) return
-        setAt(i, (r) => ({ ...r, syncing: true, syncError: null }))
-        try {
-          await replicate(db, config, q.collection, 'pull')
-        } catch (e) {
-          if (!cancelled) setAt(i, (r) => ({ ...r, syncError: e }))
-        } finally {
-          if (!cancelled) setAt(i, (r) => ({ ...r, syncing: false }))
-        }
-      }
-      return { config, networked, pollMs, refetch }
-    })
+      // Resolved through the collection registry, so schema validation and
+      // migrations apply — the same handle `useCollection` would give you. The
+      // previous implementation called `db.collection(name)` bare here and
+      // silently skipped both.
+      const col = db.collection<Document>(q.collection, registry.get(q.collection))
 
-    // Seed result slots with the per-entry refetch handles.
-    setResults(
-      qs.map((_q, i) => ({
-        data: [],
-        loading: true,
-        error: null,
-        syncing: false,
-        syncError: null,
-        refetch: resolved[i].refetch,
-      })),
-    )
+      const offset =
+        q.page !== undefined && q.limit !== undefined ? (q.page - 1) * q.limit : (q.skip ?? 0)
+      const pipeline: AggregatePipeline<Document> = []
+      const coord = replication?.coordinators.get(q.collection)
+      const covered = replication?.coverage[q.collection]?.status === 'complete'
+      const matches = [
+        coord ? { _replica_scope: coord.replicaScope } : undefined,
+        !covered ? { _id: { $in: bridgeIds[i] ?? [] } } : undefined,
+        q.filter,
+      ].filter(Boolean)
+      if (matches.length === 1) pipeline.push({ $match: matches[0] } as never)
+      else if (matches.length > 1) pipeline.push({ $match: { $and: matches } } as never)
+      if (q.sort) pipeline.push({ $sort: q.sort } as never)
+      if (covered && offset > 0) pipeline.push({ $skip: offset } as never)
+      if (q.limit !== undefined) pipeline.push({ $limit: q.limit } as never)
 
-    const unsubs = qs.map((q, i) => {
-      const col = db.collection<Document>(q.collection)
-      return col.subscribe(
-        (q.filter ?? {}) as Filter<Document>,
-        (docs) => {
-          if (!cancelled) setAt(i, (r) => ({ ...r, data: docs, loading: false, error: null }))
-        },
-        (error) => {
-          if (!cancelled) setAt(i, (r) => ({ ...r, loading: false, error }))
-        },
+      // Live, not a snapshot: each page re-renders as hydration fills its
+      // collection underneath it.
+      return col.subscribeAggregate<Document>(
+        pipeline,
+        (docs) =>
+          setResults((prev) => {
+            const next = [...prev]
+            next[i] = { data: docs, loading: false, error: null }
+            return next
+          }),
+        (error) =>
+          setResults((prev) => {
+            const next = [...prev]
+            next[i] = { ...next[i]!, loading: false, error }
+            return next
+          }),
       )
     })
 
-    const intervals: ReturnType<typeof setInterval>[] = []
-    resolved.forEach((res) => {
-      if (!res.networked || !res.config) return
-      void res.refetch()
-      if (res.pollMs > 0) intervals.push(setInterval(() => void res.refetch(), res.pollMs))
-    })
+    return () => unsubs.forEach((u) => u())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, registry, signature, replicationReadKey, bridgeManifestKey])
 
-    return () => {
-      cancelled = true
-      unsubs.forEach((u) => u())
-      intervals.forEach((id) => clearInterval(id))
+  // Cold-start bridge for any collection that isn't covered yet. Deduped inside
+  // the coordinator, so overlapping queries fire one request.
+  useEffect(() => {
+    for (const [i, q] of latest.current.entries()) {
+      if (q.enabled === false) continue
+      const coord = replication?.coordinators.get(q.collection)
+      if (!coord || replication?.scopes[q.collection]?.bridge === false) continue
+      void coord.getCoverage().then((state) => {
+        if (state.status === 'complete') return
+        return coord
+          .bridge({
+            filter: q.filter as Record<string, unknown> | undefined,
+            sort: q.sort as Record<string, 1 | -1> | undefined,
+            page: q.page,
+            limit: q.limit,
+          })
+          .then((result) => {
+            setBridgeIds((prev) => ({ ...prev, [i]: result.ids }))
+            setFetchErrors((prev) => {
+              const next = { ...prev }
+              delete next[i]
+              return next
+            })
+          })
+          .catch((error) => setFetchErrors((prev) => ({ ...prev, [i]: error })))
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, sig])
+  }, [replication, signature])
 
-  // Always return an array index-aligned with the current `queries`, even on the
-  // render right after the list length changes (before the effect re-seeds).
-  return queries.map((_q, i) => results[i] ?? emptyResult<Document>())
+  return useMemo(
+    () =>
+      latest.current.map((q, i) => {
+        const state = replication?.coverage[q.collection] ?? { status: 'empty' as const }
+        const coverage: Coverage = {
+          status: state.status,
+          // Only `complete` licenses a local-only read — see `useCoverage`.
+          ready: state.status === 'complete',
+          rows: 'rowsApplied' in state ? (state.rowsApplied ?? 0) : 0,
+          total: 'total' in state ? state.total : undefined,
+          progress: state.status === 'complete' ? 1 : undefined,
+          reason:
+            state.status === 'error'
+              ? state.error
+              : state.status === 'best-effort' || state.status === 'stale'
+                ? state.reason
+                : undefined,
+        }
+        return {
+          data: results[i]?.data ?? [],
+          total: coverage.total,
+          loading: results[i]?.loading ?? true,
+          error: results[i]?.error ?? fetchErrors[i] ?? null,
+          fetchError: fetchErrors[i] ?? null,
+          coverage,
+          fetching: false,
+          syncing: false,
+          syncError: null,
+          refetch: async () => {
+            await replication?.coordinators.get(q.collection)?.refresh()
+          },
+        }
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [results, signature, replication],
+  )
 }

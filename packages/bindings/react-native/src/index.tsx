@@ -56,6 +56,16 @@ export type Update = Record<string, unknown>;
 export interface Collection<T extends Document = Document> {
   insert(doc: Omit<T, '_id'>): string;
   insertMany(docs: Omit<T, '_id'>[]): string[];
+  /**
+   * Upsert many documents **by `_id`**, in one commit. Requires an `_id` on every
+   * document — for replicated rows that comes from `deriveDocId(collection, key)`.
+   *
+   * `origin: 'remote'` marks rows as replicated in from an authoritative origin so
+   * they are never replicated back out; it defaults to `'local'`.
+   */
+  replaceManyWithIds(docs: T[], origin?: 'local' | 'remote'): string[];
+  /** Delete many documents by id, in one commit. Returns the number removed. */
+  deleteManyWithIds(ids: string[], origin?: 'local' | 'remote'): number;
   find(filter?: Filter): T[];
   findOne(filter: Filter): T | null;
   updateOne(filter: Filter, update: Update): boolean;
@@ -79,6 +89,16 @@ export interface DB {
 interface JsiTalaDB {
   insert(collection: string, doc: Object): string;
   insertMany(collection: string, docs: Object[]): string[];
+  replaceManyWithIds(
+    collection: string,
+    docs: Object[],
+    origin: 'local' | 'remote',
+  ): string[];
+  deleteManyWithIds(
+    collection: string,
+    ids: string[],
+    origin: 'local' | 'remote',
+  ): number;
   find(collection: string, filter: Object | null): Object[];
   findOne(collection: string, filter: Object | null): Object | null;
   updateOne(collection: string, filter: Object, update: Object): boolean;
@@ -114,6 +134,10 @@ function collection<T extends Document>(colName: string): Collection<T> {
   return {
     insert: (doc) => native().insert(colName, doc as Object),
     insertMany: (docs) => native().insertMany(colName, docs as Object[]),
+    replaceManyWithIds: (docs, origin = 'local') =>
+      native().replaceManyWithIds(colName, docs as Object[], origin),
+    deleteManyWithIds: (ids, origin = 'local') =>
+      native().deleteManyWithIds(colName, ids, origin),
     find: (filter?) => native().find(colName, filter ?? null) as T[],
     findOne: (filter) => native().findOne(colName, filter) as T | null,
     updateOne: (filter, update) => native().updateOne(colName, filter, update),

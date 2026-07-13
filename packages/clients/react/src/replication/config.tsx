@@ -9,6 +9,7 @@ import {
 import type { Document, Filter, TalaDB } from 'taladb'
 import { useTalaDB } from '../context'
 import { replicate, replicationTarget, type ResolvedReplicationConfig } from './engine'
+import { ReplicationScopes, type ReplicateRegistry } from './provider'
 
 /** A slice to warm on first run — a collection, optionally on a specific endpoint. */
 export type PrefetchSlice = { collection: string; endpoint?: string }
@@ -61,7 +62,15 @@ export interface ReplicationConfig {
 
 const ReplicationContext = createContext<ReplicationConfig | null>(null)
 
-export interface ReplicationProviderProps extends ReplicationConfig {
+export interface ReplicationProviderProps extends Partial<ReplicationConfig> {
+  /**
+   * Collections to replicate from a remote origin, keyed by local collection name.
+   *
+   * This is what makes `useQuery` a local read: once a collection is fully
+   * hydrated for its scope, filtering, sorting and paging never touch the network.
+   * See {@link ReplicateRegistry}.
+   */
+  replicate?: ReplicateRegistry
   children: ReactNode
 }
 
@@ -83,25 +92,33 @@ export interface ReplicationProviderProps extends ReplicationConfig {
  * </TalaDBProvider>
  * ```
  */
-export function ReplicationProvider({ children, ...config }: ReplicationProviderProps) {
+export function ReplicationProvider({
+  children,
+  replicate,
+  ...config
+}: ReplicationProviderProps) {
   // Serialised identity so an inline `getAuth`/`paths`/`prefetch` object on every
   // render doesn't produce a new context value and re-run every consumer's
   // effects. Functions can't serialise; getAuth is resolved fresh per pass, so
   // its identity is moot.
   const key =
-    `${config.endpoint}|${config.pollMs ?? ''}|${JSON.stringify(config.paths ?? null)}` +
+    `${config.endpoint ?? ''}|${config.pollMs ?? ''}|${JSON.stringify(config.paths ?? null)}` +
     `|${JSON.stringify(config.prefetch ?? null)}|${config.prefetchMode ?? ''}|${config.prefetchConcurrency ?? ''}`
-  const value = useMemo(
-    () => config,
+  const value = useMemo<ReplicationConfig | null>(
+    () => config.endpoint ? config as ReplicationConfig : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [key],
   )
-  return (
+  // `replicate` (coverage-first) and the legacy sync-contract config coexist:
+  // a collection can be hydrated from a REST origin while `useMutation` still
+  // pushes writes over the sync contract to a different endpoint.
+  const inner = (
     <ReplicationContext.Provider value={value}>
-      {value.prefetch && value.prefetch.length > 0 ? <PrefetchRunner /> : null}
+      {value?.prefetch && value.prefetch.length > 0 ? <PrefetchRunner /> : null}
       {children}
     </ReplicationContext.Provider>
   )
+  return replicate ? <ReplicationScopes replicate={replicate}>{inner}</ReplicationScopes> : inner
 }
 
 /**

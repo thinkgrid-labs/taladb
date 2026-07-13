@@ -19,6 +19,59 @@ export interface MockCollectionHandle<T extends Document> {
   unsubscribeCount(): number
   /** The filter passed to the most recent subscribe() call. */
   lastFilter(): Filter<T> | undefined
+  /** Current docs, as the engine would hold them. */
+  docs(): T[]
+}
+
+/**
+ * A real (if small) `$match` / `$sort` / `$skip` / `$limit` evaluator.
+ *
+ * Deliberately not a stub. `useQuery`'s whole claim is that paging happens
+ * *locally* once a collection is covered, so a mock that ignored the pipeline
+ * would make the tests assert nothing about the thing being claimed.
+ */
+function runPipeline<T extends Document>(docs: T[], pipeline: unknown[]): T[] {
+  const matches = (d: T, filter: Record<string, any>): boolean => {
+    if (filter.$and) return (filter.$and as Record<string, any>[]).every((f) => matches(d, f))
+    return Object.entries(filter).every(([k, cond]) => {
+      const value = (d as Record<string, unknown>)[k]
+      if (cond && typeof cond === 'object' && !Array.isArray(cond)) {
+        return Object.entries(cond as Record<string, unknown>).every(([op, operand]) => {
+          switch (op) {
+            case '$lt': return (value as number) < (operand as number)
+            case '$lte': return (value as number) <= (operand as number)
+            case '$gt': return (value as number) > (operand as number)
+            case '$gte': return (value as number) >= (operand as number)
+            case '$ne': return value !== operand
+            case '$in': return (operand as unknown[]).includes(value)
+            default: return true
+          }
+        })
+      }
+      return value === cond
+    })
+  }
+  let out = [...docs]
+  for (const stage of pipeline as Record<string, any>[]) {
+    if (stage.$match) {
+      out = out.filter((d) => matches(d, stage.$match))
+    }
+    if (stage.$sort) {
+      const entries = Object.entries(stage.$sort as Record<string, 1 | -1>)
+      out = [...out].sort((a, b) => {
+        for (const [field, dir] of entries) {
+          const av = (a as Record<string, any>)[field]
+          const bv = (b as Record<string, any>)[field]
+          if (av < bv) return -1 * dir
+          if (av > bv) return 1 * dir
+        }
+        return 0
+      })
+    }
+    if (stage.$skip !== undefined) out = out.slice(stage.$skip as number)
+    if (stage.$limit !== undefined) out = out.slice(0, stage.$limit as number)
+  }
+  return out
 }
 
 export function createMockCollection<T extends Document>(
@@ -30,10 +83,13 @@ export function createMockCollection<T extends Document>(
   let _lastFilter: Filter<T> | undefined
   const callbacks = new Set<(docs: T[]) => void>()
   const errorCallbacks = new Set<(error: unknown) => void>()
+  /** Live aggregate subscribers: each re-runs its own pipeline on every write. */
+  const aggCallbacks = new Set<{ pipeline: unknown[]; cb: (docs: any[]) => void }>()
 
   function notifyAll() {
     const snapshot = [...docs]
     for (const cb of callbacks) cb(snapshot)
+    for (const { pipeline, cb } of aggCallbacks) cb(runPipeline(docs, pipeline))
   }
 
   const collection: Collection<T> = {
@@ -85,6 +141,43 @@ export function createMockCollection<T extends Document>(
     updateOne: async () => false,
     updateMany: async () => 0,
     count: async () => docs.length,
+
+    // ---- replication write path ----
+    // Upsert by caller-supplied `_id`: the same row fetched twice must converge
+    // on one document, which is what makes the bridge a down payment on the
+    // replica rather than a cache beside it.
+    replaceManyWithIds: async (incoming) => {
+      const byId = new Map(docs.map((d) => [d._id, d]))
+      for (const doc of incoming) byId.set(doc._id, doc as T)
+      docs = [...byId.values()]
+      notifyAll()
+      return incoming.map((d) => d._id!)
+    },
+    deleteManyWithIds: async (ids) => {
+      const gone = new Set(ids)
+      const before = docs.length
+      docs = docs.filter((d) => !gone.has(d._id!))
+      notifyAll()
+      return before - docs.length
+    },
+
+    // ---- aggregation ----
+    aggregate: async (pipeline) => runPipeline(docs, pipeline as unknown[]) as never,
+    subscribeAggregate: (pipeline, callback, onError) => {
+      _subscribeCount++
+      const entry = { pipeline: pipeline as unknown[], cb: callback as (d: any[]) => void }
+      aggCallbacks.add(entry)
+      if (onError) errorCallbacks.add(onError)
+      const snap = runPipeline(docs, pipeline as unknown[])
+      Promise.resolve().then(() => {
+        if (aggCallbacks.has(entry)) entry.cb(snap)
+      })
+      return () => {
+        _unsubscribeCount++
+        aggCallbacks.delete(entry)
+        if (onError) errorCallbacks.delete(onError)
+      }
+    },
     createIndex: async () => {},
     dropIndex: async () => {},
     createFtsIndex: async () => {},
@@ -108,6 +201,7 @@ export function createMockCollection<T extends Document>(
     subscribeCount: () => _subscribeCount,
     unsubscribeCount: () => _unsubscribeCount,
     lastFilter: () => _lastFilter,
+    docs: () => [...docs],
   }
 }
 

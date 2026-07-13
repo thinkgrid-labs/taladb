@@ -127,6 +127,53 @@ impl Value {
     }
 }
 
+/// FNV-1a (128-bit) offset basis and prime, per the reference specification.
+///
+/// FNV is chosen over a stronger hash on purpose: [`derive_doc_id`] must be
+/// reimplemented **byte-identically** in TypeScript (see `deriveDocId` in
+/// `@taladb/*`), and FNV-1a is short enough to port without ambiguity. It is a
+/// non-cryptographic hash — that is fine here, because the input is a remote
+/// primary key from an origin the client already trusts, not adversarial input.
+const FNV1A128_OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+const FNV1A128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+
+/// Derive a stable, deterministic [`Ulid`] from a remote primary key.
+///
+/// The engine assigns ULIDs and **ignores caller-supplied `_id`s**, so a
+/// document replicated from a remote origin has no stable local identity to
+/// merge on: re-fetching the same row would insert a duplicate. Hashing the
+/// remote key into the ULID gives that identity back — the same `(collection,
+/// key)` always maps to the same document, which is what makes replication
+/// upserts idempotent, resumable, and safe to run concurrently from the
+/// bootstrap walk and an on-demand fetch.
+///
+/// `collection` is part of the preimage so the same remote id in two different
+/// collections cannot collide.
+///
+/// # Ordering caveat
+///
+/// The result is a hash, so its ULID timestamp prefix is **not chronological**.
+/// Documents written with a derived id do not come back in insertion order from
+/// an unordered `find()`. Reads over replicated collections must carry an
+/// explicit sort. (Documents written via `insert`/`insert_many` are unaffected —
+/// they still get monotonic ULIDs.)
+pub fn derive_doc_id(collection: &str, key: &str) -> Ulid {
+    // A 0x00 separator keeps the preimage unambiguous: without it,
+    // ("ab", "c") and ("a", "bc") would hash identically.
+    const SEPARATOR: [u8; 1] = [0u8];
+    let mut hash = FNV1A128_OFFSET_BASIS;
+    for &byte in collection
+        .as_bytes()
+        .iter()
+        .chain(SEPARATOR.iter())
+        .chain(key.as_bytes().iter())
+    {
+        hash ^= byte as u128;
+        hash = hash.wrapping_mul(FNV1A128_PRIME);
+    }
+    Ulid::from_bytes(hash.to_be_bytes())
+}
+
 /// A database document with a ULID primary key and ordered fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
@@ -277,5 +324,50 @@ mod tests {
         assert_eq!(doc.get("y"), Some(&Value::Bool(true)));
         doc.remove("x");
         assert_eq!(doc.get("x"), None);
+    }
+
+    #[test]
+    fn derive_doc_id_is_deterministic() {
+        assert_eq!(
+            derive_doc_id("products", "sku-123"),
+            derive_doc_id("products", "sku-123")
+        );
+    }
+
+    #[test]
+    fn derive_doc_id_separates_collections() {
+        // The same remote key in two collections must not collide.
+        assert_ne!(derive_doc_id("products", "1"), derive_doc_id("orders", "1"));
+    }
+
+    #[test]
+    fn derive_doc_id_separator_prevents_boundary_collision() {
+        // Without the 0x00 separator these two preimages would be identical.
+        assert_ne!(derive_doc_id("ab", "c"), derive_doc_id("a", "bc"));
+    }
+
+    /// Cross-language contract. These vectors are duplicated verbatim in the
+    /// TypeScript `deriveDocId` test suite and **must** stay in lockstep: if the
+    /// two implementations ever disagree, two clients assign different `_id`s to
+    /// the same remote row and the replica silently forks into duplicates.
+    #[test]
+    fn derive_doc_id_cross_language_vectors() {
+        let vectors: &[(&str, &str, &str)] = &[
+            ("products", "sku-123", "56GC678DQYWW1Z98HPYJ90WVKH"),
+            ("products", "1", "7Z6Y6H8NG96ZGN4PJVDP18CSY2"),
+            ("orders", "1", "5VYD63GDV5KCDXV2A0SYRWSKVZ"),
+            ("", "", "6J535PJ40THJQQH49BE174M53Z"),
+            // Multi-byte UTF-8 in the key: the hash runs over raw bytes, so the
+            // TypeScript port must feed it UTF-8 bytes, not UTF-16 code units.
+            ("products", "sku-ñ-💡", "5NZ0PGNM2CF0BTHN0AAX8CWPAA"),
+        ];
+        for (collection, key, expected) in vectors {
+            assert_eq!(
+                derive_doc_id(collection, key).to_string(),
+                *expected,
+                "derive_doc_id({collection:?}, {key:?}) drifted — \
+                 the TypeScript implementation must match these exactly"
+            );
+        }
     }
 }

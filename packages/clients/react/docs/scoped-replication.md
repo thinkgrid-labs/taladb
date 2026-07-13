@@ -122,7 +122,14 @@ TalaDB is a document store: there are **no cross-collection server joins**, so a
 
 ## 7. Where the boundary sits (explicit non-goals)
 
-Keep `useQuery` as **declarative read-hydration over plain REST endpoints**. The moment you need incremental cursors, delete propagation, or true conflict merge, that is **not** `useQuery`'s job — that is the existing `SyncAdapter` / `db.sync()` path.
+`useQuery` now has two explicit transports behind one local read surface:
+
+- Coverage-first REST replication for bounded, origin-authoritative reference data.
+- The existing `SyncAdapter` / `db.sync()` path for bidirectional, local-authoritative data.
+
+Coverage-first REST includes its own snapshot bootstrap and opaque delta cursor,
+but all orchestration lives in the shared replication coordinator rather than in
+the hook. `useQuery` remains a read surface, not a second ad-hoc sync loop.
 
 - `useQuery` **hydrates** a slice.
 - `SyncAdapter` / `db.sync()` **incrementally syncs** a collection (cursors, tombstones, LWW).
@@ -134,7 +141,11 @@ Do not let `useQuery` grow into a second incremental-sync engine. Two half-overl
 
 ## 8. Decisions
 
-1. **Transport — Fork A vs Fork B.** ✅ *(Decided: sync-contract / Fork B)* — build on the existing `db.sync()` / `HttpSyncAdapter` machinery; it is the default and the only mode for writes. Raw REST (Fork A) is deferred to a later read-only adapter for origin-authoritative reference data. Near-term note from the current core: `runSync` scopes by **collection only** and replays from zero (cursors stubbed), so v0.9.1 scoped replication pulls the collection via `db.sync({ collections: [name] })` and filters locally in `useFind`; server-side filter-scoping and live incremental cursors are follow-ups on the sync contract, not blockers for this feature.
+1. **Transport.** Coverage-first REST is the read-only path for bounded,
+   origin-authoritative collections; `SyncAdapter` remains the bidirectional path
+   and the only transport for local writes. Cursor-capable adapters now persist an
+   opaque server token; legacy timestamp adapters remain compatible and replay
+   safely from zero.
    - **Fork A (raw REST):** `useQuery({ collection, endpoint })` does a plain `GET`; the adapter upserts the JSON into the collection. `useMutation` does a plain `POST`. Works with **any existing API**, zero server changes. No incremental cursor, no server-driven deletes — a whole-slice overwrite. Two durability hazards: deletes don't propagate (a GET returns survivors; upsert never removes a server-deleted row, and diffing-to-delete risks nuking rows merely absent from a filtered/partial response), and concurrent offline writes clobber with no way for the server to detect the conflict.
    - **Fork B (sync contract):** the scoped fetch speaks the existing two-endpoint sync contract (`/push`, `/pull?since=`) scoped by collection + filter — inheriting incremental cursors, tombstones, and LWW merge, plus a single server-derived `authorize(req) → scope` seam. Requires the server to speak the contract and support server-side filtering on pull.
    - Recommendation *(pending your confirmation)*: **sync-contract (Fork B) as the default, and the only mode for writes** — it's the secure + durable choice (server-derived scope; tombstones + `since` cursors + LWW for correct deletes and conflict convergence; TalaDB already owns the machinery). Keep **raw REST (Fork A) as a read-only opt-in** for origin-authoritative reference data, with explicit full-replace semantics to contain the delete-propagation hazard.

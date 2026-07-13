@@ -522,6 +522,17 @@ impl SyncAdapter for LastWriteWins {
                 ))?
             };
             for doc in docs {
+                // Documents replicated *in* from an authoritative origin are not
+                // local edits and must never be replicated back out — that would
+                // hand the origin its own catalog as if the user had authored it.
+                // The check has to live here, not in the sync hook: when the cursor
+                // is 0 (every pass today, since cursors are stubbed) the branch
+                // above exports the whole collection via `find(Filter::All)`, which
+                // no hook suppression can reach.
+                if doc.get(crate::collection::REMOTE_ORIGIN_FIELD) == Some(&Value::Bool(true)) {
+                    continue;
+                }
+
                 let changed_at = doc
                     .get("_changed_at")
                     .and_then(|v| {

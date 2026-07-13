@@ -15,8 +15,8 @@ use web_sys::FileSystemSyncAccessHandle;
 #[cfg(not(feature = "cf-workers"))]
 use taladb_core::engine::RedbBackend;
 use taladb_core::{
-    Changeset, Database, Filter, HnswOptions, LastWriteWins, SchemaValidator, SyncAdapter, Update,
-    Value, VectorMetric,
+    Changeset, Database, Document, Filter, HnswOptions, LastWriteWins, SchemaValidator,
+    SyncAdapter, Update, Value, VectorMetric, WriteOrigin,
 };
 // Encryption is only wired on the wasm OPFS open path — gate the imports the
 // same way as `open_with_config_and_opfs` so native workspace builds (CI's
@@ -36,7 +36,7 @@ use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use taladb_core::config::SyncConfig;
 #[cfg(target_arch = "wasm32")]
-use taladb_core::{Document, SyncEvent, SyncHook, TalaDbConfig};
+use taladb_core::{SyncEvent, SyncHook, TalaDbConfig};
 
 // ---------------------------------------------------------------------------
 // WasmSyncHook — HTTP push sync for the browser (WASM) platform
@@ -565,6 +565,53 @@ impl WorkerDB {
         serde_json::to_string(&id_strs).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Upsert many documents **by caller-supplied `_id`**, in one commit.
+    ///
+    /// Unlike `insert_many` — which discards `_id` and mints a fresh ULID — this
+    /// honours the id in each document. That is what lets the replication
+    /// coordinator address a remote row by a *derived* id (see `deriveDocId`) and
+    /// have repeated fetches converge on one document instead of duplicating it.
+    ///
+    /// `origin` is `"remote"` for authoritative rows replicated in from an origin,
+    /// or `"local"` for ordinary user writes. Remote rows are marked so they can
+    /// never replicate back out — see `Collection::replace_many_with_ids`.
+    #[wasm_bindgen(js_name = replaceManyWithIds)]
+    pub fn replace_many_with_ids(
+        &self,
+        collection: &str,
+        docs_json: &str,
+        origin: &str,
+    ) -> Result<String, JsValue> {
+        let arr: Vec<serde_json::Value> =
+            serde_json::from_str(docs_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let docs: Result<Vec<Document>, JsValue> = arr.iter().map(json_obj_to_doc).collect();
+        let ids = self
+            .get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .replace_many_with_ids(docs?, parse_write_origin(origin)?)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
+        serde_json::to_string(&id_strs).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Delete many documents by id, in one commit. Returns the number removed.
+    #[wasm_bindgen(js_name = deleteManyWithIds)]
+    pub fn delete_many_with_ids(
+        &self,
+        collection: &str,
+        ids_json: &str,
+        origin: &str,
+    ) -> Result<usize, JsValue> {
+        let ids: Vec<String> =
+            serde_json::from_str(ids_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let ids: Result<Vec<taladb_core::Ulid>, JsValue> =
+            ids.iter().map(|s| parse_ulid(s)).collect();
+        self.get_collection(collection)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?
+            .delete_many_with_ids(&ids?, parse_write_origin(origin)?)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     /// Find documents. Returns a JSON array of document objects.
     pub fn find(&self, collection: &str, filter_json: &str) -> Result<String, JsValue> {
         let filter = parse_filter(filter_json)?;
@@ -987,8 +1034,8 @@ impl WorkerDB {
         let changeset: Changeset =
             serde_json::from_str(changeset_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let schemas = build_schemas(schemas_json)?;
-        let validator = SchemaValidator::try_new(schemas)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let validator =
+            SchemaValidator::try_new(schemas).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let report = self
             .db
             .import_changes_validated(changeset, Arc::new(validator))
@@ -1066,6 +1113,52 @@ fn json_obj_to_fields(v: &serde_json::Value) -> Result<Vec<(String, Value)>, JsV
             .collect()),
         _ => Err(JsValue::from_str("document must be a JSON object")),
     }
+}
+
+fn parse_ulid(s: &str) -> Result<taladb_core::Ulid, JsValue> {
+    taladb_core::Ulid::from_string(s).map_err(|_| {
+        JsValue::from_str(&format!(
+            "\"{s}\" is not a valid ULID. Ids for replicated rows come from \
+             deriveDocId(collection, remoteKey)."
+        ))
+    })
+}
+
+fn parse_write_origin(origin: &str) -> Result<WriteOrigin, JsValue> {
+    match origin {
+        "local" => Ok(WriteOrigin::Local),
+        "remote" => Ok(WriteOrigin::AuthoritativeRemote),
+        other => Err(JsValue::from_str(&format!(
+            "unknown write origin \"{other}\"; expected \"local\" or \"remote\""
+        ))),
+    }
+}
+
+/// Parse a JSON object into a [`Document`], **honouring `_id`**.
+///
+/// The counterpart [`json_obj_to_fields`] deliberately *drops* `_id` — the engine
+/// mints its own ULID on insert. Replication needs the opposite: the id is the
+/// whole point, because it is what makes an upsert idempotent across a bootstrap
+/// walk and an on-demand fetch. So `_id` is required here, and a missing or
+/// malformed one is a hard error rather than a silently-generated new row.
+fn json_obj_to_doc(v: &serde_json::Value) -> Result<Document, JsValue> {
+    let serde_json::Value::Object(map) = v else {
+        return Err(JsValue::from_str("document must be a JSON object"));
+    };
+    let id = match map.get("_id") {
+        Some(serde_json::Value::String(s)) => parse_ulid(s)?,
+        _ => {
+            return Err(JsValue::from_str(
+                "replaceManyWithIds requires a string `_id` on every document",
+            ));
+        }
+    };
+    let fields = map
+        .iter()
+        .filter(|(k, _)| k.as_str() != "_id")
+        .map(|(k, v)| (k.clone(), json_to_core_value(v)))
+        .collect();
+    Ok(Document::with_id(id, fields))
 }
 
 fn parse_filter(json: &str) -> Result<Filter, JsValue> {

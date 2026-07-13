@@ -139,13 +139,40 @@ function useFindOne(collection, filter) {
   return useSyncExternalStore2(subscribe, getSnapshot, getSnapshot);
 }
 
+// src/useAggregate.ts
+import { useCallback as useCallback3, useRef as useRef5, useSyncExternalStore as useSyncExternalStore3 } from "react";
+function useAggregate(collection, pipeline) {
+  const snapshotRef = useRef5({ data: [], loading: true, error: null });
+  const pipelineKey = JSON.stringify(pipeline);
+  const subscribe = useCallback3(
+    (notify) => {
+      snapshotRef.current = { data: snapshotRef.current.data, loading: true, error: null };
+      return collection.subscribeAggregate(
+        pipeline,
+        (docs) => {
+          snapshotRef.current = { data: docs, loading: false, error: null };
+          notify();
+        },
+        (error) => {
+          snapshotRef.current = { ...snapshotRef.current, loading: false, error };
+          notify();
+        }
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [collection, pipelineKey]
+  );
+  const getSnapshot = useCallback3(() => snapshotRef.current, []);
+  return useSyncExternalStore3(subscribe, getSnapshot, getSnapshot);
+}
+
 // src/replication/config.tsx
 import {
-  createContext as createContext2,
-  useContext as useContext2,
-  useEffect as useEffect2,
-  useMemo as useMemo3,
-  useRef as useRef5
+  createContext as createContext3,
+  useContext as useContext3,
+  useEffect as useEffect3,
+  useMemo as useMemo4,
+  useRef as useRef7
 } from "react";
 
 // src/replication/engine.ts
@@ -199,20 +226,150 @@ async function replicateWithRetry(db, config, collection, direction) {
   throw lastError;
 }
 
-// src/replication/config.tsx
-import { jsx as jsx2, jsxs } from "react/jsx-runtime";
+// src/replication/provider.tsx
+import {
+  createContext as createContext2,
+  useContext as useContext2,
+  useEffect as useEffect2,
+  useMemo as useMemo3,
+  useRef as useRef6,
+  useState as useState2
+} from "react";
+import {
+  ReplicationCoordinator,
+  createRestSource
+} from "taladb";
+import { jsx as jsx2 } from "react/jsx-runtime";
 var ReplicationContext = createContext2(null);
-function ReplicationProvider({ children, ...config }) {
-  const key = `${config.endpoint}|${config.pollMs ?? ""}|${JSON.stringify(config.paths ?? null)}|${JSON.stringify(config.prefetch ?? null)}|${config.prefetchMode ?? ""}|${config.prefetchConcurrency ?? ""}`;
+function whenIdle(fn) {
+  const ric = globalThis.requestIdleCallback;
+  if (typeof ric === "function") {
+    const handle = ric(fn, { timeout: 2e3 });
+    return () => {
+      const cic = globalThis.cancelIdleCallback;
+      cic?.(handle);
+    };
+  }
+  const t = setTimeout(fn, 0);
+  return () => clearTimeout(t);
+}
+var yieldToUi = () => new Promise((resolve) => setTimeout(resolve, 0));
+function ReplicationScopes({ replicate: replicate2, children }) {
+  const db = useTalaDB();
+  const collectionOptions = useCollectionOptions();
+  const [coverage, setCoverage] = useState2({});
+  const registryKey = JSON.stringify(
+    Object.fromEntries(
+      Object.entries(replicate2).map(([name, s]) => [
+        name,
+        {
+          endpoint: s.endpoint,
+          origin: s.origin,
+          scope: s.scope,
+          projectionVersion: s.projectionVersion,
+          schemaVersion: s.schemaVersion,
+          key: s.key,
+          hydrate: s.hydrate,
+          pageSize: s.pageSize,
+          refreshMs: s.refreshMs,
+          bridge: s.bridge,
+          source: s.source ? {
+            origin: s.source.origin,
+            collection: s.source.collection,
+            scope: s.source.scope,
+            projectionVersion: s.source.projectionVersion,
+            schemaVersion: s.source.schemaVersion,
+            configVersion: s.source.configVersion
+          } : null
+        }
+      ])
+    )
+  );
+  const latest = useRef6(replicate2);
+  latest.current = replicate2;
+  const coordinators = useMemo3(() => {
+    const map = /* @__PURE__ */ new Map();
+    for (const [collection, scope] of Object.entries(latest.current)) {
+      const source = scope.source ?? createRestSource({ ...scope, collection });
+      map.set(
+        collection,
+        new ReplicationCoordinator(db, source, {
+          pageSize: scope.pageSize,
+          yieldFn: yieldToUi,
+          onProgress: (state) => setCoverage((prev) => ({ ...prev, [collection]: state })),
+          collectionOptions: collectionOptions.get(collection)
+        })
+      );
+    }
+    return map;
+  }, [db, registryKey, collectionOptions]);
+  useEffect2(() => {
+    let cancelled = false;
+    void (async () => {
+      const seeded = {};
+      for (const [collection, coord] of coordinators) {
+        seeded[collection] = await coord.getCoverage();
+      }
+      if (!cancelled) setCoverage(seeded);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [coordinators]);
+  useEffect2(() => {
+    const cancels = [];
+    for (const [collection, coord] of coordinators) {
+      const mode = latest.current[collection]?.hydrate ?? "idle";
+      if (mode === "manual") continue;
+      const start = () => {
+        void coord.hydrate().catch(() => {
+        });
+      };
+      if (mode === "eager") start();
+      else cancels.push(whenIdle(start));
+    }
+    return () => cancels.forEach((c) => c());
+  }, [coordinators]);
+  useEffect2(() => {
+    const timers = [];
+    for (const [collection, coord] of coordinators) {
+      const ms = latest.current[collection]?.refreshMs ?? 0;
+      if (ms > 0) {
+        timers.push(setInterval(() => void coord.refresh().catch(() => {
+        }), ms));
+      }
+    }
+    return () => timers.forEach(clearInterval);
+  }, [coordinators]);
   const value = useMemo3(
-    () => config,
+    () => ({ coordinators, scopes: latest.current, coverage }),
+    [coordinators, coverage]
+  );
+  return /* @__PURE__ */ jsx2(ReplicationContext.Provider, { value, children });
+}
+function useReplication() {
+  return useContext2(ReplicationContext);
+}
+
+// src/replication/config.tsx
+import { jsx as jsx3, jsxs } from "react/jsx-runtime";
+var ReplicationContext2 = createContext3(null);
+function ReplicationProvider({
+  children,
+  replicate: replicate2,
+  ...config
+}) {
+  const key = `${config.endpoint ?? ""}|${config.pollMs ?? ""}|${JSON.stringify(config.paths ?? null)}|${JSON.stringify(config.prefetch ?? null)}|${config.prefetchMode ?? ""}|${config.prefetchConcurrency ?? ""}`;
+  const value = useMemo4(
+    () => config.endpoint ? config : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [key]
   );
-  return /* @__PURE__ */ jsxs(ReplicationContext.Provider, { value, children: [
-    value.prefetch && value.prefetch.length > 0 ? /* @__PURE__ */ jsx2(PrefetchRunner, {}) : null,
+  const inner = /* @__PURE__ */ jsxs(ReplicationContext2.Provider, { value, children: [
+    value?.prefetch && value.prefetch.length > 0 ? /* @__PURE__ */ jsx3(PrefetchRunner, {}) : null,
     children
   ] });
+  return replicate2 ? /* @__PURE__ */ jsx3(ReplicationScopes, { replicate: replicate2, children: inner }) : inner;
 }
 function resolveReplicationConfig(base, overrides) {
   const endpoint = overrides?.endpoint ?? base?.endpoint;
@@ -229,10 +386,10 @@ function resolveReplicationConfig(base, overrides) {
   };
 }
 function useReplicationBase() {
-  return useContext2(ReplicationContext);
+  return useContext3(ReplicationContext2);
 }
 function useReplicationConfig(overrides) {
-  return resolveReplicationConfig(useContext2(ReplicationContext), overrides);
+  return resolveReplicationConfig(useContext3(ReplicationContext2), overrides);
 }
 var CURSOR_COLLECTION = "__taladb_sync";
 function normalizePrefetch(entries) {
@@ -262,10 +419,10 @@ function PrefetchRunner() {
   const slices = normalizePrefetch(base?.prefetch);
   const mode = base?.prefetchMode ?? "once";
   const concurrency = Math.max(1, base?.prefetchConcurrency ?? 2);
-  const baseRef = useRef5(base);
+  const baseRef = useRef7(base);
   baseRef.current = base;
   const sig = JSON.stringify({ slices, mode, concurrency, endpoint: base?.endpoint ?? null });
-  useEffect2(() => {
+  useEffect3(() => {
     if (slices.length === 0) return void 0;
     let cancelled = false;
     const cancelSchedule = schedule(() => {
@@ -300,167 +457,251 @@ function PrefetchRunner() {
   return null;
 }
 
+// src/useCoverage.ts
+import { isAuthoritative, progress as progressOf, rowsApplied } from "taladb";
+function useCoverage(collection) {
+  const replication = useReplication();
+  const state = replication?.coverage[collection] ?? { status: "empty" };
+  return {
+    status: state.status,
+    ready: isAuthoritative(state),
+    rows: rowsApplied(state),
+    total: "total" in state ? state.total : void 0,
+    progress: progressOf(state),
+    reason: state.status === "error" ? state.error : state.status === "best-effort" || state.status === "stale" ? state.reason : void 0
+  };
+}
+var useHydrationProgress = useCoverage;
+
 // src/useQuery.ts
-import { useCallback as useCallback3, useEffect as useEffect3, useRef as useRef6, useState as useState2 } from "react";
+import { useCallback as useCallback4, useEffect as useEffect4, useMemo as useMemo5, useRef as useRef8, useState as useState3 } from "react";
 function useQuery(options) {
-  const { collection, filter, source = "local-first" } = options;
-  const networked = source !== "local-only";
-  const db = useTalaDB();
+  const { collection, filter, sort, page, limit, skip, enabled = true } = options;
   const col = useCollection(collection);
-  const read = useFind(col, filter);
-  const { config, pollMs } = useReplicationConfig({
-    endpoint: options.endpoint,
-    getAuth: options.getAuth,
-    fetch: options.fetch,
-    paths: options.paths,
-    pollMs: options.pollMs
-  });
-  const configRef = useRef6(config);
-  configRef.current = config;
-  const [syncing, setSyncing] = useState2(false);
-  const [syncError, setSyncError] = useState2(null);
-  const [firstSyncDone, setFirstSyncDone] = useState2(false);
-  const endpoint = config?.endpoint;
-  const refetch = useCallback3(async () => {
-    const cfg = configRef.current;
-    if (!networked || !cfg) return;
+  const db = useTalaDB();
+  const coverage = useCoverage(collection);
+  const replication = useReplication();
+  const coord = replication?.coordinators.get(collection);
+  const legacyNetworked = !coord && options.source !== "local-only";
+  const { config: legacyConfig, pollMs } = useReplicationConfig(options);
+  const legacyConfigRef = useRef8(legacyConfig);
+  legacyConfigRef.current = legacyConfig;
+  const [syncing, setSyncing] = useState3(false);
+  const [syncError, setSyncError] = useState3(null);
+  const [firstSyncDone, setFirstSyncDone] = useState3(false);
+  const legacyRefetch = useCallback4(async () => {
+    const cfg = legacyConfigRef.current;
+    if (!legacyNetworked || !cfg) return;
     setSyncing(true);
     setSyncError(null);
     try {
       await replicate(db, cfg, collection, "pull");
-    } catch (e) {
-      setSyncError(e);
+    } catch (error) {
+      setSyncError(error);
     } finally {
       setSyncing(false);
       setFirstSyncDone(true);
     }
-  }, [db, collection, networked, endpoint]);
-  useEffect3(() => {
-    if (!networked) return;
-    void refetch();
+  }, [db, collection, legacyNetworked, legacyConfig?.endpoint]);
+  useEffect4(() => {
+    if (!enabled || !legacyNetworked || !legacyConfig) return;
+    void legacyRefetch();
     if (pollMs > 0) {
-      const id = setInterval(() => void refetch(), pollMs);
-      return () => clearInterval(id);
+      const timer = setInterval(() => void legacyRefetch(), pollMs);
+      return () => clearInterval(timer);
     }
     return void 0;
-  }, [refetch, networked, pollMs]);
-  if (networked && !config) {
-    throw new Error(
-      `useQuery({ collection: '${collection}' }) needs an endpoint for source '${source}'. Wrap the tree in <ReplicationProvider endpoint="\u2026">, pass { endpoint }, or use source: "local-only".`
-    );
-  }
-  const loading = source === "remote-first" ? read.loading || !firstSyncDone : read.loading;
-  return { data: read.data, loading, error: read.error, syncing, syncError, refetch };
-}
-
-// src/useQueries.ts
-import { useEffect as useEffect4, useRef as useRef7, useState as useState3 } from "react";
-var NOOP_REFETCH = async () => {
-};
-function emptyResult() {
-  return { data: [], loading: true, error: null, syncing: false, syncError: null, refetch: NOOP_REFETCH };
-}
-function useQueries(queries) {
-  const db = useTalaDB();
-  const base = useReplicationBase();
-  for (const q of queries) {
-    const networked = (q.source ?? "local-first") !== "local-only";
-    if (networked && !(q.endpoint ?? base?.endpoint)) {
-      throw new Error(
-        `useQueries: the query for '${q.collection}' needs an endpoint for source '${q.source ?? "local-first"}'. Provide <ReplicationProvider endpoint="\u2026">, pass { endpoint }, or use source: "local-only".`
-      );
-    }
-  }
-  const sig = JSON.stringify(
-    queries.map((q) => ({
-      collection: q.collection,
-      filter: q.filter ?? null,
-      source: q.source ?? "local-first",
-      endpoint: q.endpoint ?? null,
-      pollMs: q.pollMs ?? null
-    }))
-  );
-  const queriesRef = useRef7(queries);
-  queriesRef.current = queries;
-  const baseRef = useRef7(base);
-  baseRef.current = base;
-  const [results, setResults] = useState3(
-    () => queries.map(() => emptyResult())
-  );
+  }, [enabled, legacyNetworked, legacyConfig?.endpoint, pollMs, legacyRefetch]);
+  const offset = page !== void 0 && limit !== void 0 ? (page - 1) * limit : skip ?? 0;
+  const filterKey = JSON.stringify(filter ?? null);
+  const sortKey = JSON.stringify(sort ?? null);
+  const [bridgeIds, setBridgeIds] = useState3([]);
+  const [fetchError, setFetchError] = useState3(null);
+  const scopeValue = coord?.replicaScope;
+  const bridgeIdKey = (bridgeIds ?? []).join("|");
+  const pipeline = useMemo5(() => {
+    const stages = [];
+    const scoped = scopeValue ? { _replica_scope: scopeValue } : void 0;
+    const bridgeOnly = !coverage.ready ? { _id: { $in: bridgeIds ?? [] } } : void 0;
+    const matches = [scoped, bridgeOnly, filter].filter(Boolean);
+    if (matches.length === 1) stages.push({ $match: matches[0] });
+    else if (matches.length > 1) stages.push({ $match: { $and: matches } });
+    if (sort) stages.push({ $sort: sort });
+    if (coverage.ready && offset > 0) stages.push({ $skip: offset });
+    if (limit !== void 0) stages.push({ $limit: limit });
+    return stages;
+  }, [filterKey, sortKey, offset, limit, coverage.ready, scopeValue, bridgeIdKey]);
+  const read = useAggregate(col, enabled ? pipeline : [{ $limit: 0 }]);
+  const [fetching, setFetching] = useState3(false);
+  const bridgeKey = `${collection}|${filterKey}|${sortKey}|${offset}|${limit}`;
+  const canBridge = replication?.scopes[collection]?.bridge !== false;
   useEffect4(() => {
-    const qs = queriesRef.current;
-    const b = baseRef.current;
+    if (!enabled || coverage.ready || !canBridge) return;
+    if (!coord) return;
     let cancelled = false;
-    const setAt = (i, fn) => {
-      setResults((prev) => {
-        if (i >= prev.length) return prev;
-        const copy = prev.slice();
-        copy[i] = fn(copy[i]);
-        return copy;
-      });
-    };
-    const resolved = qs.map((q, i) => {
-      const { config } = resolveReplicationConfig(b, {
-        endpoint: q.endpoint,
-        getAuth: q.getAuth,
-        fetch: q.fetch,
-        paths: q.paths,
-        pollMs: q.pollMs
-      });
-      const networked = (q.source ?? "local-first") !== "local-only";
-      const pollMs = q.pollMs ?? b?.pollMs ?? 0;
-      const refetch = async () => {
-        if (!networked || !config) return;
-        setAt(i, (r) => ({ ...r, syncing: true, syncError: null }));
-        try {
-          await replicate(db, config, q.collection, "pull");
-        } catch (e) {
-          if (!cancelled) setAt(i, (r) => ({ ...r, syncError: e }));
-        } finally {
-          if (!cancelled) setAt(i, (r) => ({ ...r, syncing: false }));
-        }
-      };
-      return { config, networked, pollMs, refetch };
-    });
-    setResults(
-      qs.map((_q, i) => ({
-        data: [],
-        loading: true,
-        error: null,
-        syncing: false,
-        syncError: null,
-        refetch: resolved[i].refetch
-      }))
-    );
-    const unsubs = qs.map((q, i) => {
-      const col = db.collection(q.collection);
-      return col.subscribe(
-        q.filter ?? {},
-        (docs) => {
-          if (!cancelled) setAt(i, (r) => ({ ...r, data: docs, loading: false, error: null }));
-        },
-        (error) => {
-          if (!cancelled) setAt(i, (r) => ({ ...r, loading: false, error }));
-        }
-      );
-    });
-    const intervals = [];
-    resolved.forEach((res) => {
-      if (!res.networked || !res.config) return;
-      void res.refetch();
-      if (res.pollMs > 0) intervals.push(setInterval(() => void res.refetch(), res.pollMs));
+    setFetching(true);
+    setFetchError(null);
+    setBridgeIds([]);
+    void coord.bridge({
+      filter,
+      sort,
+      page,
+      limit
+    }).then((result) => setBridgeIds(result.ids ?? [])).catch((error) => {
+      if (!cancelled) setFetchError(error);
+    }).finally(() => {
+      if (!cancelled) setFetching(false);
     });
     return () => {
       cancelled = true;
-      unsubs.forEach((u) => u());
-      intervals.forEach((id) => clearInterval(id));
     };
-  }, [db, sig]);
-  return queries.map((_q, i) => results[i] ?? emptyResult());
+  }, [bridgeKey, coverage.ready, canBridge, enabled, coord]);
+  const refetch = async () => {
+    if (coord) await coord.refresh();
+    else await legacyRefetch();
+  };
+  if (enabled && legacyNetworked && !legacyConfig) {
+    throw new Error(
+      `useQuery({ collection: '${collection}' }) needs either a coverage-first replicate scope or a legacy sync endpoint. Use source: 'local-only' for a purely local query.`
+    );
+  }
+  return {
+    data: read.data,
+    total: coverage.total,
+    loading: options.source === "remote-first" && legacyNetworked ? read.loading || !firstSyncDone : read.loading,
+    error: read.error ?? fetchError,
+    fetchError,
+    coverage,
+    fetching,
+    syncing,
+    syncError,
+    refetch
+  };
+}
+
+// src/useQueries.ts
+import { useEffect as useEffect5, useMemo as useMemo6, useRef as useRef9, useState as useState4 } from "react";
+function useQueries(queries) {
+  const db = useTalaDB();
+  const registry = useCollectionOptions();
+  const replication = useReplication();
+  const [results, setResults] = useState4(() => queries.map(() => ({ data: [], loading: true, error: null })));
+  const [bridgeIds, setBridgeIds] = useState4({});
+  const [fetchErrors, setFetchErrors] = useState4({});
+  const signature = JSON.stringify(
+    queries.map((q) => ({
+      collection: q.collection,
+      filter: q.filter ?? null,
+      sort: q.sort ?? null,
+      page: q.page ?? null,
+      limit: q.limit ?? null,
+      skip: q.skip ?? null,
+      enabled: q.enabled ?? true
+    }))
+  );
+  const latest = useRef9(queries);
+  latest.current = queries;
+  const bridgeManifestKey = JSON.stringify(bridgeIds);
+  const replicationReadKey = JSON.stringify(
+    queries.map((q) => ({
+      scope: replication?.coordinators.get(q.collection)?.replicaScope ?? null,
+      ready: replication?.coverage[q.collection]?.status === "complete"
+    }))
+  );
+  useEffect5(() => {
+    const current = latest.current;
+    setResults(current.map(() => ({ data: [], loading: true, error: null })));
+    const unsubs = current.map((q, i) => {
+      if (q.enabled === false) return () => {
+      };
+      const col = db.collection(q.collection, registry.get(q.collection));
+      const offset = q.page !== void 0 && q.limit !== void 0 ? (q.page - 1) * q.limit : q.skip ?? 0;
+      const pipeline = [];
+      const coord = replication?.coordinators.get(q.collection);
+      const covered = replication?.coverage[q.collection]?.status === "complete";
+      const matches = [
+        coord ? { _replica_scope: coord.replicaScope } : void 0,
+        !covered ? { _id: { $in: bridgeIds[i] ?? [] } } : void 0,
+        q.filter
+      ].filter(Boolean);
+      if (matches.length === 1) pipeline.push({ $match: matches[0] });
+      else if (matches.length > 1) pipeline.push({ $match: { $and: matches } });
+      if (q.sort) pipeline.push({ $sort: q.sort });
+      if (covered && offset > 0) pipeline.push({ $skip: offset });
+      if (q.limit !== void 0) pipeline.push({ $limit: q.limit });
+      return col.subscribeAggregate(
+        pipeline,
+        (docs) => setResults((prev) => {
+          const next = [...prev];
+          next[i] = { data: docs, loading: false, error: null };
+          return next;
+        }),
+        (error) => setResults((prev) => {
+          const next = [...prev];
+          next[i] = { ...next[i], loading: false, error };
+          return next;
+        })
+      );
+    });
+    return () => unsubs.forEach((u) => u());
+  }, [db, registry, signature, replicationReadKey, bridgeManifestKey]);
+  useEffect5(() => {
+    for (const [i, q] of latest.current.entries()) {
+      if (q.enabled === false) continue;
+      const coord = replication?.coordinators.get(q.collection);
+      if (!coord || replication?.scopes[q.collection]?.bridge === false) continue;
+      void coord.getCoverage().then((state) => {
+        if (state.status === "complete") return;
+        return coord.bridge({
+          filter: q.filter,
+          sort: q.sort,
+          page: q.page,
+          limit: q.limit
+        }).then((result) => {
+          setBridgeIds((prev) => ({ ...prev, [i]: result.ids }));
+          setFetchErrors((prev) => {
+            const next = { ...prev };
+            delete next[i];
+            return next;
+          });
+        }).catch((error) => setFetchErrors((prev) => ({ ...prev, [i]: error })));
+      });
+    }
+  }, [replication, signature]);
+  return useMemo6(
+    () => latest.current.map((q, i) => {
+      const state = replication?.coverage[q.collection] ?? { status: "empty" };
+      const coverage = {
+        status: state.status,
+        // Only `complete` licenses a local-only read — see `useCoverage`.
+        ready: state.status === "complete",
+        rows: "rowsApplied" in state ? state.rowsApplied ?? 0 : 0,
+        total: "total" in state ? state.total : void 0,
+        progress: state.status === "complete" ? 1 : void 0,
+        reason: state.status === "error" ? state.error : state.status === "best-effort" || state.status === "stale" ? state.reason : void 0
+      };
+      return {
+        data: results[i]?.data ?? [],
+        total: coverage.total,
+        loading: results[i]?.loading ?? true,
+        error: results[i]?.error ?? fetchErrors[i] ?? null,
+        fetchError: fetchErrors[i] ?? null,
+        coverage,
+        fetching: false,
+        syncing: false,
+        syncError: null,
+        refetch: async () => {
+          await replication?.coordinators.get(q.collection)?.refresh();
+        }
+      };
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [results, signature, replication]
+  );
 }
 
 // src/useMutation.ts
-import { useCallback as useCallback4, useEffect as useEffect5, useRef as useRef8, useState as useState4 } from "react";
+import { useCallback as useCallback5, useEffect as useEffect6, useRef as useRef10, useState as useState5 } from "react";
 function useMutation(options) {
   const { collection, direction = "push", drainOnMount = true } = options;
   const db = useTalaDB();
@@ -471,12 +712,12 @@ function useMutation(options) {
     fetch: options.fetch,
     paths: options.paths
   });
-  const configRef = useRef8(config);
+  const configRef = useRef10(config);
   configRef.current = config;
-  const [pending, setPending] = useState4(false);
-  const [error, setError] = useState4(null);
+  const [pending, setPending] = useState5(false);
+  const [error, setError] = useState5(null);
   const endpoint = config?.endpoint;
-  const applyLocal = useCallback4(
+  const applyLocal = useCallback5(
     async (op) => {
       switch (op.type) {
         case "insert":
@@ -492,12 +733,12 @@ function useMutation(options) {
     },
     [col]
   );
-  const drain = useCallback4(async () => {
+  const drain = useCallback5(async () => {
     const cfg = configRef.current;
     if (!cfg) return;
     await replicateWithRetry(db, cfg, collection, direction);
   }, [db, collection, direction, endpoint]);
-  const mutateAsync = useCallback4(
+  const mutateAsync = useCallback5(
     async (op) => {
       setPending(true);
       setError(null);
@@ -513,14 +754,14 @@ function useMutation(options) {
     },
     [applyLocal, drain]
   );
-  const mutate = useCallback4(
+  const mutate = useCallback5(
     (op) => {
       void mutateAsync(op).catch(() => {
       });
     },
     [mutateAsync]
   );
-  useEffect5(() => {
+  useEffect6(() => {
     if (!drainOnMount || !configRef.current) return;
     void drain().catch(() => {
     });
@@ -535,10 +776,13 @@ function useMutation(options) {
 export {
   ReplicationProvider,
   TalaDBProvider,
+  useAggregate,
   useCollection,
   useCollectionOptions,
+  useCoverage,
   useFind,
   useFindOne,
+  useHydrationProgress,
   useMutation,
   useQueries,
   useQuery,

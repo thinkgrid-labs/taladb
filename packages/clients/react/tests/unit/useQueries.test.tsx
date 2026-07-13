@@ -1,35 +1,83 @@
 /**
- * Unit tests for useQueries — parallel scoped queries, index-aligned results.
+ * `useQueries` — several pages, several collections, one hook.
  *
- * Behaviours under test:
- *   - one replication + live query per entry, in parallel
- *   - results are index-aligned with the input
- *   - one-way data flow per entry (a pull that writes local re-renders that slot)
- *   - a local-only entry alongside a networked one
- *   - a networked entry with no endpoint throws
+ * Same guarantee as `useQuery`: once each collection is covered, every read is
+ * local. Worth pinning separately because it manages its own subscriptions (hooks
+ * can't be called in a variable-length loop), so it is a second place the
+ * "no network once covered" property could regress.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { TalaDBProvider } from '../../src/context'
-import { ReplicationProvider, type ReplicationConfig } from '../../src/replication/config'
+import { ReplicationProvider } from '../../src/replication/config'
 import { useQueries } from '../../src/useQueries'
-import { __resetInflight, setSleep } from '../../src/replication/engine'
-import { createSyncMockDB } from '../helpers/mockSyncDB'
-import type { TalaDB } from 'taladb'
+import { createMockDB } from '../helpers/mockCollection'
+import type { Document, TalaDB } from 'taladb'
+
+function originFor(rows: Record<string, unknown>[]) {
+  let calls = 0
+  const fetch = vi.fn(async () => {
+    calls++
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        data: rows,
+        nextPage: null,
+        snapshot: 'snap-1',
+        deltaCursor: 'seq-0',
+        total: rows.length,
+      }),
+    } as Response
+  }) as unknown as typeof fetch
+  return {
+    fetch,
+    calls: () => calls,
+    reset: () => {
+      calls = 0
+    },
+  }
+}
+
+const productRows = Array.from({ length: 6 }, (_, i) => ({
+  id: `p${i}`,
+  name: `prod${i}`,
+  price: i,
+  rev: i + 1,
+}))
+const categoryRows = [
+  { id: 'c1', label: 'Kitchen', rev: 1 },
+  { id: 'c2', label: 'Garden', rev: 2 },
+]
+
+let db: TalaDB
 
 beforeEach(() => {
-  __resetInflight()
-  setSleep(async () => {})
+  db = createMockDB().db as unknown as TalaDB
 })
 
-const noopFetch = vi.fn() as unknown as typeof fetch
-
-function makeWrapper(db: TalaDB, providerProps: Partial<ReplicationConfig> = {}) {
+function wrapperWith(products: typeof fetch, categories: typeof fetch) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <TalaDBProvider db={db}>
-        <ReplicationProvider endpoint="/api/sync" fetch={noopFetch} {...providerProps}>
+        <ReplicationProvider
+          replicate={{
+            products: {
+              endpoint: '/api/products',
+              fetch: products,
+              hydrate: 'eager',
+              mapRow: (r: any) => ({ sku: r.id, name: r.name, price: r.price }),
+            },
+            categories: {
+              endpoint: '/api/categories',
+              fetch: categories,
+              hydrate: 'eager',
+              mapRow: (r: any) => ({ slug: r.id, label: r.label }),
+            },
+          }}
+        >
           {children}
         </ReplicationProvider>
       </TalaDBProvider>
@@ -38,62 +86,79 @@ function makeWrapper(db: TalaDB, providerProps: Partial<ReplicationConfig> = {})
 }
 
 describe('useQueries', () => {
-  it('pulls each collection in parallel and returns index-aligned results', async () => {
-    const { db, sync } = createSyncMockDB()
-    const { result } = renderHook(
-      () => useQueries([{ collection: 'orders' }, { collection: 'products' }]),
-      { wrapper: makeWrapper(db) },
-    )
-    expect(result.current).toHaveLength(2)
-    await waitFor(() => {
-      const collections = sync.mock.calls.map((c) => c[1].collections?.[0])
-      expect(collections).toContain('orders')
-      expect(collections).toContain('products')
-    })
-  })
+  it('returns index-aligned results for several collections', async () => {
+    const p = originFor(productRows)
+    const c = originFor(categoryRows)
 
-  it('re-renders each slot from the data its own pull writes', async () => {
-    const { db, sync, handle } = createSyncMockDB()
-    sync.mockImplementation(async (_a, options) => {
-      const name = options.collections![0]
-      handle(name).push([{ _id: '1', from: name }])
-      return { pushed: 0, pulled: 1, cursor: 0 }
-    })
     const { result } = renderHook(
-      () => useQueries([{ collection: 'orders' }, { collection: 'products' }]),
-      { wrapper: makeWrapper(db) },
-    )
-    await waitFor(() => {
-      expect(result.current[0].data).toEqual([{ _id: '1', from: 'orders' }])
-      expect(result.current[1].data).toEqual([{ _id: '1', from: 'products' }])
-    })
-  })
-
-  it('supports a local-only entry beside a networked one', async () => {
-    const { db, sync } = createSyncMockDB()
-    renderHook(
       () =>
         useQueries([
-          { collection: 'orders' },
-          { collection: 'cache', source: 'local-only' },
-        ]),
-      { wrapper: makeWrapper(db) },
+          { collection: 'products', sort: { price: 1 }, limit: 3 },
+          { collection: 'categories' },
+        ] as never),
+      { wrapper: wrapperWith(p.fetch, c.fetch) },
     )
-    await waitFor(() => expect(sync).toHaveBeenCalled())
-    const collections = sync.mock.calls.map((c) => c[1].collections?.[0])
-    expect(collections).toContain('orders')
-    expect(collections).not.toContain('cache')
+
+    await waitFor(() => expect(result.current[0]!.data).toHaveLength(3))
+    await waitFor(() => expect(result.current[1]!.data).toHaveLength(2))
+
+    expect((result.current[0]!.data[0] as Document).sku).toBe('p0')
+    expect((result.current[1]!.data[0] as Document).label).toBe('Kitchen')
   })
 
-  it('throws when a networked entry has no endpoint', () => {
-    const { db } = createSyncMockDB()
-    const onlyDb = ({ children }: { children: ReactNode }) => (
-      <TalaDBProvider db={db}>{children}</TalaDBProvider>
+  it('hydrates each collection from its own origin', async () => {
+    const p = originFor(productRows)
+    const c = originFor(categoryRows)
+
+    const { result } = renderHook(
+      () => useQueries([{ collection: 'products' }, { collection: 'categories' }] as never),
+      { wrapper: wrapperWith(p.fetch, c.fetch) },
     )
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    expect(() =>
-      renderHook(() => useQueries([{ collection: 'orders' }]), { wrapper: onlyDb }),
-    ).toThrow(/endpoint/)
-    spy.mockRestore()
+
+    await waitFor(() => expect(result.current[0]!.coverage.ready).toBe(true))
+    await waitFor(() => expect(result.current[1]!.coverage.ready).toBe(true))
+
+    expect(p.calls()).toBeGreaterThan(0)
+    expect(c.calls()).toBeGreaterThan(0)
+  })
+
+  it('pages locally once covered, with no further requests', async () => {
+    const p = originFor(productRows)
+    const c = originFor(categoryRows)
+    const wrapper = wrapperWith(p.fetch, c.fetch)
+
+    const { result, rerender } = renderHook(
+      ({ page }: { page: number }) =>
+        useQueries([{ collection: 'products', sort: { price: 1 }, page, limit: 2 }] as never),
+      { wrapper, initialProps: { page: 1 } },
+    )
+
+    await waitFor(() => expect(result.current[0]!.coverage.ready).toBe(true))
+    await waitFor(() => expect(result.current[0]!.data).toHaveLength(2))
+
+    p.reset()
+    c.reset()
+
+    rerender({ page: 2 })
+    await waitFor(() => expect((result.current[0]!.data[0] as Document).sku).toBe('p2'))
+
+    expect(p.calls(), 'paging a covered collection must not hit the network').toBe(0)
+  })
+
+  it('skips a disabled entry', async () => {
+    const p = originFor(productRows)
+    const c = originFor(categoryRows)
+
+    const { result } = renderHook(
+      () =>
+        useQueries([
+          { collection: 'products' },
+          { collection: 'categories', enabled: false },
+        ] as never),
+      { wrapper: wrapperWith(p.fetch, c.fetch) },
+    )
+
+    await waitFor(() => expect(result.current[0]!.data.length).toBeGreaterThan(0))
+    expect(result.current[1]!.data).toEqual([])
   })
 })

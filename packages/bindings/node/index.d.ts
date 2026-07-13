@@ -87,6 +87,21 @@ export declare class CollectionNode {
   insert(doc: JsonValue): string
   /** Insert multiple documents. */
   insertMany(docs: Array<JsonValue>): Array<string>
+  /**
+   * Upsert many documents **by caller-supplied `_id`**, in one commit.
+   *
+   * Unlike `insertMany` — which discards `_id` and mints a fresh ULID — this
+   * honours the id on each document, which is what lets replication address a
+   * remote row by a *derived* id so repeated fetches converge on one document
+   * rather than duplicating it.
+   *
+   * `origin` is `"remote"` for authoritative rows replicated in from an origin,
+   * or `"local"` for ordinary user writes. Remote rows are marked so they can
+   * never replicate back out.
+   */
+  replaceManyWithIds(docs: Array<JsonValue>, origin: string): Array<string>
+  /** Delete many documents by id, in one commit. Returns the number removed. */
+  deleteManyWithIds(ids: Array<string>, origin: string): number
   /** Find documents matching the filter. */
   find(filter: JsonValue): Array<JsonValue>
   /** Find a single document or return null. */
@@ -163,6 +178,15 @@ export declare class CollectionNode {
   insertAsync(doc: JsonValue): Promise<string>
   /** Async variant of `insertMany`. */
   insertManyAsync(docs: Array<JsonValue>): Promise<Array<string>>
+  /**
+   * `replaceManyWithIds` on the libuv thread pool.
+   *
+   * The bulk path: a hydration page is hundreds of rows in one commit, and with
+   * fsync-per-commit durability that is long enough to stall the event loop.
+   */
+  replaceManyWithIdsAsync(docs: Array<JsonValue>, origin: string): Promise<unknown>
+  /** `deleteManyWithIds` on the libuv thread pool. */
+  deleteManyWithIdsAsync(ids: Array<string>, origin: string): Promise<unknown>
   /** Async variant of `updateOne`. */
   updateOneAsync(filter: JsonValue, update: JsonValue): Promise<boolean>
   /** Async variant of `updateMany`. */

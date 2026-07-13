@@ -241,6 +241,7 @@ Value TalaDBHostObject::awaitJobAsPromise(Runtime &rt, TalaDbJob *job, bool pars
 std::vector<PropNameID> TalaDBHostObject::getPropertyNames(Runtime &rt) {
     std::vector<std::string> names = {
         "insert", "insertMany",
+        "replaceManyWithIds", "deleteManyWithIds",
         "find", "findOne",
         "updateOne", "updateMany",
         "deleteOne", "deleteMany",
@@ -307,6 +308,46 @@ Value TalaDBHostObject::get(Runtime &rt, const PropNameID &propName) {
                 auto docsJson = stringify(rt, args[1]);
                 char *result  = taladb_insert_many(db_, col.c_str(), docsJson.c_str());
                 if (!result) throw JSError(rt, "taladb_insert_many failed");
+                std::string json(result);
+                taladb_free_string(result);
+                return parse(rt, json);
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // replaceManyWithIds(collection: string, docs: object[], origin: string): string[]
+    // ------------------------------------------------------------------
+    if (name == "replaceManyWithIds") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "replaceManyWithIds"), 3,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 3) throw JSError(rt, "replaceManyWithIds requires 3 arguments");
+                auto col      = args[0].getString(rt).utf8(rt);
+                auto docsJson = stringify(rt, args[1]);
+                auto origin   = args[2].getString(rt).utf8(rt);
+                char *result  = taladb_replace_many_with_ids(
+                    db_, col.c_str(), docsJson.c_str(), origin.c_str());
+                if (!result) throw ffiError(rt, "taladb_replace_many_with_ids failed");
+                std::string json(result);
+                taladb_free_string(result);
+                return parse(rt, json);
+            });
+    }
+
+    // ------------------------------------------------------------------
+    // deleteManyWithIds(collection: string, ids: string[], origin: string): number
+    // ------------------------------------------------------------------
+    if (name == "deleteManyWithIds") {
+        return Function::createFromHostFunction(
+            rt, PropNameID::forAscii(rt, "deleteManyWithIds"), 3,
+            [this](Runtime &rt, const Value &, const Value *args, size_t count) -> Value {
+                if (count < 3) throw JSError(rt, "deleteManyWithIds requires 3 arguments");
+                auto col     = args[0].getString(rt).utf8(rt);
+                auto idsJson = stringify(rt, args[1]);
+                auto origin  = args[2].getString(rt).utf8(rt);
+                char *result = taladb_delete_many_with_ids(
+                    db_, col.c_str(), idsJson.c_str(), origin.c_str());
+                if (!result) throw ffiError(rt, "taladb_delete_many_with_ids failed");
                 std::string json(result);
                 taladb_free_string(result);
                 return parse(rt, json);

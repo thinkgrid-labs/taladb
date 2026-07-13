@@ -7,6 +7,7 @@
 
 import type {
   Collection,
+  CursorSyncAdapter,
   Document,
   SerializedChangeset,
   SyncAdapter,
@@ -26,8 +27,18 @@ interface CursorDoc extends Document {
   target: string;
   /** Reserved for a future storage-level monotonic export cursor. */
   pushMs: number;
-  /** Reserved for a future server-issued opaque cursor. */
+  /** Legacy field, retained so old cursor documents still deserialize. */
   pullMs: number;
+  /**
+   * Opaque pull cursor, issued by the origin via
+   * {@link import('./types').CursorSyncAdapter.pullWithCursor}. Absent for
+   * timestamp-only adapters, which replay from zero every pass.
+   *
+   * **Never parsed.** Its meaning belongs to the origin — a sequence, an LSN, a
+   * timestamp, a snapshot id. Interpreting it here is how the clock-skew bug
+   * comes back.
+   */
+  pullCursor?: string;
 }
 
 /** Outcome of a validated import: applied/skipped/quarantined counts. */
@@ -93,11 +104,16 @@ export function unsupportedSync(runtime: string): Pick<
 interface Cursor {
   pushMs: number;
   pullMs: number;
+  pullCursor?: string;
 }
 
 async function readCursor(cursorCol: Collection<CursorDoc>, target: string): Promise<Cursor> {
   const doc = await cursorCol.findOne({ target } as never);
-  return { pushMs: doc?.pushMs ?? 0, pullMs: doc?.pullMs ?? 0 };
+  return {
+    pushMs: doc?.pushMs ?? 0,
+    pullMs: doc?.pullMs ?? 0,
+    pullCursor: doc?.pullCursor,
+  };
 }
 
 async function writeCursor(
@@ -111,6 +127,14 @@ async function writeCursor(
   }
 }
 
+/** An adapter is cursor-capable when it implements `pullWithCursor`. */
+function isCursorAdapter(adapter: SyncAdapter): adapter is CursorSyncAdapter {
+  return typeof (adapter as CursorSyncAdapter).pullWithCursor === 'function';
+}
+
+/** Guard against a misbehaving origin looping us forever on `hasMore: true`. */
+const MAX_PULL_PAGES = 10_000;
+
 /**
  * Run one sync pass.
  *
@@ -120,11 +144,19 @@ async function writeCursor(
  * doesn't affect convergence: Last-Write-Wins resolves by `changed_at`, so both
  * sides reach the same state regardless.
  *
- * The current adapter contract only exposes author wall-clock timestamps. Such
- * timestamps are not safe cursors: a write can commit after an export with an
- * earlier timestamp, and a remote event can arrive late. Until adapters expose
- * storage/server-issued monotonic cursors, each pass therefore replays from
- * zero. Import is idempotent under LWW, trading bandwidth for no skipped data.
+ * ## Pull cursors
+ *
+ * Two paths, chosen by feature-detection:
+ *
+ * - **{@link CursorSyncAdapter}** (`pullWithCursor`) — the origin issues an opaque
+ *   resume token, which we persist and hand straight back. Pages are drained until
+ *   `hasMore` is false. This is the path that makes an incremental refresh of a
+ *   large replica affordable.
+ * - **Plain {@link SyncAdapter}** (`pull(sinceMs)`) — replays from zero every pass.
+ *   Not laziness: author wall-clock timestamps are *not* safe cursors, because a
+ *   write can commit after an export yet carry an earlier timestamp, so resuming
+ *   from "the newest timestamp I saw" silently drops rows. Replaying everything is
+ *   idempotent under LWW — it trades bandwidth for never skipping data.
  */
 export async function runSync(
   handle: SyncHandle,
@@ -136,8 +168,12 @@ export async function runSync(
   const target = options.target ?? 'default';
   const doPush = direction === 'push' || direction === 'both';
   const doPull = direction === 'pull' || direction === 'both';
-  if (doPull && !adapter.pull) {
-    throw new Error(`sync direction '${direction}' requires adapter.pull()`);
+  // Either pull contract satisfies a pull: `pullWithCursor` (preferred) or the
+  // legacy timestamp `pull`. An adapter implementing only the former is complete.
+  if (doPull && !adapter.pull && !isCursorAdapter(adapter)) {
+    throw new Error(
+      `sync direction '${direction}' requires adapter.pull() or adapter.pullWithCursor()`,
+    );
   }
   if (doPush && !adapter.push) {
     throw new Error(`sync direction '${direction}' requires adapter.push()`);
@@ -161,17 +197,45 @@ export async function runSync(
   let pulled = 0;
   let skipped = 0;
   let quarantined = 0;
+  let pullCursor = cursor.pullCursor;
+
+  /** Import one changeset, honouring the tolerant validator when one applies. */
+  async function importOne(changeset: SerializedChangeset): Promise<void> {
+    if (!changeset || changeset === '[]') return;
+    if (useValidated) {
+      const report = await handle.importChangesValidated!(changeset, JSON.stringify(scopedSchemas));
+      pulled += report.applied;
+      skipped += report.skipped;
+      quarantined += report.quarantined;
+    } else {
+      pulled += await handle.importChanges(changeset);
+    }
+  }
+
   if (doPull) {
-    const remote = await adapter.pull!(0);
-    if (remote && remote !== '[]') {
-      if (useValidated) {
-        const report = await handle.importChangesValidated!(remote, JSON.stringify(scopedSchemas));
-        pulled = report.applied;
-        skipped = report.skipped;
-        quarantined = report.quarantined;
-      } else {
-        pulled = await handle.importChanges(remote);
+    if (isCursorAdapter(adapter)) {
+      // Cursor-capable origin: resume from the stored opaque token and drain the
+      // pages it offers. The cursor advances only after each page is durably
+      // imported, so an interruption re-fetches at most one page rather than
+      // skipping it — the safe direction to fail in.
+      let pages = 0;
+      for (;;) {
+        const result = await adapter.pullWithCursor(pullCursor ?? null);
+        await importOne(result.changeset);
+        pullCursor = result.cursor;
+        await writeCursor(cursorCol, target, { ...cursor, pullCursor });
+        if (!result.hasMore) break;
+        if (++pages >= MAX_PULL_PAGES) {
+          throw new Error(
+            `sync: origin returned hasMore after ${MAX_PULL_PAGES} pages for target ` +
+              `'${target}' — it is probably not advancing its cursor.`,
+          );
+        }
       }
+    } else {
+      // Timestamp-only adapter: no safe cursor exists, so replay from zero. Import
+      // is idempotent under Last-Write-Wins, trading bandwidth for no skipped data.
+      await importOne(await adapter.pull!(0));
     }
   }
 
@@ -184,6 +248,7 @@ export async function runSync(
   await writeCursor(cursorCol, target, {
     pushMs: cursor.pushMs,
     pullMs: cursor.pullMs,
+    ...(pullCursor !== undefined ? { pullCursor } : {}),
   });
   return { pushed, pulled, skipped, quarantined, cursor: 0 };
 }

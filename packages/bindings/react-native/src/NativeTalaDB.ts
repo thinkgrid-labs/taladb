@@ -31,6 +31,29 @@ export interface Spec extends TurboModule {
   /** Insert multiple documents. Returns an array of ULID string ids. */
   insertMany(collection: string, docs: Object[]): string[];
 
+  /**
+   * Upsert many documents **by caller-supplied `_id`**, in one commit.
+   *
+   * Unlike `insertMany`, which discards `_id` and mints a fresh ULID, this honours
+   * the id on each document — which is what makes a replication upsert idempotent
+   * across repeated fetches of the same remote row.
+   *
+   * `origin` is `'remote'` for authoritative rows replicated in from an origin, or
+   * `'local'` for ordinary user writes.
+   */
+  replaceManyWithIds(
+    collection: string,
+    docs: Object[],
+    origin: 'local' | 'remote',
+  ): string[];
+
+  /** Delete many documents by id, in one commit. Returns the number removed. */
+  deleteManyWithIds(
+    collection: string,
+    ids: string[],
+    origin: 'local' | 'remote',
+  ): number;
+
   /** Find documents matching the filter. */
   find(collection: string, filter: Object | null): Object[];
 

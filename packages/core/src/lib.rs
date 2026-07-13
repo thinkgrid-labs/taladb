@@ -19,7 +19,7 @@ pub mod watch;
 
 pub use aggregate::{Accumulator, GroupKey, Pipeline, Stage};
 pub use audit::{AuditEntry, AuditOp, read_audit_log, read_audit_log_since};
-pub use collection::{Collection, CollectionIndexInfo, Update};
+pub use collection::{Collection, CollectionIndexInfo, Update, WriteOrigin};
 pub use config::{DurabilityConfig, SyncConfig, TalaDbConfig, load_auto, load_from_path};
 pub use crdt::{
     CRDT_CLOCKS_FIELD, CrdtAdapter, CrdtChange, CrdtChangeset, CrdtSyncAdapter, FieldClock,
@@ -30,7 +30,7 @@ pub use crypto::{
     EncryptedBackend, EncryptionKey, MIN_PBKDF2_ITERATIONS, derive_key, migrate_encrypted_v0_to_v1,
     rekey,
 };
-pub use document::{Document, Value};
+pub use document::{Document, Value, derive_doc_id};
 pub use engine::{RedbBackend, StorageBackend};
 pub use error::TalaDbError;
 #[cfg(feature = "sync-http")]
@@ -43,6 +43,9 @@ pub use sync::{
     NoopSyncHook, QuarantineRecord, SchemaValidator, StructuralSchema, SyncAdapter, SyncEvent,
     SyncHook,
 };
+/// Re-exported so bindings can parse and construct document ids without taking a
+/// direct `ulid` dependency (and risking a version skew against the engine's).
+pub use ulid::Ulid;
 pub use vector::{HnswOptions, VectorMetric, VectorSearchResult};
 
 use std::path::Path;

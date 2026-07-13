@@ -109,7 +109,11 @@ fn indexed_paging_walks_the_whole_collection_exactly_once() {
 
     assert_eq!(seen, names(&full), "paged order diverged from full sort");
     let uniq: std::collections::HashSet<_> = seen.iter().collect();
-    assert_eq!(uniq.len(), 600, "a document was repeated or lost across pages");
+    assert_eq!(
+        uniq.len(),
+        600,
+        "a document was repeated or lost across pages"
+    );
 }
 
 #[test]
@@ -155,7 +159,11 @@ fn falls_back_when_sort_field_is_missing_from_some_docs() {
         .aggregate(vec![Stage::Sort(sort.clone()), Stage::Limit(50)])
         .unwrap();
 
-    assert_eq!(page.len(), 50, "documents missing the sort field were dropped");
+    assert_eq!(
+        page.len(),
+        50,
+        "documents missing the sort field were dropped"
+    );
     let full = full_sorted(&db, sort);
     assert_eq!(names(&page), names(&full));
 }
