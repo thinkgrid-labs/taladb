@@ -11,9 +11,12 @@
  */
 import { useEffect, useState } from 'react'
 import { TalaDBProvider, ReplicationProvider, useQuery, useCoverage } from '@taladb/react'
+import type { Document } from 'taladb'
 
-interface Product {
-  _id?: string
+// Extends `Document` rather than redeclaring `_id`: TalaDB documents carry an index
+// signature, and a plain interface without one doesn't satisfy the `Document`
+// constraint on `useQuery<T>`.
+interface Product extends Document {
   sku: string
   name: string
   price: number
